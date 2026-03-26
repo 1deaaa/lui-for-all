@@ -23,8 +23,9 @@ from app.graph.state import (
     TaskPlanResult,
 )
 from app.llm.prompts import (
+    AGENT_ENTRY_PROMPT,
     CAPABILITY_SELECT_PROMPT,
-    CLASSIFY_PROMPT,
+    DIRECT_ANSWER_PROMPT,
     INTENT_PARSE_PROMPT,
     SIMPLE_EXECUTE_PROMPT,
     SUMMARY_PROMPT,
@@ -450,46 +451,82 @@ async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
     }
 
 
-# ==================== 请求分类节点（Fast Path 入口）====================
+# ==================== Agent 入口决策与响应节点（Fast Path 融合口）====================
 
-async def classify_request_node(state: GraphState) -> dict[str, Any]:
+async def agent_entry_node(state: GraphState) -> dict[str, Any]:
     """
-    轻量分类节点：一次短 LLM 调用判断请求复杂度。
-    分类结果决定走简单流(simple)还是完整流(complex)。
+    第一层智能体入口：
+    1. 判断用户请求是否可直接解答（纯聊天、能力查询）。若是，生成答复并退出。
+    2. 若需工具，下发简单(simple)或复杂(complex)的 API 处理任务往下走。
     """
     from pydantic import BaseModel as _BaseModel
 
-    class ClassifyResult(_BaseModel):
-        complexity: str
+    class AgentDecision(_BaseModel):
+        strategy: str
+        reply_text: str | None = None
         reasoning: str | None = None
 
     emit_runtime_event(
         "task_progress",
-        node_name="classify_request",
+        node_name="agent_entry",
         progress=0.05,
-        message="正在分析请求类型",
+        message="智能体正在思考处理策略...",
     )
+
+    available_capabilities = state.get("available_capabilities", [])
+    cap_list_lines = []
+    # 精简能力列表，避免太长导致大模型失焦
+    for cap in available_capabilities[:60]:
+        cap_id = cap.get("capability_id", "")
+        summary = cap.get("summary") or cap.get("name") or cap.get("description", "")[:40]
+        cap_list_lines.append(f"- 路由 ID {cap_id}: {summary}")
+
+    capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
 
     try:
         result = await llm_client.parse_json_response(
             [
                 {
                     "role": "user",
-                    "content": CLASSIFY_PROMPT.format(user_message=state["user_message"]),
+                    "content": AGENT_ENTRY_PROMPT.format(
+                        user_message=state["user_message"],
+                        capability_list=capability_list
+                    ),
                 }
             ],
-            ClassifyResult,
-            temperature=0.1,
+            AgentDecision,
+            temperature=0.2, 
         )
-        complexity = result.complexity if result.complexity in ("direct", "simple", "complex") else "complex"
-        logger.info(f"[classify_request] 分类结果: {complexity} | 原因: {result.reasoning}")
-        return {"request_complexity": complexity, "current_node": "classify_request"}
+        
+        strategy = result.strategy if result.strategy in ("direct", "simple", "complex") else "complex"
+        logger.info(f"[agent_entry] 决策策略: {strategy} | 原因: {result.reasoning}")
+
+        state_update: dict[str, Any] = {
+            "request_complexity": strategy,
+            "current_node": "agent_entry"
+        }
+
+        # 如果它是 direct，直接设置 summary_text 和 ui_blocks，图流完在此即止
+        if strategy == "direct" and result.reply_text:
+            state_update["summary_text"] = result.reply_text
+            state_update["ui_blocks"] = [{"block_type": "text_block", "content": result.reply_text, "format": "plain"}]
+            # 更新完毕发送进度
+            emit_runtime_event(
+                "task_progress",
+                node_name="agent_entry",
+                progress=0.9,
+                message="已生成直接回复",
+            )
+
+        return state_update
     except Exception as e:
-        logger.warning(f"[classify_request] 分类失败，降级为 complex: {e}")
-        return {"request_complexity": "complex", "current_node": "classify_request"}
+        logger.warning(f"[agent_entry] 思考失败，降级为执行全流程: {e}")
+        return {"request_complexity": "complex", "current_node": "agent_entry"}
 
 
-# ==================== 简单流执行节点 ====================
+# ==================== 直接回答节点 ====================
+
+
 
 async def simple_execute_node(state: GraphState) -> dict[str, Any]:
     """

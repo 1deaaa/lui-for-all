@@ -102,22 +102,34 @@ SUMMARY_PROMPT = """
     "key_findings": ["关键发现1", "关键发现2"]
 }}
 """
-CLASSIFY_PROMPT = """
-你是一个请求分类助手。请判断用户的输入属于哪一类：
 
-用户输入: {user_message}
+AGENT_ENTRY_PROMPT = """
+你是一个系统的处理中枢（AI Agent）。你需要直接处理用户的请求。
 
-请从以下三类中选择一个，输出 JSON 格式：
-- "direct": 问候、闲聊、询问系统功能、询问"你能做什么"等，不需要调用任何接口
-- "simple": 意图清晰的单步只读查询（如：查看列表、获取详情、查统计），通常对应 GET 请求
-- "complex": 需要多步操作、涉及写入/修改/删除、意图不明确或需要额外参数确认
+【当前系统可用的能力/路由（概要信息）】
+{capability_list}
 
-输出格式:
+【用户输入】:
+{user_message}
+
+【你的任务】:
+1. 如果用户是在和你打招呼、闲聊，或者在询问“当前系统有什么功能”、“大概有哪些接口出口”。
+   - 此时，你完全可以直接在这里生成回答！
+   - 将 "strategy" 设为 "direct"。
+   - 在 "reply_text" 中，用友好的自然语言直接回答用户。如果需要列举功能，请挑重点概括，不要长篇大论列出全部细节结构！
+
+2. 如果用户是在要求你执行、调用或操作目标系统（例如：“查询订单”、“生成报告”、“新建项目”）。
+   - 这意味着你需要让系统去真实调用业务接口。
+   - 判断这是一个单步查询（通常对应 GET 请求，选 "simple"）还是复杂的多步操作/写入（选 "complex"）。
+   - 此时 "reply_text" 留空为 null。
+
+请严格输出包含以下字段的 JSON:
 {{
-    "complexity": "direct" | "simple" | "complex",
-    "reasoning": "一句话说明原因"
+    "strategy": "direct" | "simple" | "complex",
+    "reply_text": "如果是 direct，在此处填写完整的 Markdown 格式回复；否则传 null",
+    "reasoning": "决策原因"
 }}
-"""  # noqa: E501
+"""
 
 
 SIMPLE_EXECUTE_PROMPT = """
@@ -142,5 +154,21 @@ SIMPLE_EXECUTE_PROMPT = """
     "capability_id": null,
     "parameters": {{}},
     "reasoning": "没有找到合适的接口，原因：..."
+}}
+"""
+
+DIRECT_ANSWER_PROMPT = """
+你是一个系统的 AI 助手。用户向你发出了一个直接对话的请求。
+在这个系统中，你主要负责将自然语言转化为对目标项目接口的调用。
+
+当前导入的项目拥有的能力列表粗略如下（供你了解本系统的功能）：
+{capability_list}
+
+用户请求: {user_message}
+
+请你根据上面提供的信息（如果有需要）或者常识，直接以自然、友好的语气回复用户。回复内容请使用 markdown 格式组织，可以适当排版。
+输出 JSON 格式:
+{{
+    "reply_text": "你的回答内容"
 }}
 """

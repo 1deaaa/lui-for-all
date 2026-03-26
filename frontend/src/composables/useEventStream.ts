@@ -67,8 +67,13 @@ export function useEventStream() {
   /**
    * 处理 SSE 事件
    */
-  function handleEvent(event: MessageEvent) {
-    const sseEvent = parseMessage(event)
+  function handleEvent(event: MessageEvent | Event) {
+    // 忽略没有 data 属性的标准连接错误事件
+    if (!('data' in event) || event.data === undefined) {
+        return;
+    }
+
+    const sseEvent = parseMessage(event as MessageEvent)
     
     // 更新连接状态
     isConnected.value = true
@@ -108,11 +113,13 @@ export function useEventStream() {
       case 'task_completed':
         sessionStatus.value = 'completed'
         progress.value = null
+        disconnect() // 任务完成，主动关闭连接，避免 EventSource 自动重连
         break
         
       case 'error':
         sessionStatus.value = 'error'
         error.value = sseEvent.data.message || '未知错误'
+        disconnect() // 发生后端明确抛出的错误，主动关闭连接
         break
     }
   }

@@ -5,8 +5,8 @@ LangGraph 模块初始化
 from app.graph.graph import create_talk_to_interface_graph, graph_app
 from app.graph.llm_client import LLMClient, llm_client
 from app.graph.nodes import (
+    agent_entry_node,
     approval_gate_node,
-    classify_request_node,
     draft_plan_node,
     emit_blocks_node,
     execute_requests_node,
@@ -24,7 +24,7 @@ __all__ = [
     "llm_client",
     "create_talk_to_interface_graph",
     "graph_app",
-    "classify_request_node",
+    "agent_entry_node",
     "simple_execute_node",
     "parse_intent_node",
     "select_capabilities_node",

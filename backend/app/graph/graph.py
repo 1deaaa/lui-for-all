@@ -15,8 +15,8 @@ except ModuleNotFoundError:
 
 from app.config import settings
 from app.graph.nodes import (
+    agent_entry_node,
     approval_gate_node,
-    classify_request_node,
     draft_plan_node,
     emit_blocks_node,
     execute_requests_node,
@@ -50,9 +50,7 @@ def _complexity_router(state: GraphState) -> str:
         return END
 
     if complexity == "direct":
-        # 纯聊天/问候，当前版本直接以 emit_blocks 兜底输出
-        # TODO: 可以加一个 direct_answer_node 做纯 LLM 聊天
-        return "simple_execute"
+        return END
     elif complexity == "simple":
         return "simple_execute"
     else:
@@ -78,7 +76,7 @@ def create_talk_to_interface_graph(use_sqlite: bool = True):
     workflow = StateGraph(GraphState)
 
     # ── 公共入口节点 ──
-    workflow.add_node("classify_request", classify_request_node)
+    workflow.add_node("agent_entry", agent_entry_node)
 
     # ── 简单流节点（simple / direct） ──
     workflow.add_node("simple_execute", simple_execute_node)
@@ -94,11 +92,11 @@ def create_talk_to_interface_graph(use_sqlite: bool = True):
     workflow.add_node("emit_blocks", emit_blocks_node)
 
     # ── 入口 ──
-    workflow.set_entry_point("classify_request")
+    workflow.set_entry_point("agent_entry")
 
-    # ── 分类后路由 ──
+    # ── 决策后路由 ──
     workflow.add_conditional_edges(
-        "classify_request",
+        "agent_entry",
         _complexity_router,
         {
             "simple_execute": "simple_execute",

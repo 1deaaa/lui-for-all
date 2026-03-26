@@ -237,6 +237,7 @@ async def stream_events(
             }
 
             node_progress_map = {
+                "agent_entry": 0.05,
                 "parse_intent": 0.15,
                 "select_capabilities": 0.3,
                 "draft_plan": 0.45,
@@ -245,6 +246,7 @@ async def stream_events(
                 "execute_requests": 0.82,
                 "summarize": 0.93,
                 "emit_blocks": 1.0,
+                "simple_execute": 1.0,
             }
             final_state = dict(initial_state)
 

@@ -1,7 +1,8 @@
 from app.llm.prompts.capability_analysis import CAPABILITY_INFER_PROMPT
 from app.llm.prompts.runtime import (
     CAPABILITY_SELECT_PROMPT,
-    CLASSIFY_PROMPT,
+    AGENT_ENTRY_PROMPT,
+    DIRECT_ANSWER_PROMPT,
     INTENT_PARSE_PROMPT,
     SIMPLE_EXECUTE_PROMPT,
     SUMMARY_PROMPT,
@@ -14,6 +15,7 @@ __all__ = [
     "TASK_PLAN_PROMPT",
     "SUMMARY_PROMPT",
     "CAPABILITY_INFER_PROMPT",
-    "CLASSIFY_PROMPT",
+    "AGENT_ENTRY_PROMPT",
+    "DIRECT_ANSWER_PROMPT",
     "SIMPLE_EXECUTE_PROMPT",
 ]
