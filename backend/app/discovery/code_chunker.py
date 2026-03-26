@@ -12,15 +12,15 @@ from typing import List
 class CodeChunker:
     """全自动扫描后端代码并按上限切分成大块"""
 
-    def __init__(self, base_dir: str, max_chunk_chars: int = 100_000):
+    def __init__(self, base_dir: str, max_chunk_chars: int = 32_000):
         # 将传入目录解析为确切的 backend/app 目录
         self.base_dir = Path(base_dir)
-        # 上限预留 5% 作为安全余量
-        self.max_chunk_chars = int(max_chunk_chars * 0.95)
+        # 上限预留 10% 作为安全余量，确保不因边界溢出导致 LLM 输出被截断
+        self.max_chunk_chars = int(max_chunk_chars * 0.90)
         # 有效扫描的后缀
         self.valid_extensions = {".py"}
-        # 需要排除的目录
-        self.exclude_dirs = {"__pycache__", "venv", ".venv", ".git"}
+        # 需要排除的目录（新增 test、migrations 等噪音目录）
+        self.exclude_dirs = {"__pycache__", "venv", ".venv", ".git", "test", "tests", "migrations", "alembic"}
         # 需要排除的文件
         self.exclude_files = {"__init__.py"}
 

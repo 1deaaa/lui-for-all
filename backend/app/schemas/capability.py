@@ -80,6 +80,10 @@ class Capability(BaseModel):
     capability_id: str = Field(description="能力唯一标识")
     name: str = Field(description="能力名称")
     description: str = Field(description="能力描述")
+    summary: str | None = Field(
+        default=None,
+        description="超短功能摘要（20字以内），供简单流上下文注入使用",
+    )
     domain: Domain = Field(default=Domain.UNKNOWN, description="业务领域")
     backed_by_routes: list[RouteRef] = Field(
         default_factory=list, description="支撑路由"

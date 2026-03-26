@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, computed } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 import BlockRenderer from '@/components/BlockRenderer.vue'
@@ -7,6 +8,7 @@ import { ElMessage } from 'element-plus'
 
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
+const route = useRoute()
 
 const inputMessage = ref('')
 const messageContainer = ref<HTMLElement | null>(null)
@@ -76,11 +78,25 @@ function scrollToBottom() {
 
 onMounted(async () => {
   await projectStore.fetchProjects()
+  const projectId = typeof route.query.project === 'string' ? route.query.project : null
+  if (projectId) {
+    await selectProject(projectId)
+    return
+  }
   // 如果已有当前项目且没有会话，自动建一个
   if (selectedProject.value && !sessionStore.currentSession) {
     await startSession(selectedProject.value.id)
   }
 })
+
+watch(
+  () => route.query.project,
+  async (projectId) => {
+    if (typeof projectId === 'string' && projectId !== selectedProject.value?.id) {
+      await selectProject(projectId)
+    }
+  }
+)
 </script>
 
 <template>
@@ -175,12 +191,39 @@ onMounted(async () => {
           />
         </div>
 
+        <div
+          v-if="sessionStore.isStreaming || sessionStore.runtimeEvents.length > 0"
+          class="runtime-panel"
+        >
+          <div class="runtime-header">
+            <span class="runtime-title">实时执行进度</span>
+            <span class="runtime-percent">{{ sessionStore.progressPercent }}%</span>
+          </div>
+          <el-progress
+            :percentage="sessionStore.progressPercent"
+            :indeterminate="sessionStore.isStreaming && sessionStore.progressPercent === 0"
+            :show-text="false"
+            :stroke-width="8"
+          />
+          <div class="runtime-message">{{ sessionStore.progressMessage || 'AI 正在处理中...' }}</div>
+          <div v-if="sessionStore.runtimeEvents.length > 0" class="runtime-event-list">
+            <div
+              v-for="event in sessionStore.runtimeEvents.slice(-8)"
+              :key="event.id"
+              class="runtime-event-item"
+            >
+              <span class="runtime-event-title">{{ event.title }}</span>
+              <span class="runtime-event-detail">{{ event.detail }}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 加载中 -->
-        <div class="loading-row" v-if="sessionStore.loading || sessionCreating">
+        <div class="loading-row" v-if="sessionStore.loading || sessionCreating || sessionStore.isStreaming">
           <div class="loading-dots">
             <span></span><span></span><span></span>
           </div>
-          <span class="loading-text">{{ sessionCreating ? '正在建立会话...' : 'AI 处理中...' }}</span>
+          <span class="loading-text">{{ sessionCreating ? '正在建立会话...' : (sessionStore.progressMessage || 'AI 处理中...') }}</span>
         </div>
 
         <!-- 错误提示 -->
@@ -256,6 +299,66 @@ onMounted(async () => {
   font-weight: 600;
   color: var(--color-text-secondary, #7a8599);
   padding: 4px 8px 4px;
+}
+
+.runtime-panel {
+  margin: 12px 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color-light, #e5e9f0);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.05));
+}
+
+.runtime-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.runtime-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-primary, #1a2035);
+}
+
+.runtime-percent {
+  font-size: 12px;
+  color: var(--color-text-secondary, #7a8599);
+}
+
+.runtime-message {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--color-text-secondary, #607086);
+}
+
+.runtime-event-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runtime-event-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(var(--el-color-primary-rgb, 64, 133, 255), 0.06);
+}
+
+.runtime-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1a2035);
+}
+
+.runtime-event-detail {
+  font-size: 12px;
+  color: var(--color-text-secondary, #7a8599);
 }
 
 .panel-divider {

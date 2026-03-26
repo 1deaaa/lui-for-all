@@ -1,3 +1,5 @@
+# 包含密钥文件 绝对禁止去掉此项。
+.env
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -116,7 +118,6 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
 .venv
 env/
 venv/
@@ -176,7 +177,7 @@ yarn-error.log*
 
 # Project specific
 backendfortest/
-Backendfortest/
+proj_for_test/
 workspace/
 sse_debug.log
 *.log

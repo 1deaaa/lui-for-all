@@ -51,6 +51,8 @@ class EventType(str, Enum):
     EXECUTION_STARTED = "execution_started"
     EXECUTION_PROGRESS = "execution_progress"
     EXECUTION_COMPLETED = "execution_completed"
+    TOOL_STARTED = "tool_started"
+    TOOL_COMPLETED = "tool_completed"
 
     # 结果
     SUMMARY_READY = "summary_ready"
@@ -117,6 +119,33 @@ class TaskProgressEvent(BaseModel):
     node_name: str = Field(description="当前节点名称")
     progress: float = Field(ge=0.0, le=1.0, description="进度 (0-1)")
     message: str | None = Field(default=None, description="进度消息")
+
+
+class ToolStartedEvent(BaseModel):
+    """工具开始事件"""
+
+    event: EventType = Field(default=EventType.TOOL_STARTED, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    tool_name: str = Field(description="工具名称")
+    title: str = Field(description="事件标题")
+    detail: str | None = Field(default=None, description="详细信息")
+    step_id: str | None = Field(default=None, description="步骤 ID")
+    route_id: str | None = Field(default=None, description="路由 ID")
+
+
+class ToolCompletedEvent(BaseModel):
+    """工具完成事件"""
+
+    event: EventType = Field(default=EventType.TOOL_COMPLETED, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    tool_name: str = Field(description="工具名称")
+    title: str = Field(description="事件标题")
+    detail: str | None = Field(default=None, description="详细信息")
+    step_id: str | None = Field(default=None, description="步骤 ID")
+    route_id: str | None = Field(default=None, description="路由 ID")
+    status_code: int | None = Field(default=None, description="HTTP 状态码")
 
 
 class UIBlockEmittedEvent(BaseModel):

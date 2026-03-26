@@ -41,7 +41,7 @@ class ExecutionMatrix(BaseModel):
     }
 
 
-def get_action(safety_level: SafetyLevel, matrix: ExecutionMatrix | None = None) -> PolicyAction:
+def get_action(safety_level: SafetyLevel | str, matrix: ExecutionMatrix | None = None) -> PolicyAction:
     """
     根据安全等级获取执行动作
 
@@ -55,10 +55,11 @@ def get_action(safety_level: SafetyLevel, matrix: ExecutionMatrix | None = None)
     if matrix is None:
         matrix = ExecutionMatrix()
 
-    return matrix.matrix.get(safety_level.value, PolicyAction.CONFIRM)
+    level_value = safety_level.value if isinstance(safety_level, SafetyLevel) else str(safety_level)
+    return matrix.matrix.get(level_value, PolicyAction.CONFIRM)
 
 
-def get_block_reason(safety_level: SafetyLevel, matrix: ExecutionMatrix | None = None) -> str | None:
+def get_block_reason(safety_level: SafetyLevel | str, matrix: ExecutionMatrix | None = None) -> str | None:
     """
     获取阻断原因
 
@@ -72,16 +73,17 @@ def get_block_reason(safety_level: SafetyLevel, matrix: ExecutionMatrix | None =
     if matrix is None:
         matrix = ExecutionMatrix()
 
-    return matrix.block_reasons.get(safety_level.value)
+    level_value = safety_level.value if isinstance(safety_level, SafetyLevel) else str(safety_level)
+    return matrix.block_reasons.get(level_value)
 
 
-def requires_confirmation(safety_level: SafetyLevel) -> bool:
+def requires_confirmation(safety_level: SafetyLevel | str) -> bool:
     """检查是否需要确认"""
     action = get_action(safety_level)
     return action == PolicyAction.CONFIRM
 
 
-def is_blocked(safety_level: SafetyLevel) -> bool:
+def is_blocked(safety_level: SafetyLevel | str) -> bool:
     """检查是否被阻断"""
     action = get_action(safety_level)
     return action == PolicyAction.BLOCK

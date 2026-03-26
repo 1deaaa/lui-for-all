@@ -8,11 +8,10 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.models.audit import Approval
+from app.repositories.audit_repository import AuditRepository
 
 router = APIRouter()
 
@@ -44,8 +43,7 @@ async def approve_request(
     db: AsyncSession = Depends(get_session),
 ):
     """批准审批请求"""
-    result = await db.execute(select(Approval).where(Approval.id == approval_id))
-    approval = result.scalar_one_or_none()
+    approval = await AuditRepository(db).get_approval(approval_id)
 
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
@@ -85,8 +83,7 @@ async def reject_request(
     db: AsyncSession = Depends(get_session),
 ):
     """拒绝审批请求"""
-    result = await db.execute(select(Approval).where(Approval.id == approval_id))
-    approval = result.scalar_one_or_none()
+    approval = await AuditRepository(db).get_approval(approval_id)
 
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
@@ -123,8 +120,7 @@ async def get_approval(
     db: AsyncSession = Depends(get_session),
 ):
     """获取审批详情"""
-    result = await db.execute(select(Approval).where(Approval.id == approval_id))
-    approval = result.scalar_one_or_none()
+    approval = await AuditRepository(db).get_approval(approval_id)
 
     if not approval:
         raise HTTPException(status_code=404, detail="审批记录不存在")
@@ -155,13 +151,7 @@ async def list_approvals(
     db: AsyncSession = Depends(get_session),
 ):
     """列出审批记录"""
-    query = select(Approval).order_by(Approval.created_at.desc()).limit(limit)
-
-    if status:
-        query = query.where(Approval.status == status)
-
-    result = await db.execute(query)
-    approvals = result.scalars().all()
+    approvals = await AuditRepository(db).list_approvals(status=status, limit=limit)
 
     return {
         "approvals": [

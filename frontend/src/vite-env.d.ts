@@ -28,6 +28,8 @@ export interface Project {
   description?: string
   base_url: string
   discovery_status: string
+  discovery_progress?: number
+  discovery_message?: string
   discovery_error?: string
   model_version?: string
   created_at: string
@@ -60,6 +62,15 @@ export interface TaskRun {
   summary_text?: string
   error?: string
   trace_id: string
+  created_at: string
+}
+
+export interface RuntimeEventItem {
+  id: string
+  type: string
+  title: string
+  detail?: string
+  status?: string
   created_at: string
 }
 

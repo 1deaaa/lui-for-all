@@ -1,22 +1,30 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
 import axios from 'axios'
-import type { Session, Message, TaskRun, UIBlock, SSEEvent } from '@/vite-env.d'
+import type {
+  Message,
+  RuntimeEventItem,
+  Session,
+  SSEEvent,
+  TaskRun,
+  UIBlock,
+} from '@/vite-env.d'
 
 export const useSessionStore = defineStore('session', () => {
-  // 状态
   const currentSession = ref<Session | null>(null)
   const messages = ref<Message[]>([])
   const currentTaskRun = ref<TaskRun | null>(null)
   const uiBlocks = ref<UIBlock[]>([])
   const loading = ref(false)
+  const isStreaming = ref(false)
   const error = ref<string | null>(null)
   const eventSource = ref<EventSource | null>(null)
+  const progressPercent = ref(0)
+  const progressMessage = ref('')
+  const runtimeEvents = ref<RuntimeEventItem[]>([])
 
-  // 计算属性
   const messageCount = computed(() => messages.value.length)
 
-  // 创建新会话
   async function createSession(projectId: string) {
     loading.value = true
     error.value = null
@@ -32,6 +40,7 @@ export const useSessionStore = defineStore('session', () => {
       }
       messages.value = []
       uiBlocks.value = []
+      runtimeEvents.value = []
       return currentSession.value
     } catch (e: any) {
       error.value = e.message || '创建会话失败'
@@ -42,14 +51,12 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // 发送消息
   async function sendMessage(content: string) {
     if (!currentSession.value) {
       error.value = '没有活动会话'
       return
     }
 
-    // 添加用户消息到列表
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
       role: 'user',
@@ -67,7 +74,6 @@ export const useSessionStore = defineStore('session', () => {
         { content }
       )
 
-      // 更新任务运行信息
       currentTaskRun.value = {
         id: response.data.task_run_id,
         session_id: currentSession.value.id,
@@ -78,9 +84,7 @@ export const useSessionStore = defineStore('session', () => {
         created_at: new Date().toISOString(),
       }
 
-      // 启动 SSE 流
       startEventStream(response.data.task_run_id)
-
       return response.data
     } catch (e: any) {
       error.value = e.message || '发送消息失败'
@@ -91,7 +95,13 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // 启动 SSE 事件流
+  function pushRuntimeEvent(event: RuntimeEventItem) {
+    runtimeEvents.value.push(event)
+    if (runtimeEvents.value.length > 30) {
+      runtimeEvents.value.splice(0, runtimeEvents.value.length - 30)
+    }
+  }
+
   function startEventStream(taskRunId: string) {
     if (eventSource.value) {
       eventSource.value.close()
@@ -99,6 +109,22 @@ export const useSessionStore = defineStore('session', () => {
 
     const url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
     eventSource.value = new EventSource(url)
+    isStreaming.value = true
+    progressPercent.value = 0
+    progressMessage.value = 'AI 已接收请求，正在启动执行链路'
+    runtimeEvents.value = []
+
+    const register = (eventName: string) => {
+      eventSource.value?.addEventListener(eventName, (rawEvent) => {
+        const event = rawEvent as MessageEvent
+        try {
+          const data = JSON.parse(event.data)
+          handleSSEEvent({ event: eventName, ...data })
+        } catch (e) {
+          console.error(`解析 SSE 事件失败 [${eventName}]:`, e)
+        }
+      })
+    }
 
     eventSource.value.onmessage = (event) => {
       try {
@@ -109,20 +135,85 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
+    ;[
+      'session_started',
+      'task_started',
+      'task_progress',
+      'node_completed',
+      'tool_started',
+      'tool_completed',
+      'ui_block_emitted',
+      'task_completed',
+      'error',
+    ].forEach(register)
+
     eventSource.value.onerror = (e) => {
       console.error('SSE 连接错误:', e)
+      error.value = error.value || 'SSE 连接中断'
       if (eventSource.value) {
         eventSource.value.close()
         eventSource.value = null
       }
+      isStreaming.value = false
     }
   }
 
-  // 处理 SSE 事件
   function handleSSEEvent(event: SSEEvent) {
     switch (event.event) {
+      case 'task_started':
+        currentTaskRun.value = currentTaskRun.value
+          ? { ...currentTaskRun.value, status: 'running' }
+          : currentTaskRun.value
+        progressMessage.value = '任务开始执行'
+        break
+
+      case 'task_progress':
+        progressPercent.value = Math.min(100, Math.max(0, Math.round((event.progress || 0) * 100)))
+        progressMessage.value = event.message || 'AI 处理中'
+        pushRuntimeEvent({
+          id: `progress-${Date.now()}-${Math.random()}`,
+          type: 'progress',
+          title: event.node_name || '执行进度更新',
+          detail: event.message,
+          status: 'running',
+          created_at: new Date().toISOString(),
+        })
+        break
+
+      case 'node_completed':
+        pushRuntimeEvent({
+          id: `node-${Date.now()}-${Math.random()}`,
+          type: 'node_completed',
+          title: `节点完成：${event.node_name}`,
+          detail: `当前整体进度 ${Math.round((event.progress || 0) * 100)}%`,
+          status: 'completed',
+          created_at: new Date().toISOString(),
+        })
+        break
+
+      case 'tool_started':
+        pushRuntimeEvent({
+          id: `tool-start-${Date.now()}-${Math.random()}`,
+          type: 'tool_started',
+          title: event.title || '开始调用工具',
+          detail: event.detail,
+          status: 'running',
+          created_at: new Date().toISOString(),
+        })
+        break
+
+      case 'tool_completed':
+        pushRuntimeEvent({
+          id: `tool-done-${Date.now()}-${Math.random()}`,
+          type: 'tool_completed',
+          title: event.title || '工具调用完成',
+          detail: event.detail,
+          status: event.status_code && event.status_code >= 400 ? 'failed' : 'completed',
+          created_at: new Date().toISOString(),
+        })
+        break
+
       case 'task_completed':
-        // 添加助手消息
         if (event.summary) {
           messages.value.push({
             id: `assistant-${Date.now()}`,
@@ -132,11 +223,16 @@ export const useSessionStore = defineStore('session', () => {
             created_at: new Date().toISOString(),
           })
         }
+        currentTaskRun.value = currentTaskRun.value
+          ? { ...currentTaskRun.value, status: 'completed', summary_text: event.summary }
+          : currentTaskRun.value
+        progressPercent.value = 100
+        progressMessage.value = '任务已完成'
+        isStreaming.value = false
         closeEventStream()
         break
 
       case 'ui_block_emitted':
-        // 添加 UI Block
         if (event.block_data) {
           uiBlocks.value.push(event.block_data as UIBlock)
         }
@@ -144,24 +240,26 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'error':
         error.value = event.error_message || '发生未知错误'
+        currentTaskRun.value = currentTaskRun.value
+          ? { ...currentTaskRun.value, status: 'failed', error: error.value || undefined }
+          : currentTaskRun.value
+        isStreaming.value = false
         closeEventStream()
         break
 
       default:
-        // 其他事件类型可以在这里处理
         console.log('收到 SSE 事件:', event)
     }
   }
 
-  // 关闭事件流
   function closeEventStream() {
     if (eventSource.value) {
       eventSource.value.close()
       eventSource.value = null
     }
+    isStreaming.value = false
   }
 
-  // 获取消息列表
   async function fetchMessages(sessionId: string) {
     loading.value = true
     try {
@@ -175,7 +273,6 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  // 清空会话
   function clearSession() {
     closeEventStream()
     currentSession.value = null
@@ -183,19 +280,23 @@ export const useSessionStore = defineStore('session', () => {
     currentTaskRun.value = null
     uiBlocks.value = []
     error.value = null
+    progressPercent.value = 0
+    progressMessage.value = ''
+    runtimeEvents.value = []
   }
 
   return {
-    // 状态
     currentSession,
     messages,
     currentTaskRun,
     uiBlocks,
     loading,
+    isStreaming,
     error,
-    // 计算属性
+    progressPercent,
+    progressMessage,
+    runtimeEvents,
     messageCount,
-    // 方法
     createSession,
     sendMessage,
     fetchMessages,

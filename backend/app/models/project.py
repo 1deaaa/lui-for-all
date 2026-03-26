@@ -22,6 +22,11 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     openapi_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_path: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+        comment="目标项目本地源码目录的绝对路径，用于路由函数精准提取"
+    )
     
     # Auth凭据支持
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -99,6 +104,7 @@ class CapabilityRecord(Base):
     capability_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="超短功能摘要，20字以内")
     domain: Mapped[str] = mapped_column(String(50), default="unknown")
     
     # 路由引用

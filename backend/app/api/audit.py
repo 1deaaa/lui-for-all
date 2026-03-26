@@ -4,12 +4,11 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.models.audit import HttpExecution, ModelCall, PolicyVerdictRecord
-from app.models.task import TaskEvent, TaskRun
+from app.repositories.audit_repository import AuditRepository
+from app.repositories.task_repository import TaskRepository
 
 router = APIRouter()
 
@@ -23,17 +22,12 @@ async def list_task_runs(
     db: AsyncSession = Depends(get_session),
 ):
     """列出任务运行记录"""
-    query = select(TaskRun).order_by(TaskRun.created_at.desc())
-
-    if session_id:
-        query = query.where(TaskRun.session_id == session_id)
-    if status:
-        query = query.where(TaskRun.status == status)
-
-    query = query.offset(offset).limit(limit)
-
-    result = await db.execute(query)
-    task_runs = result.scalars().all()
+    task_runs = await TaskRepository(db).list_task_runs(
+        session_id=session_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
 
     return {
         "task_runs": [
@@ -62,8 +56,7 @@ async def get_task_run(
     db: AsyncSession = Depends(get_session),
 ):
     """获取任务运行详情"""
-    result = await db.execute(select(TaskRun).where(TaskRun.id == task_run_id))
-    task_run = result.scalar_one_or_none()
+    task_run = await TaskRepository(db).get_by_id(task_run_id)
 
     if not task_run:
         raise HTTPException(status_code=404, detail="任务运行记录不存在")
@@ -95,12 +88,7 @@ async def get_task_events(
     db: AsyncSession = Depends(get_session),
 ):
     """获取任务事件列表 (Event Sourcing)"""
-    result = await db.execute(
-        select(TaskEvent)
-        .where(TaskEvent.task_run_id == task_run_id)
-        .order_by(TaskEvent.ts.asc())
-    )
-    events = result.scalars().all()
+    events = await TaskRepository(db).list_events(task_run_id)
 
     return {
         "events": [
@@ -127,10 +115,7 @@ async def get_http_execution(
     db: AsyncSession = Depends(get_session),
 ):
     """获取 HTTP 执行记录"""
-    result = await db.execute(
-        select(HttpExecution).where(HttpExecution.request_id == request_id)
-    )
-    execution = result.scalar_one_or_none()
+    execution = await AuditRepository(db).get_http_execution(request_id)
 
     if not execution:
         raise HTTPException(status_code=404, detail="HTTP 执行记录不存在")
@@ -164,19 +149,11 @@ async def list_policy_verdicts(
     db: AsyncSession = Depends(get_session),
 ):
     """列出策略判定记录"""
-    query = select(PolicyVerdictRecord).order_by(
-        PolicyVerdictRecord.created_at.desc()
+    verdicts = await AuditRepository(db).list_policy_verdicts(
+        task_run_id=task_run_id,
+        action=action,
+        limit=limit,
     )
-
-    if task_run_id:
-        query = query.where(PolicyVerdictRecord.task_run_id == task_run_id)
-    if action:
-        query = query.where(PolicyVerdictRecord.action == action)
-
-    query = query.limit(limit)
-
-    result = await db.execute(query)
-    verdicts = result.scalars().all()
 
     return {
         "verdicts": [
@@ -204,15 +181,10 @@ async def list_model_calls(
     db: AsyncSession = Depends(get_session),
 ):
     """列出模型调用记录"""
-    query = select(ModelCall).order_by(ModelCall.created_at.desc())
-
-    if task_run_id:
-        query = query.where(ModelCall.task_run_id == task_run_id)
-
-    query = query.limit(limit)
-
-    result = await db.execute(query)
-    calls = result.scalars().all()
+    calls = await AuditRepository(db).list_model_calls(
+        task_run_id=task_run_id,
+        limit=limit,
+    )
 
     return {
         "model_calls": [

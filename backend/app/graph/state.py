@@ -33,6 +33,9 @@ class GraphState(TypedDict):
     user_message: str
     normalized_intent: str | None
 
+    # 请求复杂度分类: "direct"(纯聊天) | "simple"(单步只读) | "complex"(完整流程)
+    request_complexity: str | None
+
     # 可用能力列表 (预加载)
     available_capabilities: list[dict[str, Any]]
 

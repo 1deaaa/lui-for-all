@@ -15,7 +15,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
-from app.api import approvals, audit, projects, sessions
+from app.api import approvals, audit, projects, sessions, settings as settings_api
 from app.config import settings
 from app.db import init_db
 
@@ -107,6 +107,7 @@ app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
+app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
 
 
 @app.get("/health")

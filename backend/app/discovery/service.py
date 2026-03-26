@@ -4,7 +4,7 @@
 """
 
 import uuid
-from datetime import datetime
+from typing import Awaitable, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,14 +27,30 @@ class DiscoveryService:
         project_id: str,
         base_url: str,
         openapi_path: str = "/openapi.json",
+        progress_callback: Callable[[int, str], Awaitable[None]] | None = None,
+        source_path: str | None = None,
     ) -> tuple[RouteMap, CapabilityGraph]:
-        """执行项目发现"""
+        """执行项目发现。source_path 可选，提供则启用路由函数精准提取"""
+        async def report(percent: int, message: str):
+            if progress_callback:
+                await progress_callback(percent, message)
+
+        await report(5, "正在拉取 OpenAPI 文档")
+
         # 1. 摄取 OpenAPI
         route_map = await ingest_openapi(base_url, openapi_path)
         route_map.project_id = project_id
 
-        # 2. 构建能力图谱 (现为异步 AI 过程)
-        capability_graph = await build_capability_graph(route_map)
+        await report(20, f"OpenAPI 解析完成，共发现 {len(route_map.routes)} 条路由")
+
+        # 2. 构建能力图谱 (AI 过程)
+        capability_graph = await build_capability_graph(
+            route_map,
+            progress_callback=report,
+            source_path=source_path,
+        )
+
+        await report(90, "能力图谱已生成，正在写入数据库")
 
         # 3. 保存路由地图
         route_map_record = RouteMapRecord(
@@ -57,6 +73,7 @@ class DiscoveryService:
                 capability_id=cap.capability_id,
                 name=cap.name,
                 description=cap.description,
+                summary=cap.summary,  # 新增超短摘要
                 domain=cap.domain.value,
                 backed_by_routes=[r.model_dump() for r in cap.backed_by_routes],
                 user_intent_examples=cap.user_intent_examples,
@@ -80,6 +97,8 @@ class DiscoveryService:
             project.capability_graph_version = capability_graph.version
 
         await self.db.commit()
+
+        await report(100, "项目建图完成")
 
         return route_map, capability_graph
 
@@ -139,7 +158,15 @@ async def run_discovery(
     project_id: str,
     base_url: str,
     openapi_path: str = "/openapi.json",
+    progress_callback: Callable[[int, str], Awaitable[None]] | None = None,
+    source_path: str | None = None,
 ) -> tuple[RouteMap, CapabilityGraph]:
     """便捷函数：执行项目发现"""
     service = DiscoveryService(db)
-    return await service.discover_project(project_id, base_url, openapi_path)
+    return await service.discover_project(
+        project_id,
+        base_url,
+        openapi_path,
+        progress_callback=progress_callback,
+        source_path=source_path,
+    )

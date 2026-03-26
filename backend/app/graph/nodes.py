@@ -22,33 +22,36 @@ from app.graph.state import (
     SummaryResult,
     TaskPlanResult,
 )
+from app.llm.prompts import (
+    CAPABILITY_SELECT_PROMPT,
+    CLASSIFY_PROMPT,
+    INTENT_PARSE_PROMPT,
+    SIMPLE_EXECUTE_PROMPT,
+    SUMMARY_PROMPT,
+    TASK_PLAN_PROMPT,
+)
+from app.policy.service import PolicyService
+from app.runtime import get_runtime_emitter
 from app.schemas.capability import Capability, ModalityType
 from app.schemas.policy import PolicyAction, PolicyVerdict
 from app.schemas.task import ApprovalStatus, ExecutionArtifact, TaskPlan, TaskStep
+from app.services.execution_service import ExecutionService
 
 
-# ==================== 意图解析节点 ====================
-
-INTENT_PARSE_PROMPT = """
-你是一个意图解析助手。请分析用户的自然语言输入，提取出结构化的意图信息。
-
-用户输入: {user_message}
-
-已知的能力领域: {domains}
-
-请输出 JSON 格式:
-{{
-    "normalized_intent": "规范化后的意图描述",
-    "domain": "识别的业务领域 (如 auth, customer, finance 等，如果不确定填 null)",
-    "keywords": ["关键词1", "关键词2"],
-    "confidence": 0.0-1.0 之间的置信度
-}}
-"""
+def emit_runtime_event(event: str, **payload: Any):
+    """向 LangGraph 自定义流通道发送运行时事件"""
+    get_runtime_emitter().emit(event, **payload)
 
 
 async def parse_intent_node(state: GraphState) -> dict[str, Any]:
     """解析用户意图"""
     try:
+        emit_runtime_event(
+            "task_progress",
+            node_name="parse_intent",
+            progress=0.08,
+            message="正在解析用户意图",
+        )
         # 调用 LLM 解析意图
         result = await llm_client.parse_json_response(
             [
@@ -79,44 +82,16 @@ async def parse_intent_node(state: GraphState) -> dict[str, Any]:
         }
 
 
-# ==================== 能力选择节点 ====================
-
-CAPABILITY_SELECT_PROMPT = """
-你是一个能力匹配助手。根据用户的意图，从已知的能力列表中选择最合适的能力。
-
-用户意图: {intent}
-
-可用能力列表:
-{capabilities}
-
-请选择最相关的 1-3 个能力，输出 JSON 格式:
-{{
-    "capabilities": [
-        {{
-            "capability_id": "能力ID",
-            "name": "能力名称",
-            "description": "能力描述",
-            "domain": "领域",
-            "safety_level": "安全等级",
-            "backed_by_routes": [{{"route_id": "xxx", "role": "primary"}}],
-            "user_intent_examples": [],
-            "required_permission_level": "authenticated",
-            "data_sensitivity": "low",
-            "best_modalities": ["text_block"],
-            "requires_confirmation": false,
-            "evidence_refs": [],
-            "parameter_hints": {{}}
-        }}
-    ],
-    "reasoning": "选择理由"
-}}
-"""
-
-
 async def select_capabilities_node(state: GraphState) -> dict[str, Any]:
     """选择匹配的能力"""
     # 从状态中获取预加载的能力列表
     available_capabilities = state.get("available_capabilities", [])
+    emit_runtime_event(
+        "task_progress",
+        node_name="select_capabilities",
+        progress=0.22,
+        message="正在匹配能力图谱",
+    )
     
     if not available_capabilities:
         return {
@@ -202,48 +177,15 @@ async def select_capabilities_node(state: GraphState) -> dict[str, Any]:
         }
 
 
-# ==================== 任务计划节点 ====================
-
-TASK_PLAN_PROMPT = """
-你是一个任务规划助手。根据选中的能力，制定执行计划。
-
-用户意图: {intent}
-
-选中的能力:
-{capabilities}
-
-上下文环境提供以下目标系统预设认证信息（如有）供登录API使用:
-Username: {username}
-Password: {password}
-若您选定的操作被认为是 "authenticated" 权限要求，并且您在图中找到了对方系统的登录路由（如 /login、/auth/token），您可以放心地将该登录请求设为 plan 的第一个 step（传递上方给您的账号密码）。引擎会自动捕获响应报文里的 jwt / token 并在后续步骤中代为注入 Authorization 表头。
-
-请制定执行计划，输出 JSON 格式:
-{{
-    "plan": {{
-        "plan_id": "计划ID",
-        "description": "计划描述",
-        "steps": [
-            {{
-                "step_id": "步骤ID",
-                "order": 1,
-                "capability_id": "能力ID",
-                "route_id": "路由ID",
-                "action": "动作描述",
-                "parameters": {{}},
-                "safety_level": "安全等级",
-                "requires_confirmation": false
-            }}
-        ],
-        "estimated_duration_ms": 5000
-    }},
-    "reasoning": "计划理由"
-}}
-"""
-
-
 async def draft_plan_node(state: GraphState) -> dict[str, Any]:
     """制定任务计划"""
     capabilities = state.get("selected_capabilities", [])
+    emit_runtime_event(
+        "task_progress",
+        node_name="draft_plan",
+        progress=0.38,
+        message="正在生成执行计划",
+    )
     
     logger.info(f"[draft_plan] Selected capabilities: {len(capabilities)}")
 
@@ -293,42 +235,19 @@ async def draft_plan_node(state: GraphState) -> dict[str, Any]:
 async def policy_check_node(state: GraphState) -> dict[str, Any]:
     """检查安全策略"""
     plan = state.get("task_plan")
+    emit_runtime_event(
+        "task_progress",
+        node_name="policy_check",
+        progress=0.55,
+        message="正在进行安全策略判定",
+    )
     if not plan:
         return {
             "error": "没有任务计划可供检查",
             "current_node": "policy_check",
         }
 
-    verdicts: list[PolicyVerdict] = []
-
-    for step in plan.steps:
-        # 根据安全等级判定动作
-        safety_level = step.safety_level
-
-        if safety_level in ["readonly_safe"]:
-            action = PolicyAction.ALLOW
-        elif safety_level in ["readonly_sensitive"]:
-            action = PolicyAction.REDACT
-        elif safety_level in ["soft_write"]:
-            action = PolicyAction.CONFIRM
-        else:
-            action = PolicyAction.BLOCK
-
-        verdict = PolicyVerdict(
-            verdict_id=str(uuid.uuid4()),
-            route_id=step.route_id,
-            capability_id=step.capability_id,
-            action=action,
-            safety_level=safety_level,
-            permission_level="authenticated",
-            reasons=[f"安全等级为 {safety_level}"],
-            evidence={},
-            redaction_fields=[],
-            approval_timeout_seconds=300,
-            approval_message=f"此操作需要确认: {step.action}",
-            block_reason=None if action != PolicyAction.BLOCK else "操作被安全策略阻断",
-        )
-        verdicts.append(verdict)
+    verdicts = PolicyService().evaluate_plan(plan)
 
     return {
         "policy_verdicts": verdicts,
@@ -356,6 +275,24 @@ async def approval_gate_node(state: GraphState) -> dict[str, Any]:
     # 构建审批请求
     approval_id = str(uuid.uuid4())
 
+    confirm_actions = [
+        {
+            "step_id": v.route_id,
+            "action": v.approval_message,
+            "risk_level": v.safety_level,
+        }
+        for v in verdicts
+        if v.action == PolicyAction.CONFIRM
+    ]
+
+    emit_runtime_event(
+        "approval_required",
+        approval_id=approval_id,
+        title="操作需要确认",
+        description="以下操作需要您的确认才能继续执行",
+        actions=confirm_actions,
+    )
+
     # 使用 interrupt 暂停执行
     approval_result = interrupt(
         {
@@ -364,13 +301,7 @@ async def approval_gate_node(state: GraphState) -> dict[str, Any]:
             "title": "操作需要确认",
             "description": "以下操作需要您的确认才能继续执行",
             "actions": [
-                {
-                    "step_id": v.route_id,
-                    "action": v.approval_message,
-                    "risk_level": v.safety_level,
-                }
-                for v in verdicts
-                if v.action == PolicyAction.CONFIRM
+                *confirm_actions
             ],
         }
     )
@@ -393,7 +324,14 @@ async def approval_gate_node(state: GraphState) -> dict[str, Any]:
 
 async def execute_requests_node(state: GraphState) -> dict[str, Any]:
     """执行 HTTP 请求"""
-    import httpx
+    plan = state.get("task_plan")
+    verdicts = state.get("policy_verdicts", [])
+    emit_runtime_event(
+        "task_progress",
+        node_name="execute_requests",
+        progress=0.68,
+        message="开始执行目标接口调用",
+    )
     
     logger.info(f"[execute_requests] Plan steps: {len(plan.steps) if plan else 0}")
     if plan and plan.steps:
@@ -405,105 +343,14 @@ async def execute_requests_node(state: GraphState) -> dict[str, Any]:
             "current_node": "execute_requests",
         }
 
-    artifacts: list[ExecutionArtifact] = []
-    
-    # 从状态获取项目基础 URL
-    project_id = state.get("project_id")
     base_url = state.get("project_base_url", "http://localhost:8000").rstrip("/")
-    username = state.get("project_username")
-    password = state.get("project_password")
 
     logger.info(f"[execute_requests] Starting execution with {len(plan.steps)} steps against target {base_url}")
-    
-    extracted_token = None
-    
-    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-        for i, step in enumerate(plan.steps):
-            logger.info(f"[execute_requests] Step {i+1}: {step.route_id}")
-            
-            # 检查是否被阻断
-            verdict = next(
-                (v for v in verdicts if v.route_id == step.route_id),
-                None,
-            )
-
-            if verdict and verdict.action == PolicyAction.BLOCK:
-                logger.warning(f"[execute_requests] Step {i+1} blocked by policy")
-                continue
-
-            # 解析 route_id 格式: "METHOD:/path"
-            route_parts = step.route_id.split(":", 1)
-            if len(route_parts) == 2:
-                method = route_parts[0].strip()
-                path = route_parts[1].strip()
-            else:
-                method = "GET"
-                path = step.route_id
-
-            # 构建完整 URL
-            url = f"{base_url}{path if path.startswith('/') else '/' + path}"
-            
-            headers = {"Content-Type": "application/json"}
-            # 自动挂载接力嗅探到的 Token
-            if extracted_token:
-                headers["Authorization"] = f"Bearer {extracted_token}"
-            elif username and password and len(plan.steps) == 1:
-                # 极端弱后备：若只有单步且没 Token 但提供了账密，可尝试用 Basic Auth (兼容考量)
-                # 仅在需要 authenticated 且没 token 时才会使用。这交由底层去处理。
-                pass
-            
-            try:
-                # 真实 API 调用
-                response = await client.request(
-                    method=method,
-                    url=url,
-                    json=step.parameters if method in ["POST", "PUT", "PATCH"] else None,
-                    params=step.parameters if method == "GET" else None,
-                    headers=headers,
-                )
-                
-                # Token 嗅探自动机 (应对需要登录后的多步操作)
-                is_json = response.headers.get("content-type", "").startswith("application/json")
-                resp_data = response.json() if is_json else {"text": response.text[:500]}
-                
-                if is_json and isinstance(resp_data, dict) and not extracted_token:
-                    for key in ["access_token", "token", "jwt", "id_token", "session_token"]:
-                        if key in resp_data and isinstance(resp_data[key], str):
-                            extracted_token = resp_data[key]
-                            logger.info(f"[execute_requests] Successfully sniffed and cached token from {path} response.")
-                            break
-                
-                artifact = ExecutionArtifact(
-                    artifact_id=str(uuid.uuid4()),
-                    step_id=step.step_id,
-                    route_id=step.route_id,
-                    method=method,
-                    url=url,
-                    request_headers={"Authorization": "***REDACTED***"} if extracted_token else {},
-                    request_body=step.parameters,
-                    status_code=response.status_code,
-                    response_body=resp_data,
-                    duration_ms=int(response.elapsed.total_seconds() * 1000),
-                    redacted=verdict.action == PolicyAction.REDACT if verdict else False,
-                    error=None,
-                )
-            except Exception as e:
-                artifact = ExecutionArtifact(
-                    artifact_id=str(uuid.uuid4()),
-                    step_id=step.step_id,
-                    route_id=step.route_id,
-                    method=method,
-                    url=url,
-                    request_headers={},
-                    request_body=step.parameters,
-                    status_code=0,
-                    response_body={},
-                    duration_ms=0,
-                    redacted=False,
-                    error=str(e),
-                )
-
-            artifacts.append(artifact)
+    artifacts = await ExecutionService(
+        base_url=base_url,
+        trace_id=state.get("trace_id"),
+        emitter=get_runtime_emitter(),
+    ).execute_plan(plan, verdicts)
 
     return {
         "execution_artifacts": artifacts,
@@ -511,27 +358,15 @@ async def execute_requests_node(state: GraphState) -> dict[str, Any]:
     }
 
 
-# ==================== 总结节点 ====================
-
-SUMMARY_PROMPT = """
-你是一个结果总结助手。根据执行结果，生成用户友好的总结。
-
-用户原始请求: {user_message}
-
-执行结果:
-{results}
-
-请输出 JSON 格式:
-{{
-    "summary_text": "总结文本，用自然语言描述执行结果",
-    "key_findings": ["关键发现1", "关键发现2"]
-}}
-"""
-
-
 async def summarize_node(state: GraphState) -> dict[str, Any]:
     """生成执行总结"""
     artifacts = state.get("execution_artifacts", [])
+    emit_runtime_event(
+        "task_progress",
+        node_name="summarize",
+        progress=0.9,
+        message="正在整理执行结果并生成总结",
+    )
 
     if not artifacts:
         return {
@@ -576,6 +411,12 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
 async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
     """生成 UI Block"""
     ui_blocks: list[dict[str, Any]] = []
+    emit_runtime_event(
+        "task_progress",
+        node_name="emit_blocks",
+        progress=0.98,
+        message="正在组织前端展示结构",
+    )
 
     # 添加总结文本块
     if state.get("summary_text"):
@@ -607,3 +448,185 @@ async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
         "ui_blocks": ui_blocks,
         "current_node": "emit_blocks",
     }
+
+
+# ==================== 请求分类节点（Fast Path 入口）====================
+
+async def classify_request_node(state: GraphState) -> dict[str, Any]:
+    """
+    轻量分类节点：一次短 LLM 调用判断请求复杂度。
+    分类结果决定走简单流(simple)还是完整流(complex)。
+    """
+    from pydantic import BaseModel as _BaseModel
+
+    class ClassifyResult(_BaseModel):
+        complexity: str
+        reasoning: str | None = None
+
+    emit_runtime_event(
+        "task_progress",
+        node_name="classify_request",
+        progress=0.05,
+        message="正在分析请求类型",
+    )
+
+    try:
+        result = await llm_client.parse_json_response(
+            [
+                {
+                    "role": "user",
+                    "content": CLASSIFY_PROMPT.format(user_message=state["user_message"]),
+                }
+            ],
+            ClassifyResult,
+            temperature=0.1,
+        )
+        complexity = result.complexity if result.complexity in ("direct", "simple", "complex") else "complex"
+        logger.info(f"[classify_request] 分类结果: {complexity} | 原因: {result.reasoning}")
+        return {"request_complexity": complexity, "current_node": "classify_request"}
+    except Exception as e:
+        logger.warning(f"[classify_request] 分类失败，降级为 complex: {e}")
+        return {"request_complexity": "complex", "current_node": "classify_request"}
+
+
+# ==================== 简单流执行节点 ====================
+
+async def simple_execute_node(state: GraphState) -> dict[str, Any]:
+    """
+    简单流核心节点：将接口摘要注入上下文，AI 直接选接口并构造调用参数。
+    跳过：select_capabilities → draft_plan → policy_check → approval_gate
+    """
+    from pydantic import BaseModel as _BaseModel
+
+    class SimpleExecuteResult(_BaseModel):
+        route_id: str | None = None
+        capability_id: str | None = None
+        parameters: dict[str, Any] = {}
+        reasoning: str | None = None
+
+    emit_runtime_event(
+        "task_progress",
+        node_name="simple_execute",
+        progress=0.2,
+        message="快速匹配接口中",
+    )
+
+    available_capabilities = state.get("available_capabilities", [])
+    if not available_capabilities:
+        return {
+            "error": "没有可用的接口能力，请先完成项目建图",
+            "current_node": "simple_execute",
+        }
+
+    # 只注入 capability_id、route_id 和 summary（极简上下文）
+    cap_list_lines = []
+    for cap in available_capabilities[:80]:
+        cap_id = cap.get("capability_id", "")
+        route_id = ""
+        routes = cap.get("backed_by_routes", [])
+        if routes and isinstance(routes, list) and len(routes) > 0:
+            first_route = routes[0]
+            if isinstance(first_route, dict):
+                route_id = first_route.get("route_id", "")
+        summary = cap.get("summary") or cap.get("name") or cap.get("description", "")[:30]
+        cap_list_lines.append(f"- {cap_id} ({route_id}): {summary}")
+
+    capability_list = "\n".join(cap_list_lines)
+
+    try:
+        result = await llm_client.parse_json_response(
+            [
+                {
+                    "role": "user",
+                    "content": SIMPLE_EXECUTE_PROMPT.format(
+                        user_message=state["user_message"],
+                        capability_list=capability_list,
+                    ),
+                }
+            ],
+            SimpleExecuteResult,
+            temperature=0.2,
+        )
+
+        if not result.route_id:
+            # 没找到合适接口，退化为文字回答
+            fallback_msg = result.reasoning or "对不起，我在现有接口中没有找到能完成您需求的能力。"
+            return {
+                "summary_text": fallback_msg,
+                "ui_blocks": [{"block_type": "text_block", "content": fallback_msg, "format": "plain"}],
+                "current_node": "simple_execute",
+            }
+
+        emit_runtime_event(
+            "task_progress",
+            node_name="simple_execute",
+            progress=0.5,
+            message=f"正在调用接口 {result.route_id}",
+        )
+
+        # 构造单步任务计划，复用 ExecutionService
+        from app.schemas.task import TaskPlan, TaskStep
+        plan = TaskPlan(
+            plan_id=str(uuid.uuid4()),
+            description=f"简单流: {result.reasoning}",
+            steps=[
+                TaskStep(
+                    step_id=str(uuid.uuid4()),
+                    order=1,
+                    capability_id=result.capability_id or "",
+                    route_id=result.route_id,
+                    action=state["user_message"],
+                    parameters=result.parameters,
+                    safety_level="readonly_safe",
+                    requires_confirmation=False,
+                )
+            ],
+        )
+
+        base_url = state.get("project_base_url", "http://localhost:8000").rstrip("/")
+        artifacts = await ExecutionService(
+            base_url=base_url,
+            trace_id=state.get("trace_id"),
+            emitter=get_runtime_emitter(),
+        ).execute_plan(plan, [])
+
+        emit_runtime_event(
+            "task_progress",
+            node_name="simple_execute",
+            progress=0.85,
+            message="正在生成回答",
+        )
+
+        # 生成总结
+        results_json = json.dumps(
+            [a.model_dump() for a in artifacts],
+            ensure_ascii=False,
+            indent=2,
+        )
+        summary_text = "执行完成"
+        try:
+            summary_result = await llm_client.parse_json_response(
+                [{"role": "user", "content": SUMMARY_PROMPT.format(
+                    user_message=state["user_message"],
+                    results=results_json,
+                )}],
+                SummaryResult,
+                temperature=0.5,
+            )
+            summary_text = summary_result.summary_text
+        except Exception:
+            pass
+
+        return {
+            "execution_artifacts": artifacts,
+            "summary_text": summary_text,
+            "ui_blocks": [{"block_type": "text_block", "content": summary_text, "format": "plain"}],
+            "current_node": "simple_execute",
+        }
+
+    except Exception as e:
+        logger.error(f"[simple_execute] 失败: {e}", exc_info=True)
+        return {
+            "error": f"简单流执行失败: {str(e)}",
+            "current_node": "simple_execute",
+        }

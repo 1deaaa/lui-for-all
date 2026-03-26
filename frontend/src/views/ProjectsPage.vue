@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 
 const projectStore = useProjectStore()
+const router = useRouter()
+let pollingTimer: number | null = null
 
 // 导入表单
 const importForm = ref({
   name: '',
-  base_url: '',
+  base_url: 'http://localhost:',
   openapi_url: '',
   description: '',
+  source_path: '',
   username: '',
   password: '',
 })
@@ -24,9 +28,10 @@ const connectionStatus = ref<'untested' | 'success' | 'warning' | 'error'>('unte
 function openImportDialog() {
   importForm.value = {
     name: '',
-    base_url: '',
+    base_url: 'http://localhost:',
     openapi_url: '',
     description: '',
+    source_path: '',
     username: '',
     password: '',
   }
@@ -38,7 +43,7 @@ function openImportDialog() {
 async function testConnection() {
   if (!importForm.value.base_url) {
     ElMessage.warning('请先填写 API 地址')
-    return
+    return false
   }
   
   testConnectionLoading.value = true
@@ -56,14 +61,18 @@ async function testConnection() {
     if (!response.ok) {
       ElMessage.error(data.detail || '连接失败')
       connectionStatus.value = 'error'
+      return false
     } else {
       connectionStatus.value = data.status === 'success' ? 'success' : 'warning'
-      if (data.status === 'success') ElMessage.success(data.message)
-      else ElMessage.warning(data.message)
+      if (data.status === 'warning') {
+        ElMessage.warning(data.message)
+      }
+      return true
     }
   } catch (error) {
     connectionStatus.value = 'error'
     ElMessage.error('测试请求发出失败，请检查浏览器代理或网络')
+    return false
   } finally {
     testConnectionLoading.value = false
   }
@@ -71,20 +80,25 @@ async function testConnection() {
 
 // 提交导入
 async function submitImport() {
-  if (!importForm.value.name || !importForm.value.base_url) {
-    ElMessage.warning('项目名称和 API 地址为必填项')
+  // 清洗源码路径，去掉两侧引号
+  if (importForm.value.source_path) {
+    importForm.value.source_path = importForm.value.source_path.replace(/^["']|["']$/g, '').trim()
+  }
+
+  if (!importForm.value.name || !importForm.value.base_url || !importForm.value.source_path) {
+    ElMessage.warning('项目名称、API 地址和本地源码路径均为必填项')
     return
   }
 
-  if (connectionStatus.value === 'untested' || connectionStatus.value === 'error') {
-    ElMessage.error('请先点击「测试连通性」通过校验后再导入')
-    return
-  }
+  // 自动测试连通性
+  const isConnected = await testConnection()
+  if (!isConnected) return
 
   importLoading.value = true
   try {
     await projectStore.importProject(importForm.value)
     importDialogVisible.value = false
+    ElMessage.success('项目导入成功')
   } catch (error) {
     console.error('导入失败:', error)
   } finally {
@@ -100,21 +114,58 @@ async function triggerDiscovery(projectId: string) {
   try {
     project.discovery_status = 'in_progress'
     await projectStore.triggerDiscovery(projectId)
-    // 发现成功后更新列表
-    await projectStore.fetchProjects()
-    ElMessage.success('项目发现已完成')
+    ElMessage.success('项目发现任务已启动')
   } catch (error: any) {
     project.discovery_status = 'failed'
     ElMessage.error('发现失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
   }
 }
 
-// 进入项目聊天
-function enterProject(projectId: string) {
-  if (typeof window !== 'undefined') {
-    window.location.href = `/#/chat?project=${projectId}`
+async function removeProject(projectId: string) {
+  try {
+    await projectStore.deleteProject(projectId)
+    ElMessage.success('项目已删除')
+  } catch (error: any) {
+    ElMessage.error('删除失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
   }
 }
+
+// 进入项目聊天
+function enterProject(projectId: string) {
+  router.push({ path: '/', query: { project: projectId } })
+}
+
+async function refreshProjects() {
+  await projectStore.fetchProjects()
+}
+
+function startPolling() {
+  if (pollingTimer !== null) return
+  pollingTimer = window.setInterval(async () => {
+    await refreshProjects()
+    if (!projectStore.projects.some((p) => p.discovery_status === 'in_progress')) {
+      stopPolling()
+    }
+  }, 2000)
+}
+
+function stopPolling() {
+  if (pollingTimer !== null) {
+    window.clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+onMounted(async () => {
+  await refreshProjects()
+  if (projectStore.projects.some((p) => p.discovery_status === 'in_progress')) {
+    startPolling()
+  }
+})
+
+onUnmounted(() => {
+  stopPolling()
+})
 
 // 获取状态标签类型
 function getStatusType(status: string): string {
@@ -189,8 +240,8 @@ function getStatusText(status: string): string {
           </p>
           <!-- 发现进度条 -->
           <div v-if="project.discovery_status === 'in_progress'" class="discovery-progress">
-            <el-progress :percentage="100" status="striped" :striped="true" :striped-flow="true" :duration="8" :stroke-width="6" />
-            <span class="progress-hint">AI 正在建模、请稍候...</span>
+            <el-progress :percentage="project.discovery_progress || 0" :stroke-width="8" />
+            <span class="progress-hint">{{ project.discovery_message || 'AI 正在建模、请稍候...' }}</span>
           </div>
           <div v-if="project.discovery_status === 'failed' && project.discovery_error" class="error-hint">
             <el-icon style="color: var(--el-color-danger)"><WarningFilled /></el-icon>
@@ -211,7 +262,7 @@ function getStatusText(status: string): string {
           <el-button
             size="small"
             :type="project.discovery_status === 'failed' ? 'danger' : 'default'"
-            @click.stop="triggerDiscovery(project.id)"
+            @click.stop="triggerDiscovery(project.id); startPolling()"
             :loading="project.discovery_status === 'in_progress'"
             :disabled="project.discovery_status === 'completed' || project.discovery_status === 'in_progress'"
           >
@@ -224,6 +275,14 @@ function getStatusText(status: string): string {
             <template v-else>
               {{ project.discovery_status === 'failed' ? '重试发现' : '开始发现' }}
             </template>
+          </el-button>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            @click.stop="removeProject(project.id)"
+          >
+            删除
           </el-button>
         </div>
       </el-card>
@@ -249,6 +308,9 @@ function getStatusText(status: string): string {
         </el-form-item>
         <el-form-item label="OpenAPI 地址">
           <el-input v-model="importForm.openapi_url" placeholder="/openapi.json" />
+        </el-form-item>
+        <el-form-item label="源码路径" required>
+          <el-input v-model="importForm.source_path" placeholder="例如：D:\Projects\my-backend" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input
@@ -278,17 +340,9 @@ function getStatusText(status: string): string {
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
         <el-button
-          type="info"
-          @click="testConnection"
-          :loading="testConnectionLoading"
-        >
-          {{ connectionStatus === 'success' ? '验证通过' : (connectionStatus === 'warning' ? '存在拦截但也通过' : '测试连通性') }}
-        </el-button>
-        <el-button
           type="primary"
           @click="submitImport"
-          :loading="importLoading"
-          :disabled="connectionStatus === 'untested' || connectionStatus === 'error'"
+          :loading="importLoading || testConnectionLoading"
         >
           导入项目
         </el-button>

@@ -50,6 +50,7 @@ class ResponseSchema(BaseModel):
     content_type: str = Field(default="application/json", description="内容类型")
     schema_ref: str | None = Field(default=None, description="响应 Schema 引用")
     description: str | None = Field(default=None, description="响应描述")
+    is_streaming: bool = Field(default=False, description="是否为 SSE 流式响应 (text/event-stream)")
 
 
 class RouteInfo(BaseModel):
@@ -66,7 +67,15 @@ class RouteInfo(BaseModel):
         default_factory=list, description="参数列表"
     )
     request_body_ref: str | None = Field(default=None, description="请求体 Schema 引用")
+    request_body_fields: list[ParameterSchema] = Field(
+        default_factory=list,
+        description="请求体展开字段（从 Schema 解析出的具体字段列表，POST/PUT/PATCH 时有值）",
+    )
     responses: list[ResponseSchema] = Field(default_factory=list, description="响应列表")
+    response_is_streaming: bool = Field(
+        default=False,
+        description="是否包含 SSE 流式响应（任意 200 响应的 content_type 为 text/event-stream）",
+    )
     deprecated: bool = Field(default=False, description="是否已废弃")
     security: list[dict[str, list[str]]] = Field(
         default_factory=list, description="安全要求"

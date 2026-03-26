@@ -90,15 +90,35 @@ export const useProjectStore = defineStore('project', () => {
   // 触发项目发现
   async function triggerDiscovery(projectId: string) {
     try {
-      await axios.post(`/api/projects/${projectId}/discover`)
+      const response = await axios.post(`/api/projects/${projectId}/discover`)
       // 更新本地状态
       const project = projects.value.find((p) => p.id === projectId)
       if (project) {
         project.discovery_status = 'in_progress'
+        project.discovery_progress = response.data.progress ?? 0
+        project.discovery_message = response.data.message ?? '项目建图已启动'
       }
     } catch (e: any) {
       console.error('触发发现失败:', e)
       throw e
+    }
+  }
+
+  async function deleteProject(projectId: string) {
+    loading.value = true
+    error.value = null
+    try {
+      await axios.delete(`/api/projects/${projectId}`)
+      projects.value = projects.value.filter((p) => p.id !== projectId)
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = null
+      }
+    } catch (e: any) {
+      error.value = e.message || '删除项目失败'
+      console.error('删除项目失败:', e)
+      throw e
+    } finally {
+      loading.value = false
     }
   }
 
@@ -115,5 +135,6 @@ export const useProjectStore = defineStore('project', () => {
     fetchProject,
     importProject,
     triggerDiscovery,
+    deleteProject,
   }
 })

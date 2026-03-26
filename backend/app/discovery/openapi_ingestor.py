@@ -70,21 +70,62 @@ class OpenAPIIngestor:
             example=param.get("example"),
         )
 
+    def _expand_schema_fields(
+        self, schema_name: str, schemas: dict[str, Any]
+    ) -> list[ParameterSchema]:
+        """将 Schema 引用展开为具体字段列表"""
+        schema_def = schemas.get(schema_name, {})
+        properties = schema_def.get("properties", {})
+        required_fields = set(schema_def.get("required", []))
+        fields: list[ParameterSchema] = []
+
+        for field_name, field_def in properties.items():
+            raw_type = field_def.get("type", "string")
+            # 类型映射
+            type_map = {
+                "integer": "int", "number": "float",
+                "boolean": "bool", "array": "list", "object": "dict",
+            }
+            type_hint = type_map.get(raw_type, "str")
+
+            # 处理 anyOf / $ref
+            if not raw_type and "anyOf" in field_def:
+                ref_types = [t.get("type", "") for t in field_def["anyOf"]]
+                type_hint = next((type_map.get(t, "str") for t in ref_types if t), "str")
+
+            fields.append(
+                ParameterSchema(
+                    name=field_name,
+                    location=ParameterLocation.BODY,
+                    required=field_name in required_fields,
+                    type_hint=type_hint,
+                    description=field_def.get("description"),
+                    default=field_def.get("default"),
+                    example=field_def.get("example"),
+                )
+            )
+
+        return fields
+
     def parse_request_body(
         self, request_body: dict[str, Any], schemas: dict[str, Any]
-    ) -> str | None:
-        """解析请求体引用"""
+    ) -> tuple[str | None, list[ParameterSchema]]:
+        """解析请求体：返回 (schema_ref_name, 展开字段列表)"""
         content = request_body.get("content", {})
         for content_type, content_schema in content.items():
             if content_type.startswith("application/json"):
                 ref = content_schema.get("schema", {}).get("$ref", "")
                 if ref:
-                    return ref.split("/")[-1]
-        return None
+                    schema_name = ref.split("/")[-1]
+                    expanded = self._expand_schema_fields(schema_name, schemas)
+                    return schema_name, expanded
+        return None, []
 
-    def parse_responses(self, responses: dict[str, Any]) -> list[ResponseSchema]:
-        """解析响应定义"""
+    def parse_responses(self, responses: dict[str, Any]) -> tuple[list[ResponseSchema], bool]:
+        """解析响应定义，同时检测是否有 SSE 流式响应"""
         result = []
+        has_streaming = False
+
         for status_code, response in responses.items():
             try:
                 code = int(status_code)
@@ -93,11 +134,15 @@ class OpenAPIIngestor:
 
             content_type = "application/json"
             schema_ref = None
+            is_streaming = False
 
             content = response.get("content", {})
             for ct, cs in content.items():
                 content_type = ct
-                if ct.startswith("application/json"):
+                if ct == "text/event-stream":
+                    is_streaming = True
+                    has_streaming = True
+                elif ct.startswith("application/json"):
                     schema_ref = cs.get("schema", {}).get("$ref", "")
                     if schema_ref:
                         schema_ref = schema_ref.split("/")[-1]
@@ -109,9 +154,10 @@ class OpenAPIIngestor:
                     content_type=content_type,
                     schema_ref=schema_ref,
                     description=response.get("description"),
+                    is_streaming=is_streaming,
                 )
             )
-        return result
+        return result, has_streaming
 
     def parse_route(
         self,
@@ -119,25 +165,24 @@ class OpenAPIIngestor:
         method: str,
         operation: dict[str, Any],
         path_params: list[dict[str, Any]],
+        schemas: dict[str, Any],
     ) -> RouteInfo:
         """解析单个路由"""
         # 合并路径参数和操作参数
         all_params = path_params + operation.get("parameters", [])
-
-        # 解析参数
         parameters = [self.parse_parameter(p) for p in all_params]
 
-        # 解析请求体
+        # 解析请求体（含字段展开）
         request_body_ref = None
+        request_body_fields: list = []
         if "requestBody" in operation:
-            request_body_ref = self.parse_request_body(
-                operation["requestBody"], {}
+            request_body_ref, request_body_fields = self.parse_request_body(
+                operation["requestBody"], schemas
             )
 
-        # 解析响应
-        responses = self.parse_responses(operation.get("responses", {}))
+        # 解析响应（含 SSE 检测）
+        responses, response_is_streaming = self.parse_responses(operation.get("responses", {}))
 
-        # 解析安全要求
         security = operation.get("security", [])
 
         return RouteInfo(
@@ -150,7 +195,9 @@ class OpenAPIIngestor:
             tags=operation.get("tags", []),
             parameters=parameters,
             request_body_ref=request_body_ref,
+            request_body_fields=request_body_fields,
             responses=responses,
+            response_is_streaming=response_is_streaming,
             deprecated=operation.get("deprecated", False),
             security=security,
         )
@@ -174,7 +221,7 @@ class OpenAPIIngestor:
             for method in ["get", "post", "put", "delete", "patch", "head", "options"]:
                 if method in path_item:
                     route = self.parse_route(
-                        path, method, path_item[method], path_params
+                        path, method, path_item[method], path_params, schemas
                     )
                     routes.append(route)
 
