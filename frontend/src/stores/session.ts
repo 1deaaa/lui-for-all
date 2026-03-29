@@ -22,6 +22,8 @@ export const useSessionStore = defineStore('session', () => {
   const progressPercent = ref(0)
   const progressMessage = ref('')
   const runtimeEvents = ref<RuntimeEventItem[]>([])
+  const streamingMessageId = ref<string | null>(null)  // 正文消息 ID
+  const streamingThoughtId = ref<string | null>(null)   // 推理消息 ID
 
   const messageCount = computed(() => messages.value.length)
 
@@ -113,25 +115,40 @@ export const useSessionStore = defineStore('session', () => {
     progressPercent.value = 0
     progressMessage.value = 'AI 已接收请求，正在启动执行链路'
     runtimeEvents.value = []
+    // 重置流式消息 ID
+    streamingMessageId.value = null
+    streamingThoughtId.value = null
 
     const register = (eventName: string) => {
       eventSource.value?.addEventListener(eventName, (rawEvent) => {
         const event = rawEvent as MessageEvent
+        // Native SSE connection error gives no .data
+        if (event.data === undefined || event.data === null) return
+        
+        // If the backend literally sent `data: undefined` for some reason
+        if (event.data === 'undefined') {
+          console.warn(`[Diagnostics] Received exact string 'undefined' for event ${eventName}. rawEvent:`, rawEvent)
+          return
+        }
+
         try {
           const data = JSON.parse(event.data)
           handleSSEEvent({ event: eventName, ...data })
         } catch (e) {
-          console.error(`解析 SSE 事件失败 [${eventName}]:`, e)
+          console.error(`解析 SSE 事件失败 [${eventName}]: raw data was:`, event.data, e)
         }
       })
     }
 
     eventSource.value.onmessage = (event) => {
+      if (event.data === undefined || event.data === null) return
+      if (event.data === 'undefined') return
+      
       try {
         const data: SSEEvent = JSON.parse(event.data)
         handleSSEEvent(data)
       } catch (e) {
-        console.error('解析 SSE 事件失败:', e)
+        console.error('解析 SSE 事件失败:', event.data, e)
       }
     }
 
@@ -143,13 +160,23 @@ export const useSessionStore = defineStore('session', () => {
       'tool_started',
       'tool_completed',
       'ui_block_emitted',
+      'token_emitted',
+      'thought_emitted',
+      'approval_required',
       'task_completed',
       'error',
     ].forEach(register)
 
     eventSource.value.onerror = (e) => {
       console.error('SSE 连接错误:', e)
-      error.value = error.value || 'SSE 连接中断'
+      
+      // 检查是否是因为审批中断导致的正常关闭
+      const isExpectedPause = uiBlocks.value.some(b => b.block_type === 'confirm_panel')
+      
+      if (!isExpectedPause && !error.value) {
+        error.value = 'SSE 连接中断，请检查后端服务'
+      }
+
       if (eventSource.value) {
         eventSource.value.close()
         eventSource.value = null
@@ -165,6 +192,48 @@ export const useSessionStore = defineStore('session', () => {
           ? { ...currentTaskRun.value, status: 'running' }
           : currentTaskRun.value
         progressMessage.value = '任务开始执行'
+        streamingMessageId.value = null
+        break
+
+      case 'token_emitted':
+        // 正文内容，使用独立的 streamingMessageId
+        if (!streamingMessageId.value) {
+          const newId = `assistant-${Date.now()}`
+          messages.value.push({
+            id: newId,
+            role: 'assistant',
+            content: event.token || '',
+            task_run_id: event.task_run_id,
+            created_at: new Date().toISOString(),
+          })
+          streamingMessageId.value = newId
+        } else {
+          const msg = messages.value.find((m) => m.id === streamingMessageId.value)
+          if (msg) {
+            msg.content += event.token || ''
+          }
+        }
+        break
+
+      case 'thought_emitted':
+        // 推理内容，使用独立的 streamingThoughtId
+        if (!streamingThoughtId.value) {
+          const newId = `assistant-thought-${Date.now()}`
+          messages.value.push({
+            id: newId,
+            role: 'assistant',
+            content: '',
+            thought: event.token || '',
+            task_run_id: event.task_run_id,
+            created_at: new Date().toISOString(),
+          })
+          streamingThoughtId.value = newId
+        } else {
+          const msg = messages.value.find((m) => m.id === streamingThoughtId.value)
+          if (msg) {
+            msg.thought = (msg.thought || '') + (event.token || '')
+          }
+        }
         break
 
       case 'task_progress':
@@ -215,13 +284,19 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'task_completed':
         if (event.summary) {
-          messages.value.push({
-            id: `assistant-${Date.now()}`,
-            role: 'assistant',
-            content: event.summary,
-            task_run_id: event.task_run_id,
-            created_at: new Date().toISOString(),
-          })
+          if (streamingMessageId.value) {
+            // 已有流式正文消息：不覆盖，保留已输出的内容（避免重复）
+            // 仅将 summary_text 存到 currentTaskRun，不再 push 新消息
+          } else if (!streamingMessageId.value && !streamingThoughtId.value) {
+            // 没有任何流式输出时，才 push、为常规非流式路径准备
+            messages.value.push({
+              id: `assistant-${Date.now()}`,
+              role: 'assistant',
+              content: event.summary,
+              task_run_id: event.task_run_id,
+              created_at: new Date().toISOString(),
+            })
+          }
         }
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'completed', summary_text: event.summary }
@@ -229,6 +304,8 @@ export const useSessionStore = defineStore('session', () => {
         progressPercent.value = 100
         progressMessage.value = '任务已完成'
         isStreaming.value = false
+        streamingMessageId.value = null
+        streamingThoughtId.value = null
         closeEventStream()
         break
 
@@ -238,7 +315,22 @@ export const useSessionStore = defineStore('session', () => {
         }
         break
 
+      case 'approval_required':
+        uiBlocks.value.push({
+          block_type: 'confirm_panel', // 使用已有的类型或新增
+          approval_id: (event as any).approval_id,
+          title: (event as any).title || '操作需要确认',
+          description: (event as any).description || '此操作涉及敏感权限，请核实后批准。',
+          risk_level: (event as any).risk_level || 'warning',
+          timeout_seconds: (event as any).timeout_seconds || 300
+        })
+        break
+
       case 'error':
+        if ((event as any).error_code === 'APPROVAL_REQUIRED') {
+            // 已通过 ui_block 处理，此处不再设为全局错误
+            break
+        }
         error.value = event.error_message || '发生未知错误'
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'failed', error: error.value || undefined }

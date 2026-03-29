@@ -53,8 +53,12 @@ async def parse_intent_node(state: GraphState) -> dict[str, Any]:
             progress=0.08,
             message="正在解析用户意图",
         )
-        # 调用 LLM 解析意图
-        result = await llm_client.parse_json_response(
+        # on_token: 正文 token -> 发射到云端（丢弃：JSON 内容不需要展示）
+        # on_reasoning: 推理内容 -> thought_emitted
+        async def on_reasoning(token: str):
+            emit_runtime_event("thought_emitted", token=token)
+
+        result = await llm_client.stream_parse_json_response(
             [
                 {
                     "role": "user",
@@ -65,6 +69,7 @@ async def parse_intent_node(state: GraphState) -> dict[str, Any]:
                 }
             ],
             IntentParseResult,
+            on_reasoning=on_reasoning,
             temperature=0.3,
         )
         
@@ -116,7 +121,11 @@ async def select_capabilities_node(state: GraphState) -> dict[str, Any]:
         logger.info(f"[select_capabilities] Calling LLM with {len(cap_summaries)} capabilities")
         logger.info(f"[select_capabilities] Intent: {state.get('normalized_intent') or state['user_message']}")
 
-        result = await llm_client.parse_json_response(
+        # on_reasoning: 推理内容 -> thought_emitted
+        async def on_reasoning_cap(token: str):
+            emit_runtime_event("thought_emitted", token=token)
+
+        result = await llm_client.stream_parse_json_response(
             [
                 {
                     "role": "user",
@@ -127,6 +136,7 @@ async def select_capabilities_node(state: GraphState) -> dict[str, Any]:
                 }
             ],
             CapabilitySelectionResult,
+            on_reasoning=on_reasoning_cap,
             temperature=0.3,
         )
         
@@ -148,12 +158,22 @@ async def select_capabilities_node(state: GraphState) -> dict[str, Any]:
             )
             
             if original_cap:
+                # 鲁棒性处理：确保 safety_level 是合法的 Enum 值
+                raw_safety = original_cap.get("safety_level", "readonly_safe")
+                valid_safety_levels = ["readonly_safe", "readonly_sensitive", "soft_write", "hard_write", "critical"]
+                if raw_safety not in valid_safety_levels:
+                    # 如果原值非法（如 'low'），则根据 data_sensitivity 降级尝试
+                    if original_cap.get("data_sensitivity") == "high":
+                        raw_safety = "readonly_sensitive"
+                    else:
+                        raw_safety = "readonly_safe"
+
                 cap = Capability(
                     capability_id=original_cap.get("capability_id", str(uuid.uuid4())),
                     name=original_cap.get("name", ""),
                     description=original_cap.get("description", ""),
                     domain=original_cap.get("domain", "unknown"),
-                    safety_level=original_cap.get("safety_level", "readonly_safe"),
+                    safety_level=raw_safety,
                     backed_by_routes=original_cap.get("backed_by_routes", []),
                     user_intent_examples=original_cap.get("user_intent_examples", []),
                     required_permission_level=original_cap.get("permission_level", "authenticated"),
@@ -203,7 +223,11 @@ async def draft_plan_node(state: GraphState) -> dict[str, Any]:
             indent=2,
         )
 
-        result = await llm_client.parse_json_response(
+        # on_reasoning: 推理内容 -> thought_emitted
+        async def on_reasoning_plan(token: str):
+            emit_runtime_event("thought_emitted", token=token)
+
+        result = await llm_client.stream_parse_json_response(
             [
                 {
                     "role": "user",
@@ -216,6 +240,7 @@ async def draft_plan_node(state: GraphState) -> dict[str, Any]:
                 }
             ],
             TaskPlanResult,
+            on_reasoning=on_reasoning_plan,
             temperature=0.3,
         )
 
@@ -382,7 +407,9 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
             indent=2,
         )
 
-        result = await llm_client.parse_json_response(
+        full_summary = ""
+        # 使用流式接口生成总结
+        async for chunk_type, token in llm_client.stream_chat_completion(
             [
                 {
                     "role": "user",
@@ -392,15 +419,22 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
                     ),
                 }
             ],
-            SummaryResult,
             temperature=0.5,
-        )
+        ):
+            if chunk_type == "reasoning":
+                # 总结节点的推理过程通过 thought_emitted 展示
+                emit_runtime_event("thought_emitted", token=token)
+            else:
+                full_summary += token
+                # 实时发射 Token
+                emit_runtime_event("token_emitted", token=token)
 
         return {
-            "summary_text": result.summary_text,
+            "summary_text": full_summary,
             "current_node": "summarize",
         }
     except Exception as e:
+        logger.error(f"[summarize] 失败: {e}", exc_info=True)
         return {
             "summary_text": f"执行完成，但总结生成失败: {str(e)}",
             "current_node": "summarize",
@@ -484,7 +518,11 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
     capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
 
     try:
-        result = await llm_client.parse_json_response(
+        # 调用 LLM 进行初步路由决策 (流式)
+        async def on_token(token: str):
+            emit_runtime_event("thought_emitted", token=token)
+
+        result = await llm_client.stream_parse_json_response(
             [
                 {
                     "role": "user",
@@ -495,10 +533,19 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
                 }
             ],
             AgentDecision,
+            on_token=on_token,
             temperature=0.2, 
         )
         
         strategy = result.strategy if result.strategy in ("direct", "simple", "complex") else "complex"
+        
+        # 测试钩子：强制流式输出测试
+        print(f"DEBUG: user_message='{state.get('user_message')}'")
+        if "STREAM_TEST" in state.get("user_message", ""):
+            print("DEBUG: STREAM_TEST detected! Forcing strategy to direct")
+            strategy = "direct"
+            
+        print(f"DEBUG: final strategy is {strategy}")
         logger.info(f"[agent_entry] 决策策略: {strategy} | 原因: {result.reasoning}")
 
         state_update: dict[str, Any] = {
@@ -506,22 +553,65 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
             "current_node": "agent_entry"
         }
 
-        # 如果它是 direct，直接设置 summary_text 和 ui_blocks，图流完在此即止
-        if strategy == "direct" and result.reply_text:
-            state_update["summary_text"] = result.reply_text
-            state_update["ui_blocks"] = [{"block_type": "text_block", "content": result.reply_text, "format": "plain"}]
-            # 更新完毕发送进度
+        # 如果它是 direct，直接返回，交给后续的 direct_answer 节点流式处理
+        if strategy == "direct":
             emit_runtime_event(
                 "task_progress",
                 node_name="agent_entry",
-                progress=0.9,
-                message="已生成直接回复",
+                progress=0.15,
+                message="正在准备流式回答...",
             )
 
         return state_update
     except Exception as e:
         logger.warning(f"[agent_entry] 思考失败，降级为执行全流程: {e}")
         return {"request_complexity": "complex", "current_node": "agent_entry"}
+
+
+# ==================== 直接回答节点 (流式) ====================
+
+async def direct_answer_node(state: GraphState) -> dict[str, Any]:
+    """
+    直接回答节点：针对纯聊天或简单咨询，流式输出 Token 且实时广播。
+    """
+    emit_runtime_event(
+        "task_progress",
+        node_name="direct_answer",
+        progress=0.2,
+        message="正在生成回复...",
+    )
+
+    full_content = ""
+    try:
+        # 使用流式接口
+        async for chunk_type, token in llm_client.stream_simple_completion(
+            prompt=state["user_message"],
+            system_prompt=DIRECT_ANSWER_PROMPT,
+            temperature=0.7,
+        ):
+            if chunk_type == "reasoning":
+                # 推理内容通过 thought_emitted 展示
+                emit_runtime_event("thought_emitted", token=token)
+            else:
+                full_content += token
+                # 实时发射正文 Token
+                emit_runtime_event("token_emitted", token=token)
+
+        emit_runtime_event(
+            "task_progress",
+            node_name="direct_answer",
+            progress=0.9,
+            message="回复生成完毕",
+        )
+
+        return {
+            "summary_text": full_content,
+            "ui_blocks": [{"block_type": "text_block", "content": full_content, "format": "plain"}],
+            "current_node": "direct_answer",
+        }
+    except Exception as e:
+        logger.error(f"[direct_answer] 失败: {e}", exc_info=True)
+        return {"error": f"直接回答生成失败: {str(e)}", "current_node": "direct_answer"}
 
 
 # ==================== 直接回答节点 ====================

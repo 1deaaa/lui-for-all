@@ -8,7 +8,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import AuditService
@@ -145,6 +145,8 @@ async def stream_events(
             ToolCompletedEvent,
             ToolStartedEvent,
             UIBlockEmittedEvent,
+            TokenEmittedEvent,
+            ThoughtEmittedEvent,
         )
 
         task_run_data = None
@@ -247,6 +249,7 @@ async def stream_events(
                 "summarize": 0.93,
                 "emit_blocks": 1.0,
                 "simple_execute": 1.0,
+                "direct_answer": 1.0,
             }
             final_state = dict(initial_state)
 
@@ -262,6 +265,7 @@ async def stream_events(
                 config,
                 stream_mode=["custom", "updates"],
             ):
+                print(f"DEBUG: SSE loop type={stream_type}")
                 if stream_type == "custom":
                     event_type = payload.get("event")
                     if event_type == "task_progress":
@@ -284,6 +288,22 @@ async def stream_events(
                                 detail=payload.get("detail"),
                                 step_id=payload.get("step_id"),
                                 route_id=payload.get("route_id"),
+                            )
+                        )
+                    elif event_type == "token_emitted":
+                        yield format_sse_event(
+                            TokenEmittedEvent(
+                                session_id=session_id,
+                                task_run_id=task_run_id,
+                                token=payload.get("token", ""),
+                            )
+                        )
+                    elif event_type == "thought_emitted":
+                        yield format_sse_event(
+                            ThoughtEmittedEvent(
+                                session_id=session_id,
+                                task_run_id=task_run_id,
+                                token=payload.get("token", ""),
                             )
                         )
                     elif event_type == "tool_completed":
@@ -492,3 +512,46 @@ async def get_session(
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
     }
+
+
+class ApprovalActionRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+
+
+@router.post("/{session_id}/approvals/{approval_id}")
+async def handle_approval(
+    session_id: str,
+    approval_id: str,
+    request: ApprovalActionRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """处理人工审批"""
+    session_repository = SessionRepository(db)
+    session = await session_repository.get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 获取 thread_id
+    thread_id = session.thread_id or session_id
+    config = {"configurable": {"thread_id": thread_id}}
+
+    from app.graph.graph import graph_app
+    
+    # 获取当前状态
+    state = await graph_app.aget_state(config)
+    if not state.next:
+        raise HTTPException(status_code=400, detail="当前没有等待审批的任务")
+
+    # 更新状态以通过审批门
+    # 我们通过向图发送一个包含审批结果的更新来恢复执行
+    # 在 approval_gate_node 中，它会检查 state["approval_status"]
+    
+    status = "approved" if request.action == "approve" else "rejected"
+    
+    await graph_app.aupdate_state(
+        config,
+        {"approval_status": status},
+        as_node="approval_gate" # 模拟在该节点产生的更新
+    )
+    
+    return {"status": "success", "approval_status": status}

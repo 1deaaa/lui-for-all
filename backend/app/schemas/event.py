@@ -60,6 +60,10 @@ class EventType(str, Enum):
     # UI Block
     UI_BLOCK_EMITTED = "ui_block_emitted"
 
+    # Token 流式输出
+    TOKEN_EMITTED = "token_emitted"
+    THOUGHT_EMITTED = "thought_emitted"
+
     # 错误
     ERROR = "error"
 
@@ -159,6 +163,24 @@ class UIBlockEmittedEvent(BaseModel):
     block_data: dict[str, Any] = Field(description="Block 数据")
 
 
+class TokenEmittedEvent(BaseModel):
+    """Token 发射事件 (用于流式对话)"""
+
+    event: EventType = Field(default=EventType.TOKEN_EMITTED, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    token: str = Field(description="Token 内容")
+
+
+class ThoughtEmittedEvent(BaseModel):
+    """思考过程发射事件"""
+
+    event: EventType = Field(default=EventType.THOUGHT_EMITTED, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    token: str = Field(description="思考 Token 内容")
+
+
 class ApprovalRequiredEvent(BaseModel):
     """审批请求事件"""
 
@@ -185,7 +207,7 @@ class ErrorEvent(BaseModel):
 
 def format_sse_event(event: BaseModel) -> str:
     """格式化为 SSE 文本格式"""
-    event_dict = event.model_dump()
+    event_dict = event.model_dump(mode="json")
     event_type = event_dict.pop("event", "message")
     lines = [f"event: {event_type}"]
 

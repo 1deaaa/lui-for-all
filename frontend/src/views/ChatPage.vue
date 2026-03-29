@@ -178,7 +178,15 @@ watch(
             <span v-else>🤖</span>
           </div>
           <div class="message-bubble">
-            <div class="message-text">{{ msg.content }}</div>
+            <div v-if="msg.thought" class="message-thought">
+              <div class="thought-header">
+                <el-icon v-if="sessionStore.isStreaming && !msg.content" class="is-loading"><Loading /></el-icon>
+                <el-icon v-else><Monitor /></el-icon>
+                <span>AI 思考过程</span>
+              </div>
+              <div class="thought-content">{{ msg.thought }}</div>
+            </div>
+            <div v-if="msg.content" class="message-text">{{ msg.content }}</div>
           </div>
         </div>
 
@@ -533,6 +541,42 @@ watch(
 }
 
 .message-text { line-height: 1.65; }
+
+/* 思考过程样式 (Mental Model Block) */
+.message-thought {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #f8fafd 0%, #f1f5f9 100%);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: #475569;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.02);
+  position: relative;
+}
+
+.thought-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+  color: #64748b;
+  opacity: 0.9;
+}
+
+.thought-content {
+  white-space: pre-wrap;
+  font-family: 'Inter', 'Segoe UI', Tahoma, sans-serif;
+  line-height: 1.6;
+  font-style: italic;
+}
+
+.message-item.user .message-thought {
+  display: none; /* 用户消息不显示思考（通常没有） */
+}
 
 /* UI Blocks */
 .ui-blocks {

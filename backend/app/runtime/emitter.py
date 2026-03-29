@@ -69,6 +69,10 @@ class RuntimeEventEmitter:
             status_code=status_code,
         )
 
+    def token_emitted(self, token: str):
+        """发射 Token 事件"""
+        self.emit("token_emitted", token=token)
+
 
 runtime_emitter = RuntimeEventEmitter()
 

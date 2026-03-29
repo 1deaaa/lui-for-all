@@ -51,6 +51,15 @@ export function useEventStream() {
     const eventType = event.type || 'message'
     let data: any
     
+    // Guard against undefined or null data (e.g. from native browser error events)
+    if (event.data === undefined || event.data === null || event.data === 'undefined') {
+      return {
+        event: eventType,
+        data: null,
+        id: event.lastEventId,
+      }
+    }
+
     try {
       data = JSON.parse(event.data)
     } catch {

@@ -48,6 +48,7 @@ export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  thought?: string
   task_run_id?: string
   created_at: string
 }
@@ -79,4 +80,8 @@ export interface SSEEvent {
   session_id?: string
   task_run_id?: string
   [key: string]: any
+}
+
+export interface ThoughtEmittedEvent extends SSEEvent {
+  token: string
 }
