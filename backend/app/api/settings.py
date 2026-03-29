@@ -79,16 +79,9 @@ async def save_runtime_settings(payload: SettingsPayload):
 @router.post("/test-llm")
 async def test_llm_connection(payload: SettingsPayload):
     from app.llm.client import LLMClient
-    from app.llm.providers.openai_compatible import OpenAICompatibleProvider
     from fastapi import HTTPException
     
-    provider = OpenAICompatibleProvider(
-        api_base=payload.llm_api_base,
-        api_key=payload.llm_api_key,
-        model_id=payload.llm_model_id,
-        extra_body=payload.llm_extra_body
-    )
-    client = LLMClient(provider=provider)
+    client = LLMClient()
     
     try:
         content, _, _ = await client.chat_completion(

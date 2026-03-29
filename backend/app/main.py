@@ -80,11 +80,11 @@ async def lifespan(app: FastAPI):
 
     # 初始化 agent-matchbox LLM 网关
     try:
-        from app.llm.matchbox_client import get_llm_manager, MATCHBOX_AVAILABLE
-        if MATCHBOX_AVAILABLE:
-            get_llm_manager()  # 触发单例初始化
+        from app.llm.agent_matchbox import initialize_matchbox
+        initialize_matchbox(ensure_defaults=True)
+        logger.info("✅ agent-matchbox 初始化完成")
     except Exception as e:
-        logger.warning(f"⚠️ agent-matchbox 初始化失败 (将回退到 httpx Provider): {e}")
+        logger.warning(f"⚠️ agent-matchbox 初始化失败: {e}")
 
     yield
 

@@ -453,13 +453,8 @@ async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
         message="正在组织前端展示结构",
     )
 
-    # 添加总结文本块
-    if state.get("summary_text"):
-        ui_blocks.append({
-            "block_type": "text_block",
-            "content": state["summary_text"],
-            "format": "plain",
-        })
+    # 移除总结被硬编码为 ui_block 的逻辑，因为长文本已经被流式传入到普通聊天气泡中，避免重复
+
 
     # 添加执行时间线
     artifacts = state.get("execution_artifacts", [])
@@ -497,7 +492,6 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
 
     class AgentDecision(_BaseModel):
         strategy: str
-        reply_text: str | None = None
         reasoning: str | None = None
 
     emit_runtime_event(
@@ -519,7 +513,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
 
     try:
         # 调用 LLM 进行初步路由决策 (流式)
-        async def on_token(token: str):
+        async def on_reasoning(token: str):
             emit_runtime_event("thought_emitted", token=token)
 
         result = await llm_client.stream_parse_json_response(
@@ -533,7 +527,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
                 }
             ],
             AgentDecision,
-            on_token=on_token,
+            on_reasoning=on_reasoning,
             temperature=0.2, 
         )
         
@@ -606,7 +600,6 @@ async def direct_answer_node(state: GraphState) -> dict[str, Any]:
 
         return {
             "summary_text": full_content,
-            "ui_blocks": [{"block_type": "text_block", "content": full_content, "format": "plain"}],
             "current_node": "direct_answer",
         }
     except Exception as e:
@@ -680,7 +673,6 @@ async def simple_execute_node(state: GraphState) -> dict[str, Any]:
             fallback_msg = result.reasoning or "对不起，我在现有接口中没有找到能完成您需求的能力。"
             return {
                 "summary_text": fallback_msg,
-                "ui_blocks": [{"block_type": "text_block", "content": fallback_msg, "format": "plain"}],
                 "current_node": "simple_execute",
             }
 
@@ -747,7 +739,6 @@ async def simple_execute_node(state: GraphState) -> dict[str, Any]:
         return {
             "execution_artifacts": artifacts,
             "summary_text": summary_text,
-            "ui_blocks": [{"block_type": "text_block", "content": summary_text, "format": "plain"}],
             "current_node": "simple_execute",
         }
 
