@@ -488,123 +488,63 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
     1. 判断用户请求是否可直接解答（纯聊天、能力查询）。若是，生成答复并退出。
     2. 若需工具，下发简单(simple)或复杂(complex)的 API 处理任务往下走。
     """
-    from pydantic import BaseModel as _BaseModel
-
-    class AgentDecision(_BaseModel):
-        strategy: str
-        reasoning: str | None = None
-
-    emit_runtime_event(
-        "task_progress",
-        node_name="agent_entry",
-        progress=0.05,
-        message="智能体正在思考处理策略...",
-    )
-
-    available_capabilities = state.get("available_capabilities", [])
-    cap_list_lines = []
-    # 精简能力列表，避免太长导致大模型失焦
-    for cap in available_capabilities[:60]:
-        cap_id = cap.get("capability_id", "")
-        summary = cap.get("summary") or cap.get("name") or cap.get("description", "")[:40]
-        cap_list_lines.append(f"- 路由 ID {cap_id}: {summary}")
-
-    capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
-
     try:
-        # 调用 LLM 进行初步路由决策 (流式)
-        async def on_reasoning(token: str):
-            emit_runtime_event("thought_emitted", token=token)
+        full_content = ""
+        strategy = None
+        reply_content = ""
+        import re
+        strategy_pattern = re.compile(r"<strategy>(.*?)</strategy>")
 
-        result = await llm_client.stream_parse_json_response(
-            [
-                {
-                    "role": "user",
-                    "content": AGENT_ENTRY_PROMPT.format(
-                        user_message=state["user_message"],
-                        capability_list=capability_list
-                    ),
-                }
-            ],
-            AgentDecision,
-            on_reasoning=on_reasoning,
-            temperature=0.2, 
-        )
+        # 调用 LLM 进行复合决策并流式吐词
+        async for chunk_type, token in llm_client.stream_simple_completion(
+            prompt=state["user_message"],
+            system_prompt=AGENT_ENTRY_PROMPT.format(capability_list=capability_list),
+            temperature=0.4,
+        ):
+            if chunk_type == "reasoning":
+                emit_runtime_event("thought_emitted", token=token)
+            else:
+                full_content += token
+                if strategy is None:
+                    # 侦测策略标签是否已经完结
+                    if "</strategy>" in full_content:
+                        match = strategy_pattern.search(full_content)
+                        if match:
+                            strategy_val = match.group(1).strip().lower()
+                            strategy = strategy_val if strategy_val in ("direct", "simple", "complex") else "complex"
+                            
+                            # 提取标签之后的部分，这部分属于正式的纯聊天回答内容
+                            rest_text = full_content[match.end():]
+                            if strategy == "direct" and rest_text:
+                                reply_content += rest_text
+                                emit_runtime_event("token_emitted", token=rest_text)
+                else:
+                    if strategy == "direct":
+                        reply_content += token
+                        emit_runtime_event("token_emitted", token=token)
         
-        strategy = result.strategy if result.strategy in ("direct", "simple", "complex") else "complex"
-        
-        # 测试钩子：强制流式输出测试
-        print(f"DEBUG: user_message='{state.get('user_message')}'")
+        # 兜底：如果模型没有输出任何合法的策略标签
+        if strategy is None:
+            strategy = "complex"
+
+        # 特别测试口令检测
         if "STREAM_TEST" in state.get("user_message", ""):
-            print("DEBUG: STREAM_TEST detected! Forcing strategy to direct")
             strategy = "direct"
-            
-        print(f"DEBUG: final strategy is {strategy}")
-        logger.info(f"[agent_entry] 决策策略: {strategy} | 原因: {result.reasoning}")
+
+        logger.info(f"[agent_entry] 决策策略: {strategy}")
 
         state_update: dict[str, Any] = {
             "request_complexity": strategy,
             "current_node": "agent_entry"
         }
 
-        # 如果它是 direct，直接返回，交给后续的 direct_answer 节点流式处理
         if strategy == "direct":
-            emit_runtime_event(
-                "task_progress",
-                node_name="agent_entry",
-                progress=0.15,
-                message="正在准备流式回答...",
-            )
+            state_update["summary_text"] = reply_content.strip()
 
         return state_update
     except Exception as e:
         logger.warning(f"[agent_entry] 思考失败，降级为执行全流程: {e}")
         return {"request_complexity": "complex", "current_node": "agent_entry"}
-
-
-# ==================== 直接回答节点 (流式) ====================
-
-async def direct_answer_node(state: GraphState) -> dict[str, Any]:
-    """
-    直接回答节点：针对纯聊天或简单咨询，流式输出 Token 且实时广播。
-    """
-    emit_runtime_event(
-        "task_progress",
-        node_name="direct_answer",
-        progress=0.2,
-        message="正在生成回复...",
-    )
-
-    full_content = ""
-    try:
-        # 使用流式接口
-        async for chunk_type, token in llm_client.stream_simple_completion(
-            prompt=state["user_message"],
-            system_prompt=DIRECT_ANSWER_PROMPT,
-            temperature=0.7,
-        ):
-            if chunk_type == "reasoning":
-                # 推理内容通过 thought_emitted 展示
-                emit_runtime_event("thought_emitted", token=token)
-            else:
-                full_content += token
-                # 实时发射正文 Token
-                emit_runtime_event("token_emitted", token=token)
-
-        emit_runtime_event(
-            "task_progress",
-            node_name="direct_answer",
-            progress=0.9,
-            message="回复生成完毕",
-        )
-
-        return {
-            "summary_text": full_content,
-            "current_node": "direct_answer",
-        }
-    except Exception as e:
-        logger.error(f"[direct_answer] 失败: {e}", exc_info=True)
-        return {"error": f"直接回答生成失败: {str(e)}", "current_node": "direct_answer"}
 
 
 # ==================== 直接回答节点 ====================

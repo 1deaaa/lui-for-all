@@ -17,7 +17,6 @@ from app.config import settings
 from app.graph.nodes import (
     agent_entry_node,
     approval_gate_node,
-    direct_answer_node,
     draft_plan_node,
     emit_blocks_node,
     execute_requests_node,
@@ -51,7 +50,7 @@ def _complexity_router(state: GraphState) -> str:
         return END
 
     if complexity == "direct":
-        return "direct_answer"
+        return END
     elif complexity == "simple":
         return "simple_execute"
     else:
@@ -79,9 +78,6 @@ def create_talk_to_interface_graph(use_sqlite: bool = True):
     # ── 公共入口节点 ──
     workflow.add_node("agent_entry", agent_entry_node)
 
-    # ── 直接回答节点（流式） ──
-    workflow.add_node("direct_answer", direct_answer_node)
-
     # ── 简单流节点（simple） ──
     workflow.add_node("simple_execute", simple_execute_node)
 
@@ -103,7 +99,6 @@ def create_talk_to_interface_graph(use_sqlite: bool = True):
         "agent_entry",
         _complexity_router,
         {
-            "direct_answer": "direct_answer",
             "simple_execute": "simple_execute",
             "parse_intent": "parse_intent",
             END: END,
@@ -111,7 +106,6 @@ def create_talk_to_interface_graph(use_sqlite: bool = True):
     )
 
     # ── 通往导出 ──
-    workflow.add_edge("direct_answer", "emit_blocks")
     workflow.add_edge("simple_execute", END)
 
     # ── 完整流主链 ──
