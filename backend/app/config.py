@@ -1,5 +1,5 @@
 """
-Talk-to-Interface 配置模块
+LUI-for-All 配置模块
 使用 Pydantic Settings 管理环境变量配置
 """
 
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     )
 
     # 应用配置
-    app_name: str = "Talk-to-Interface"
+    app_name: str = "LUI-for-All"
     debug: bool = False
 
     # LLM 配置

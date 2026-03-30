@@ -60,7 +60,7 @@ projectStore.fetchProjects()
       :with-header="false"
       class="mobile-drawer"
     >
-      <div class="logo drawer-logo">Talk-to-Interface</div>
+      <div class="logo drawer-logo">LUI-for-All</div>
       <el-menu :default-active="activeMenu" router class="drawer-menu" @select="drawerVisible = false">
         <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
           <el-icon><component :is="item.icon" /></el-icon>
@@ -72,7 +72,7 @@ projectStore.fetchProjects()
     <!-- 桌面侧边栏 -->
     <el-aside v-if="!isMobile" :width="isCollapse ? '80px' : '260px'" class="app-aside glass-effect">
       <div class="logo">
-        <span v-if="!isCollapse" class="logo-text">LUI Core</span>
+        <span v-if="!isCollapse" class="logo-text">LUI for All</span>
         <span v-else class="logo-icon">✨</span>
       </div>
       

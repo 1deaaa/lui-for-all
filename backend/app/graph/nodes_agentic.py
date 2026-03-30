@@ -208,6 +208,9 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
 
     # 流式调用 LLM
     full_text = ""
+    is_json_mode = None  # None:未判定, True:调用接口JSON, False:直接回答(纯文本)
+    early_buffer = ""
+
     try:
         async for chunk_type, token in llm_client.stream_chat_completion(
             messages=messages,
@@ -226,6 +229,7 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
             "error": f"AI 决策失败: {exc}",
         }
 
+    # 如果全为空（网络极度异常），或者走到这儿是 is_json_mode=True
     # 解析 JSON 决策
     try:
         import json_repair
@@ -247,6 +251,20 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
             
     except Exception as exc:
         logger.error(f"[agentic_loop] JSON 解析失败: {exc}\n原文: {full_text[:500]}")
+        # 增加鲁棒性：如果无法解析 JSON，但内容看起来像是在直接回答，则强制 finish
+        if len(full_text) > 20 and not full_text.strip().startswith("{"):
+            import asyncio
+            # 伪流式发射：每次发2个字符，间隔0.025秒（每秒约80字符，符合视觉习惯）
+            for i in range(0, len(full_text), 2):
+                _emit("token_emitted", token=full_text[i: i+2])
+                await asyncio.sleep(0.025)
+            
+            return {
+                "agentic_done": True,
+                "agentic_iterations": iterations,
+                "summary_text": full_text.strip(),
+            }
+        
         return {
             "agentic_done": True,
             "agentic_iterations": iterations,
@@ -269,20 +287,12 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
     new_artifacts: list[Any] = []
 
     if action == "finish":
-        # AI 决定结束，流式输出最终报告
-        final_answer = decision.get("final_answer", "")
-        if final_answer:
-            # 流式逐字发射
-            for i in range(0, len(final_answer), 4):
-                chunk = final_answer[i: i + 4]
-                _emit("token_emitted", token=chunk)
-
+        # AI 决定结束，交给总结节点汇报
         return {
             "agentic_done": True,
             "agentic_iterations": iterations,
             "agentic_history": new_history,
             "execution_artifacts": new_artifacts,
-            "summary_text": final_answer,
         }
 
     elif action == "call":

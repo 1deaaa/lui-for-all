@@ -123,10 +123,11 @@ AGENT_ENTRY_PROMPT = """
 输出格式要求：
 1. 必须首先输出 <strategy>策略名称</strategy>。
 2. 如果策略是 direct，请在标签之后紧接着用自然、轻快的语言直接生成回答（Markdown 格式）。
-3. 如果策略是 agentic，标签之后无需输出任何内容。
+3. 如果策略是 agentic，请**仅输出** <strategy>agentic</strategy>，不要在之后附加任何分析或内容。
 
 示例：
 <strategy>direct</strategy>你好！我是你的智能接口助手，可以帮你查询数据或操作系统接口。
+<strategy>agentic</strategy>
 """
 
 
@@ -188,32 +189,32 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 2. 如果下一步依赖于上一步的结果（如需要 user_id），请先执行前一步，看到结果后再执行后续步骤。
 3. 只读接口（safety_level 为 readonly_safe 或 readonly_sensitive）将被立即执行，你会在下一轮看到结果。
 4. 写入接口（safety_level 为 soft_write、hard_write 或 critical）需要人类批准，你发起申请后会等待批准。
-5. 当你认为已经获取了足够的信息，或者已经完成了任务，请输出 action=finish 并附上你的报告（final_answer）。
-6. final_answer 会直接以 Markdown 格式展示给用户，请认真、详细地报告执行结果。
-7. 如果在某轮中无法继续（接口不存在、参数不足、连续失败），请直接进入 action=finish 并说明情况。
+5. 当你认为已经获取了足够的信息，或者已经完成了任务，请输出 action=finish。
+6. 如果在某轮中无法继续（接口不存在、参数不足、连续失败），请直接进入 action=finish 并在 think 字段中说明情况。
 
-【输出格式（严格 JSON，每轮必须输出一次）】
+【输出格式（极为重要）】
 
-继续调用接口时：
+情况一：需要调用接口时（继续循环）
+必须输出一个合法的 JSON 对象（可包含在 ```json 中），**无论如何不要写人类寒暄（例如“好的”、“请稍等”等），必须直接以 {{ 或者 ```json 起手**！
 {{
   "action": "call",
   "think": "（简短解释：我现在要做什么，为什么这样做）",
   "calls": [
     {{
-      "call_id": "（唯一字符串 ID，如 call_1）",
+      "call_id": "（唯一字符串 ID）",
       "route_id": "（完整 route_id，如 GET:/api/users）",
-      "parameters": {{（键值对参数，GET 请求为 query params，POST 为 body）}},
-      "safety_level": "（从接口列表中读取，readonly_safe/readonly_sensitive/soft_write/hard_write/critical）",
+      "parameters": {{}},
+      "safety_level": "...",
       "reasoning": "（本次调用的目的）"
     }}
   ]
 }}
 
-完成任务时：
+情况二：已拿到所需结果准备答复用户时（或任务失败准备结束循环）
+必须输出如下 JSON，且**不要附带任何 JSON 以外的文字**。你的任务只是做工作（调用工具和判断状态），真正给用户看的报告将由专门的正文节点后续生成。
 {{
   "action": "finish",
-  "think": "（可选：最终推理）",
-  "final_answer": "（以 Markdown 格式撰写的详细结果报告，直接给用户看）"
+  "think": "我已经完成了所需操作（或失败），准备交给总结节点向用户汇报。"
 }}
 """
 

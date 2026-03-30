@@ -5,6 +5,7 @@ import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 import BlockRenderer from '@/components/BlockRenderer.vue'
 import { ElMessage } from 'element-plus'
+import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
 
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
@@ -97,6 +98,17 @@ watch(
     }
   }
 )
+// 监听 messages 变化，流式输出时自动滚动到底部
+watch(
+  () => sessionStore.messages.map(m => m.content + (m.thought || '')),
+  async () => {
+    if (sessionStore.isStreaming) {
+      await nextTick()
+      scrollToBottom()
+    }
+  },
+  { deep: false }
+)
 </script>
 
 <template>
@@ -186,7 +198,9 @@ watch(
               </div>
               <div class="thought-content">{{ msg.thought }}</div>
             </div>
-            <div v-if="msg.content" class="message-text">{{ msg.content }}</div>
+            <div v-if="msg.content" class="message-text">
+              <MarkdownRenderer :content="msg.content" />
+            </div>
           </div>
         </div>
 
@@ -541,6 +555,82 @@ watch(
 }
 
 .message-text { line-height: 1.65; }
+
+/* Markdown 渲染样式 */
+.message-text :deep(p) { margin: 0 0 8px; }
+.message-text :deep(p:last-child) { margin-bottom: 0; }
+.message-text :deep(h1),
+.message-text :deep(h2),
+.message-text :deep(h3),
+.message-text :deep(h4) {
+  margin: 12px 0 6px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.message-text :deep(ul),
+.message-text :deep(ol) {
+  margin: 6px 0;
+  padding-left: 1.4em;
+}
+.message-text :deep(li) { margin: 3px 0; }
+.message-text :deep(strong) { font-weight: 700; }
+.message-text :deep(em) { font-style: italic; }
+.message-text :deep(code) {
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+  background: rgba(0,0,0,0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+.message-text :deep(pre) {
+  background: #1e2130;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.message-text :deep(pre code) {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.message-text :deep(blockquote) {
+  border-left: 3px solid #94a3b8;
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: #64748b;
+  font-style: italic;
+}
+.message-text :deep(a) {
+  color: var(--color-primary, #4085ff);
+  text-decoration: none;
+}
+.message-text :deep(a:hover) { text-decoration: underline; }
+.message-text :deep(hr) {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 10px 0;
+}
+.message-text :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.message-text :deep(th),
+.message-text :deep(td) {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+}
+.message-text :deep(th) {
+  background: #f8fafd;
+  font-weight: 600;
+}
 
 /* 思考过程样式 (Mental Model Block) */
 .message-thought {

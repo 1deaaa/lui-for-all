@@ -214,9 +214,11 @@ export const useSessionStore = defineStore('session', () => {
           })
           streamingMessageId.value = newId
         } else {
-          const msg = messages.value.find((m) => m.id === streamingMessageId.value)
-          if (msg) {
-            msg.content += event.token || ''
+          // 用 findIndex + splice 替换触发 Vue 响应式
+          const idx = messages.value.findIndex((m) => m.id === streamingMessageId.value)
+          if (idx !== -1) {
+            const old = messages.value[idx]
+            messages.value.splice(idx, 1, { ...old, content: old.content + (event.token || '') })
           }
         }
         break
@@ -235,9 +237,11 @@ export const useSessionStore = defineStore('session', () => {
           })
           streamingThoughtId.value = newId
         } else {
-          const msg = messages.value.find((m) => m.id === streamingThoughtId.value)
-          if (msg) {
-            msg.thought = (msg.thought || '') + (event.token || '')
+          // 用 findIndex + splice 替换触发 Vue 响应式
+          const idx = messages.value.findIndex((m) => m.id === streamingThoughtId.value)
+          if (idx !== -1) {
+            const old = messages.value[idx]
+            messages.value.splice(idx, 1, { ...old, thought: (old.thought || '') + (event.token || '') })
           }
         }
         break

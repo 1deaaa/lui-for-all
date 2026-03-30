@@ -1,0 +1,38 @@
+魔搭ModelScope:
+  base_url: https://api-inference.modelscope.cn/v1
+  models:
+    DeepSeek-V3.2:
+      model_name: deepseek-ai/DeepSeek-V3.2
+      extra_body:
+        enable_thinking: false
+    moonshotai/Kimi-K2.5:
+      model_name: moonshotai/Kimi-K2.5
+      extra_body:
+        thinking:
+          type: disabled
+  api_key: ENC:gAAAAABpyNBxu9h84AIliMWtTMJnALOfJsSiszzpy-77Sk9GmEwQFme7R-HNGbnLNqJsMOLa5cClOQnENaHvMxDysracZnTezLM51AHZJfrAa9r7nkDG8v6C9uQEIRXfXuqobMopalf1
+阿里云百炼:
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  models:
+    通义向量-v4:
+      model_name: text-embedding-v4
+      is_embedding: true
+    qwen3.5-plus-thinking:
+      model_name: qwen3.5-plus
+      extra_body:
+        enable_thinking: true
+    qwen3.5-flash:
+      model_name: qwen3.5-flash
+      extra_body:
+        enable_thinking: false
+    qwen3.5-plus:
+      model_name: qwen3.5-plus
+      extra_body:
+        enable_thinking: false
+    qwen3.5-flash-thinking: qwen3.5-flash
+  api_key: ENC:gAAAAABpyNBxJa9s10d2VmL3Y02b8vVASGLLeWRpLIsTNae2GxF0lIs_LETzQG7lMkobSgHFMm8N79JZorlQkZAAt36PXUUKArdRleddgHAIcWPo1ImsJgohLKwFH2vzmPiWtznavrAE
+OpenAI:
+  base_url: https://api.devlens.top/v1
+  models:
+    gpt-5.4: gpt-5.4
+  api_key: ENC:gAAAAABpyNBxJhgnfNt4om3pYxiXWB0VG9qwpP78i1d94I9vA8EwctoeiRO2c-mxkue0S0P1Sfwu_PbOkQzb0ocwwTHCSrye3sa9mnVVqysOWKzR1sv10dsOgvPVrqhvd31cYwiAk2vtoq9FnDegIFdUdzKPyqOwow==

@@ -1,5 +1,5 @@
 """
-Talk-to-Interface FastAPI 主入口
+LUI-for-all FastAPI 主入口
 配置 CORS、SSE、路由挂载、OpenTelemetry 遥测
 """
 
@@ -68,7 +68,7 @@ def init_telemetry():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    logger.info("🚀 Talk-to-Interface 启动中...")
+    logger.info("🚀 LUI-for-All 启动中...")
 
     # 初始化 OpenTelemetry
     init_telemetry()
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("🛑 Talk-to-Interface 关闭中...")
+    logger.info("🛑 LUI-for-All 关闭中...")
 
 
 # 创建 FastAPI 应用
