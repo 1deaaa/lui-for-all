@@ -98,11 +98,13 @@ class CapabilityGraphBuilder:
         route_map: RouteMap,
         progress_callback: ProgressCallback | None = None,
         source_path: str | None = None,
+        global_context: str | None = None,
     ):
         self.route_map = route_map
         self.routes = route_map.routes
         self.progress_callback = progress_callback
         self.source_path = source_path  # 目标项目本地源码路径
+        self.global_context = global_context
 
     async def _report_progress(self, percent: int, message: str):
         if self.progress_callback:
@@ -143,6 +145,7 @@ class CapabilityGraphBuilder:
                 total=total_routes_in_chunk,
                 code_chunk=code_chunk,
                 routes_json=routes_json,
+                global_context=self.global_context or "未知",
             )
             
             # 手动组装 LLM 请求，以便无论解析成功与否都能拦截到原始输出
@@ -393,11 +396,13 @@ async def build_capability_graph(
     route_map: RouteMap,
     progress_callback: ProgressCallback | None = None,
     source_path: str | None = None,
+    global_context: str | None = None,
 ) -> CapabilityGraph:
     """便捷函数：从路由地图异步构建能力图谱"""
     builder = CapabilityGraphBuilder(
         route_map,
         progress_callback=progress_callback,
         source_path=source_path,
+        global_context=global_context,
     )
     return await builder.build()

@@ -122,6 +122,24 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+
+  // 修改项目描述（手动纠正 AI 总结）
+  async function updateProjectDescription(projectId: string, description: string) {
+    try {
+      await axios.patch(`/api/projects/${projectId}`, { description })
+      const project = projects.value.find((p) => p.id === projectId)
+      if (project) {
+        project.description = description
+      }
+      if (currentProject.value?.id === projectId) {
+        currentProject.value.description = description
+      }
+    } catch (e: any) {
+      console.error('更新描述失败:', e)
+      throw e
+    }
+  }
+
   return {
     // 状态
     projects,
@@ -136,5 +154,6 @@ export const useProjectStore = defineStore('project', () => {
     importProject,
     triggerDiscovery,
     deleteProject,
+    updateProjectDescription,
   }
 })

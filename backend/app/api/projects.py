@@ -363,6 +363,32 @@ async def list_projects(
     }
 
 
+class ProjectUpdateRequest(BaseModel):
+    """项目信息修改请求"""
+    name: str | None = None
+    description: str | None = None
+
+
+@router.patch("/{project_id}")
+async def update_project(
+    project_id: str,
+    request: ProjectUpdateRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """修改项目名称或描述（前端手动纠正 AI 生成内容）"""
+    project = await ProjectRepository(db).get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    if request.name is not None:
+        project.name = request.name
+    if request.description is not None:
+        project.description = request.description
+
+    await db.commit()
+    return {"project_id": project_id, "status": "updated"}
+
+
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: str,

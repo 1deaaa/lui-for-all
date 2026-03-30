@@ -8,6 +8,11 @@ const projectStore = useProjectStore()
 const router = useRouter()
 let pollingTimer: number | null = null
 
+// 描述内联编辑状态
+const editingDescId = ref<string | null>(null)
+const editingDescValue = ref('')
+const descSaving = ref(false)
+
 // 导入表单
 const importForm = ref({
   name: '',
@@ -135,6 +140,30 @@ function enterProject(projectId: string) {
   router.push({ path: '/', query: { project: projectId } })
 }
 
+// 描述内联编辑
+function startEditDesc(project: any) {
+  editingDescId.value = project.id
+  editingDescValue.value = project.description || ''
+}
+
+async function saveDesc(projectId: string) {
+  if (descSaving.value) return
+  descSaving.value = true
+  try {
+    await projectStore.updateProjectDescription(projectId, editingDescValue.value)
+    ElMessage.success('描述已保存')
+  } catch {
+    ElMessage.error('保存失败')
+  } finally {
+    descSaving.value = false
+    editingDescId.value = null
+  }
+}
+
+function cancelEditDesc() {
+  editingDescId.value = null
+}
+
 async function refreshProjects() {
   await projectStore.fetchProjects()
 }
@@ -230,10 +259,36 @@ function getStatusText(status: string): string {
             <el-icon><Link /></el-icon>
             <span class="url-text">{{ project.base_url }}</span>
           </p>
-          <p class="info-item" v-if="project.description">
-            <el-icon><Document /></el-icon>
-            <span>{{ project.description }}</span>
-          </p>
+          <!-- 描述区域：可内联编辑 -->
+          <div class="description-area">
+            <!-- 编辑状态 -->
+            <template v-if="editingDescId === project.id">
+              <el-input
+                v-model="editingDescValue"
+                type="textarea"
+                :rows="3"
+                autofocus
+                placeholder="输入描述（可纳正 AI 生成的内容）"
+                @keydown.esc="cancelEditDesc"
+              />
+              <div class="desc-actions">
+                <el-button size="small" type="primary" :loading="descSaving" @click="saveDesc(project.id)">保存</el-button>
+                <el-button size="small" @click="cancelEditDesc">取消</el-button>
+              </div>
+            </template>
+            <!-- 展示状态 -->
+            <template v-else>
+              <p
+                class="info-item desc-text"
+                :title="'点击编辑描述'"
+                @click="startEditDesc(project)"
+              >
+                <el-icon><Document /></el-icon>
+                <span v-if="project.description">{{ project.description }}</span>
+                <span v-else class="desc-placeholder">点击添加描述（AI 将在建图后自动填充）</span>
+              </p>
+            </template>
+          </div>
           <p class="info-item">
             <el-icon><Clock /></el-icon>
             <span>{{ new Date(project.created_at).toLocaleString() }}</span>
@@ -420,5 +475,65 @@ function getStatusText(status: string): string {
   margin-top: auto;
   border-top: 1px solid var(--border-color-light);
   padding-top: 16px;
+}
+
+.description-area {
+  margin: 8px 0;
+}
+
+.desc-text {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: 4px -6px;
+  transition: background 0.2s;
+  flex-wrap: wrap;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.desc-text:hover {
+  background: var(--el-fill-color-light);
+}
+
+.desc-placeholder {
+  color: var(--el-text-color-placeholder);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.desc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.url-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.progress-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  display: block;
+}
+
+.error-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: var(--el-color-danger-light-9);
+  border-radius: 8px;
+}
+
+.error-text {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  word-break: break-all;
 }
 </style>

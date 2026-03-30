@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "🐍 Backend (talk-to-interface)",
+            "name": "🐍 Backend",
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
@@ -20,14 +20,14 @@
             "justMyCode": false
         },
         {
-            "name": "🌐 Frontend (Vite)",
+            "name": "🌐 Frontend",
             "type": "node-terminal",
             "request": "launch",
             "command": "npm run dev",
             "cwd": "${workspaceFolder}/frontend"
         },
         {
-            "name": "🧪 Backend (proj_for_test)",
+            "name": "🧪 TestBackend",
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
@@ -47,10 +47,18 @@
     ],
     "compounds": [
         {
-            "name": "🔥 全栈开发 (并行模式)",
+            "name": "🔥 全栈开发",
             "configurations": [
-                "🐍 Backend (talk-to-interface)",
-                "🌐 Frontend (Vite)"
+                "🐍 Backend",
+                "🌐 Frontend"
+            ]
+        },
+        {
+            "name": "🌟 全栈测试",
+            "configurations": [
+                "🧪 TestBackend",
+                "🌐 Frontend",
+                "🐍 Backend"
             ]
         }
     ]

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.discovery.capability_builder import build_capability_graph
+from app.discovery.enrichers.project_context import generate_project_context
 from app.discovery.openapi_ingestor import ingest_openapi
 from app.models.project import CapabilityRecord, Project, RouteMapRecord
 from app.schemas.capability import CapabilityGraph
@@ -43,11 +44,16 @@ class DiscoveryService:
 
         await report(20, f"OpenAPI 解析完成，共发现 {len(route_map.routes)} 条路由")
 
+        await report(25, f"开始推断项目的全局业务上下文边界")
+        global_context = await generate_project_context(route_map, source_path, self.db)
+        await report(30, f"全局推断结果：{global_context[:30]}...")
+
         # 2. 构建能力图谱 (AI 过程)
         capability_graph = await build_capability_graph(
             route_map,
             progress_callback=report,
             source_path=source_path,
+            global_context=global_context,
         )
 
         await report(90, "能力图谱已生成，正在写入数据库")

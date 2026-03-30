@@ -73,6 +73,32 @@ class RuntimeEventEmitter:
         """发射 Token 事件"""
         self.emit("token_emitted", token=token)
 
+    def write_approval_required(
+        self,
+        write_id: str,
+        route_id: str,
+        method: str,
+        path: str,
+        parameters: dict,
+        reasoning: str = "",
+        safety_level: str = "soft_write",
+    ):
+        """发射写入审批请求事件"""
+        self.emit(
+            "write_approval_required",
+            write_id=write_id,
+            route_id=route_id,
+            method=method,
+            path=path,
+            parameters=parameters,
+            reasoning=reasoning,
+            safety_level=safety_level,
+        )
+
+    def agentic_iteration(self, iteration: int, think: str | None = None):
+        """发射 Agentic Loop 轮次通知事件"""
+        self.emit("agentic_iteration", iteration=iteration, think=think)
+
 
 runtime_emitter = RuntimeEventEmitter()
 
@@ -80,3 +106,4 @@ runtime_emitter = RuntimeEventEmitter()
 def get_runtime_emitter() -> RuntimeEventEmitter:
     """获取运行时事件发射器"""
     return runtime_emitter
+

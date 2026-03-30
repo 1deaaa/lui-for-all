@@ -1,21 +1,13 @@
 import asyncio
-import sys
-import os
+from app.db import async_session
+from app.repositories.project_repository import ProjectRepository
 
-# 将 backend 目录添加到 sys.path
-backend_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(backend_path)
-
-from app.db.session import async_session
-from app.models.project import Project
-from sqlalchemy import select
-
-async def run():
+async def main():
     async with async_session() as db:
-        res = await db.execute(select(Project))
-        projects = res.scalars().all()
+        repo = ProjectRepository(db)
+        projects = await repo.list_all()
         for p in projects:
-            print(f"ID: {p.id} | Name: {p.name}")
+            print(f"ID: {p.id}, Name: {p.name}")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())

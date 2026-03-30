@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useSessionStore } from '@/stores/session'
-import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { Check, Close, Warning } from '@element-plus/icons-vue'
 
@@ -27,20 +26,22 @@ async function handleAction(action: 'approve' | 'reject') {
   loading.value = true
   try {
     const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) {
-      // 尝试从最近的消息或路由中找？通常 store 里的就是当前的
-      throw new Error('当前会话未选中')
+    const taskRunId = sessionStore.currentTaskRun?.id
+    if (!sessionId || !taskRunId) {
+      throw new Error('当前会话或任务未选中')
     }
     
     console.log(`[ConfirmPanel] Sending ${action} for ${props.block.approval_id} in session ${sessionId}`)
     
-    await axios.post(`/api/sessions/${sessionId}/approvals/${props.block.approval_id}`, {
-      action
+    // 不再直接请求接口，而是通过重启流式连接并带上 resume 参数，让后端恢复执行
+    sessionStore.startEventStream(taskRunId, {
+      resumeWriteId: props.block.approval_id,
+      resumeAction: action
     })
     
     resolved.value = true
     actionResult.value = action === 'approve' ? 'approved' : 'rejected'
-    ElMessage.success(action === 'approve' ? '已批准操作' : '已拒绝操作')
+    ElMessage.success(action === 'approve' ? '已批准操作并继续执行' : '已拒绝操作并继续执行')
     
   } catch (e: any) {
     console.error('[ConfirmPanel] Error:', e)

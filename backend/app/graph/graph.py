@@ -1,137 +1,93 @@
 """
-LangGraph 图定义
-双路图：classify_request 后分为简单流(simple) / 完整流(complex) / 直接回答(direct)
+LangGraph 图定义（Agentic Loop 版本）
+简洁三层架构：
+  agent_entry → agentic_loop（自回环）→ summarize → emit_blocks → END
 """
-
-from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-try:
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-except ModuleNotFoundError:
-    AsyncSqliteSaver = None
-
-from app.config import settings
 from app.graph.nodes import (
     agent_entry_node,
-    approval_gate_node,
-    draft_plan_node,
     emit_blocks_node,
-    execute_requests_node,
-    parse_intent_node,
-    policy_check_node,
-    select_capabilities_node,
-    simple_execute_node,
     summarize_node,
 )
+from app.graph.nodes_agentic import agentic_loop_node
 from app.graph.state import GraphState
-from app.schemas.task import ApprovalStatus
 
 
-def get_checkpointer():
-    """获取 checkpointer 实例"""
-    db_path = Path(settings.checkpoint_db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if AsyncSqliteSaver is None:
-        return MemorySaver()
-
-    return AsyncSqliteSaver.from_conn_string(settings.checkpoint_db_path)
-
-
-def _complexity_router(state: GraphState) -> str:
-    """根据分类结果路由到不同子图"""
-    complexity = state.get("request_complexity", "complex")
+def _entry_router(state: GraphState) -> str:
+    """
+    根据 agent_entry 的决策路由：
+    - direct  → END（直接回答，不走工具调用）
+    - agentic → agentic_loop（进入多轮工具调用循环）
+    """
     error = state.get("error")
-
     if error:
         return END
 
+    complexity = state.get("request_complexity", "agentic")
     if complexity == "direct":
         return END
-    elif complexity == "simple":
-        return "simple_execute"
-    else:
-        # complex → 走完整链路
-        return "parse_intent"
+    return "agentic_loop"
 
 
-def _approval_router(state: GraphState) -> str:
-    """审批结果路由"""
-    error = state.get("error")
-    approval_status = state.get("approval_status")
-
-    if error:
+def _loop_router(state: GraphState) -> str:
+    """
+    根据每轮 agentic_loop 的输出决定是否继续：
+    - agentic_done=True  → summarize
+    - 有 error           → END（跳过汇总）
+    - 否则               → agentic_loop（自回环）
+    """
+    if state.get("error"):
         return END
-    if approval_status == "rejected" or approval_status == ApprovalStatus.REJECTED:
-        return END
-
-    return "execute_requests"
+    if state.get("agentic_done", False):
+        return "summarize"
+    return "agentic_loop"
 
 
 def create_talk_to_interface_graph(use_sqlite: bool = True):
-    """创建双路 Talk-to-Interface 执行图"""
+    """创建 Agentic Loop 图"""
     workflow = StateGraph(GraphState)
 
-    # ── 公共入口节点 ──
+    # ── 节点注册 ──
     workflow.add_node("agent_entry", agent_entry_node)
-
-    # ── 简单流节点（simple） ──
-    workflow.add_node("simple_execute", simple_execute_node)
-
-    # ── 完整流节点（complex） ──
-    workflow.add_node("parse_intent", parse_intent_node)
-    workflow.add_node("select_capabilities", select_capabilities_node)
-    workflow.add_node("draft_plan", draft_plan_node)
-    workflow.add_node("policy_check", policy_check_node)
-    workflow.add_node("approval_gate", approval_gate_node)
-    workflow.add_node("execute_requests", execute_requests_node)
+    workflow.add_node("agentic_loop", agentic_loop_node)
     workflow.add_node("summarize", summarize_node)
     workflow.add_node("emit_blocks", emit_blocks_node)
 
     # ── 入口 ──
     workflow.set_entry_point("agent_entry")
 
-    # ── 决策后路由 ──
+    # ── 入口路由：direct 直接结束，其余进 agentic_loop ──
     workflow.add_conditional_edges(
         "agent_entry",
-        _complexity_router,
+        _entry_router,
         {
-            "simple_execute": "simple_execute",
-            "parse_intent": "parse_intent",
+            "agentic_loop": "agentic_loop",
             END: END,
         },
     )
 
-    # ── 通往导出 ──
-    workflow.add_edge("simple_execute", END)
-
-    # ── 完整流主链 ──
-    workflow.add_edge("parse_intent", "select_capabilities")
-    workflow.add_edge("select_capabilities", "draft_plan")
-    workflow.add_edge("draft_plan", "policy_check")
-    workflow.add_edge("policy_check", "approval_gate")
-
-    # ── 审批门路由 ──
+    # ── Agentic Loop 自回环路由 ──
     workflow.add_conditional_edges(
-        "approval_gate",
-        _approval_router,
+        "agentic_loop",
+        _loop_router,
         {
-            "execute_requests": "execute_requests",
-            END: END,
+            "agentic_loop": "agentic_loop",   # 继续循环
+            "summarize": "summarize",          # 完成，进入汇总
+            END: END,                          # 出错，直接终止
         },
     )
 
-    workflow.add_edge("execute_requests", "summarize")
+    # ── 汇总链路 ──
     workflow.add_edge("summarize", "emit_blocks")
     workflow.add_edge("emit_blocks", END)
 
-    # ── 编译 ──
-    checkpointer = get_checkpointer() if use_sqlite else MemorySaver()
+    # ── 编译（内存 checkpointer，支持 interrupt 恢复）──
+    checkpointer = MemorySaver()
     return workflow.compile(checkpointer=checkpointer)
 
 
-# 默认实例（内存持久化，避免 SQLite 初始化副作用）
+# 默认实例
 graph_app = create_talk_to_interface_graph(use_sqlite=False)

@@ -104,12 +104,16 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function startEventStream(taskRunId: string) {
+  function startEventStream(taskRunId: string, resumeOpts?: { resumeWriteId: string, resumeAction: string }) {
     if (eventSource.value) {
       eventSource.value.close()
     }
 
-    const url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
+    let url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
+    if (resumeOpts) {
+      url += `&resume_write_id=${resumeOpts.resumeWriteId}&resume_action=${resumeOpts.resumeAction}`
+    }
+    
     eventSource.value = new EventSource(url)
     isStreaming.value = true
     progressPercent.value = 0
@@ -163,6 +167,8 @@ export const useSessionStore = defineStore('session', () => {
       'token_emitted',
       'thought_emitted',
       'approval_required',
+      'write_approval_required',
+      'agentic_iteration',
       'task_completed',
       'error',
     ].forEach(register)
@@ -315,9 +321,33 @@ export const useSessionStore = defineStore('session', () => {
         }
         break
 
+      case 'write_approval_required':
+        uiBlocks.value.push({
+          block_type: 'confirm_panel',
+          approval_id: (event as any).write_id,
+          title: `需要审核写入操作: ${(event as any).method} ${(event as any).path}`,
+          description: (event as any).reasoning || '此操作涉及数据修改，请人工审核。',
+          risk_level: (event as any).safety_level === 'critical' ? 'critical' : 'warning',
+          timeout_seconds: 300,
+          route_id: (event as any).route_id,
+          parameters: (event as any).parameters
+        })
+        break
+
+      case 'agentic_iteration':
+        pushRuntimeEvent({
+          id: `iteration-${Date.now()}-${Math.random()}`,
+          type: 'progress',
+          title: `开始第 ${(event as any).iteration} 轮迭代`,
+          detail: 'AI 正在自主规划与执行下一步行动...',
+          status: 'running',
+          created_at: new Date().toISOString()
+        })
+        break
+
       case 'approval_required':
         uiBlocks.value.push({
-          block_type: 'confirm_panel', // 使用已有的类型或新增
+          block_type: 'confirm_panel',
           approval_id: (event as any).approval_id,
           title: (event as any).title || '操作需要确认',
           description: (event as any).description || '此操作涉及敏感权限，请核实后批准。',

@@ -130,8 +130,10 @@ async def send_message(
 async def stream_events(
     session_id: str,
     task_run_id: str | None = None,
+    resume_write_id: str | None = None,
+    resume_action: str | None = None,
 ):
-    """SSE 事件流 - 执行 LangGraph 图"""
+    """SSE 事件流 - 执行 LangGraph 图（支持打断与恢复）"""
 
     async def event_generator():
         from app.models.project import CapabilityRecord, Project
@@ -151,14 +153,24 @@ async def stream_events(
 
         task_run_data = None
         available_capabilities = []
+        chat_history_dicts = []
 
         async with async_session() as db:
             task_repository = TaskRepository(db)
             project_repository = ProjectRepository(db)
+            session_repository = SessionRepository(db)
+            
             if task_run_id:
                 task_run = await task_repository.get_by_id(task_run_id)
 
                 if task_run:
+                    messages = await session_repository.list_messages(session_id, limit=50)
+                    # 移除当前正在处理的用户消息
+                    if messages and messages[-1].role == "user" and messages[-1].content == task_run.user_message:
+                        messages = messages[:-1]
+                    for m in messages:
+                        chat_history_dicts.append({"role": m.role, "content": m.content})
+
                     capabilities = await project_repository.list_capabilities(task_run.project_id)
                     project = await project_repository.get_by_id(task_run.project_id)
 
@@ -171,6 +183,7 @@ async def stream_events(
                         "project_base_url": project.base_url if project else "",
                         "project_username": project.username if project else None,
                         "project_password": project.password if project else None,
+                        "project_description": project.description if project else None,
                     }
 
                     available_capabilities = [
@@ -218,18 +231,21 @@ async def stream_events(
                 "project_base_url": task_run_data["project_base_url"],
                 "project_username": task_run_data["project_username"],
                 "project_password": task_run_data["project_password"],
+                "project_description": task_run_data.get("project_description"),
+                "chat_history": chat_history_dicts,
                 "user_message": task_run_data["user_message"],
-                "normalized_intent": None,
                 "available_capabilities": available_capabilities,
-                "selected_capabilities": [],
-                "task_plan": None,
-                "policy_verdicts": [],
-                "approval_status": "pending",
+                # Agentic Loop 初始化字段
+                "agentic_history": [],
+                "agentic_done": False,
+                "agentic_iterations": 0,
+                "pending_writes": [],
                 "execution_artifacts": [],
                 "summary_text": None,
                 "ui_blocks": [],
                 "error": None,
                 "current_node": None,
+                "request_complexity": None,
             }
 
             config = {
@@ -240,16 +256,9 @@ async def stream_events(
 
             node_progress_map = {
                 "agent_entry": 0.05,
-                "parse_intent": 0.15,
-                "select_capabilities": 0.3,
-                "draft_plan": 0.45,
-                "policy_check": 0.6,
-                "approval_gate": 0.68,
-                "execute_requests": 0.82,
+                "agentic_loop": 0.5,
                 "summarize": 0.93,
                 "emit_blocks": 1.0,
-                "simple_execute": 1.0,
-                "direct_answer": 1.0,
             }
             final_state = dict(initial_state)
 
@@ -260,8 +269,14 @@ async def stream_events(
                     task_run.status = "running"
                     await db.commit()
 
+            from langgraph.types import Command
+            if resume_write_id:
+                input_data = Command(resume={"approved": resume_action == "approve", "write_id": resume_write_id})
+            else:
+                input_data = initial_state
+
             async for stream_type, payload in graph_app.astream(
-                initial_state,
+                input_data,
                 config,
                 stream_mode=["custom", "updates"],
             ):
@@ -317,6 +332,31 @@ async def stream_events(
                                 step_id=payload.get("step_id"),
                                 route_id=payload.get("route_id"),
                                 status_code=payload.get("status_code"),
+                            )
+                        )
+                    elif event_type == "write_approval_required":
+                        from app.schemas.event import WriteApprovalRequiredEvent
+                        yield format_sse_event(
+                            WriteApprovalRequiredEvent(
+                                session_id=session_id,
+                                task_run_id=task_run_id,
+                                write_id=payload.get("write_id", ""),
+                                route_id=payload.get("route_id", ""),
+                                method=payload.get("method", ""),
+                                path=payload.get("path", ""),
+                                parameters=payload.get("parameters", {}),
+                                reasoning=payload.get("reasoning", ""),
+                                safety_level=payload.get("safety_level", "soft_write"),
+                            )
+                        )
+                    elif event_type == "agentic_iteration":
+                        from app.schemas.event import AgenticIterationEvent
+                        yield format_sse_event(
+                            AgenticIterationEvent(
+                                session_id=session_id,
+                                task_run_id=task_run_id,
+                                iteration=payload.get("iteration", 1),
+                                think=payload.get("think"),
                             )
                         )
                     elif event_type == "approval_required":
@@ -525,33 +565,62 @@ async def handle_approval(
     request: ApprovalActionRequest,
     db: AsyncSession = Depends(get_session),
 ):
-    """处理人工审批"""
+    """处理写入审批（兼容旧接口）"""
+    return await _resume_graph_with_approval(session_id, approval_id, request.action, db)
+
+
+class WriteApprovalRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+
+
+@router.post("/{session_id}/write-approvals/{write_id}")
+async def handle_write_approval(
+    session_id: str,
+    write_id: str,
+    request: WriteApprovalRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    处理 Agentic Loop 中的写入操作审批。
+    - approve: 批准写入，graph 恢复执行
+    - reject: 拒绝写入，graph 跳过该操作继续下一轮
+    """
+    return await _resume_graph_with_approval(session_id, write_id, request.action, db)
+
+
+async def _resume_graph_with_approval(
+    session_id: str,
+    write_id: str,
+    action: str,
+    db: AsyncSession,
+):
+    """通用：通过向图发送 interrupt 恢复值来处理审批"""
     session_repository = SessionRepository(db)
     session = await session_repository.get_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 获取 thread_id
     thread_id = session.thread_id or session_id
     config = {"configurable": {"thread_id": thread_id}}
 
     from app.graph.graph import graph_app
-    
-    # 获取当前状态
+
+    # 检查图是否处于中断等待状态
     state = await graph_app.aget_state(config)
     if not state.next:
         raise HTTPException(status_code=400, detail="当前没有等待审批的任务")
 
-    # 更新状态以通过审批门
-    # 我们通过向图发送一个包含审批结果的更新来恢复执行
-    # 在 approval_gate_node 中，它会检查 state["approval_status"]
-    
-    status = "approved" if request.action == "approve" else "rejected"
-    
-    await graph_app.aupdate_state(
+    approved = action == "approve"
+
+    # 通过 resume 值恢复 interrupt
+    await graph_app.aresume(
         config,
-        {"approval_status": status},
-        as_node="approval_gate" # 模拟在该节点产生的更新
+        {"approved": approved, "write_id": write_id},
     )
-    
-    return {"status": "success", "approval_status": status}
+
+    return {
+        "status": "success",
+        "write_id": write_id,
+        "action": action,
+        "approved": approved,
+    }

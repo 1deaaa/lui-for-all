@@ -64,6 +64,10 @@ class EventType(str, Enum):
     TOKEN_EMITTED = "token_emitted"
     THOUGHT_EMITTED = "thought_emitted"
 
+    # Agentic Loop 专用
+    WRITE_APPROVAL_REQUIRED = "write_approval_required"  # 写入操作待人工批准
+    AGENTIC_ITERATION = "agentic_iteration"              # 每轮循环开始通知
+
     # 错误
     ERROR = "error"
 
@@ -220,3 +224,29 @@ def format_sse_event(event: BaseModel) -> str:
     lines.append("")  # 空行结束
     lines.append("")  # 额外空行
     return "\n".join(lines)
+
+
+class WriteApprovalRequiredEvent(BaseModel):
+    """写入操作待人工审批事件"""
+
+    event: EventType = Field(default=EventType.WRITE_APPROVAL_REQUIRED, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    write_id: str = Field(description="写入操作唯一 ID")
+    route_id: str = Field(description="接口路由，如 POST:/api/users")
+    method: str = Field(description="HTTP 方法")
+    path: str = Field(description="接口路径")
+    parameters: dict = Field(default_factory=dict, description="请求参数")
+    reasoning: str = Field(default="", description="AI 为什么要执行这个写入")
+    safety_level: str = Field(default="soft_write", description="安全等级")
+
+
+class AgenticIterationEvent(BaseModel):
+    """Agentic Loop 轮次通知事件"""
+
+    event: EventType = Field(default=EventType.AGENTIC_ITERATION, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
+    iteration: int = Field(description="当前轮次（从 1 开始）")
+    think: str | None = Field(default=None, description="本轮 AI 推理摘要（可为空）")
+

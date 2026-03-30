@@ -105,6 +105,9 @@ SUMMARY_PROMPT = """
 AGENT_ENTRY_PROMPT = """
 你是一个系统的处理中枢（AI Agent）。你需要直接处理用户的请求。
 
+【当前接入的项目简介】
+{project_description}
+
 【当前系统可用的能力/路由（概要信息）】
 {capability_list}
 
@@ -112,42 +115,44 @@ AGENT_ENTRY_PROMPT = """
 {user_message}
 
 【你的任务】:
-请你首先判断应该采取哪种处理策略。你必须在输出的最开头使用 <strategy> 标签标明策略。可选的策略有：
-- direct: 纯聊天、打招呼，或询问系统介绍。
-- simple: 用户要求你进行一次简单的单步信息查询（如GET请求）。
-- complex: 用户要求执行复杂的多步操作或写入请求。
+请你判断应该采取哪种处理策略，并在输出最开头使用 <strategy> 标签标明。可选策略有：
+
+- direct: 纯闲聊、打招呼、询问系统功能介绍、不涉及任何接口调用的问题。直接生成回答即可。
+- agentic: 用户要求查询数据、操作接口、执行任何任务（无论只读还是写入）。统一进入多轮工具调用。
 
 输出格式要求：
 1. 必须首先输出 <strategy>策略名称</strategy>。
-2. 如果策略是 direct，请在标签之后紧接着用自然、轻快的语言直接生成回答。
-3. 如果策略是 simple 或 complex，标签之后无需输出任何多余内容。
+2. 如果策略是 direct，请在标签之后紧接着用自然、轻快的语言直接生成回答（Markdown 格式）。
+3. 如果策略是 agentic，标签之后无需输出任何内容。
 
 示例：
-<strategy>direct</strategy>你好！我是你的智能助手，请问有什么可以帮助你的？
+<strategy>direct</strategy>你好！我是你的智能接口助手，可以帮你查询数据或操作系统接口。
 """
 
 
 SIMPLE_EXECUTE_PROMPT = """
-你是一个接口调用助手。请根据用户的需求，从接口列表中选择最合适的接口，直接构造调用参数。
+你是一个接口调用助手。请根据用户的需求，从接口列表中选择最合适的接口（允许选择一个或组合多个），直接构造调用参数执行。
 
 用户需求: {user_message}
 
 可用接口列表:
 {capability_list}
 
-请直接选择最合适的接口并构造参数，输出 JSON：
+请直接选择合适的接口并构造参数，输出 JSON：
 {{
-    "route_id": "选中的 route_id（如 GET:/api/users）",
-    "capability_id": "选中的 capability_id",
-    "parameters": {{"参数名": "参数值"}},
-    "reasoning": "一句话说明选择原因"
+    "calls": [
+        {{
+            "route_id": "选中的 route_id（如 GET:/api/users）",
+            "capability_id": "选中的 capability_id",
+            "parameters": {{"参数名": "参数值"}}
+        }}
+    ],
+    "reasoning": "一句话说明你的调用策略（比如因为是复合查询所以我调了2个接口）"
 }}
 
-如果列表中没有合适的接口，请返回:
+如果列表中没有任何部分能完成用户的查询需求，请返回:
 {{
-    "route_id": null,
-    "capability_id": null,
-    "parameters": {{}},
+    "calls": [],
     "reasoning": "没有找到合适的接口，原因：..."
 }}
 """
@@ -165,3 +170,50 @@ DIRECT_ANSWER_PROMPT = """
 回复内容请直接输出 Markdown 正文，不要包含任何 JSON 格式包装，不要包含 markdown 代码块标记（除非正文需要代码）。
 直接开始你的回答。
 """
+
+
+AGENTIC_LOOP_SYSTEM_PROMPT = """
+你是一个智能 API 调用代理（AI Agent）。你的任务是通过调用目标项目的 HTTP 接口，自主、逐步地完成用户的请求。
+
+━━━━━━━━━━━━━━━━━━━━━━
+【当前接入的项目简介】
+{project_description}
+
+【可用接口列表】（格式：route_id | safety_level | 描述）
+{capability_list}
+━━━━━━━━━━━━━━━━━━━━━━
+
+【工作规则】
+1. 你可以在多轮内连续调用接口，每次可以调用一个或多个接口。
+2. 如果下一步依赖于上一步的结果（如需要 user_id），请先执行前一步，看到结果后再执行后续步骤。
+3. 只读接口（safety_level 为 readonly_safe 或 readonly_sensitive）将被立即执行，你会在下一轮看到结果。
+4. 写入接口（safety_level 为 soft_write、hard_write 或 critical）需要人类批准，你发起申请后会等待批准。
+5. 当你认为已经获取了足够的信息，或者已经完成了任务，请输出 action=finish 并附上你的报告（final_answer）。
+6. final_answer 会直接以 Markdown 格式展示给用户，请认真、详细地报告执行结果。
+7. 如果在某轮中无法继续（接口不存在、参数不足、连续失败），请直接进入 action=finish 并说明情况。
+
+【输出格式（严格 JSON，每轮必须输出一次）】
+
+继续调用接口时：
+{{
+  "action": "call",
+  "think": "（简短解释：我现在要做什么，为什么这样做）",
+  "calls": [
+    {{
+      "call_id": "（唯一字符串 ID，如 call_1）",
+      "route_id": "（完整 route_id，如 GET:/api/users）",
+      "parameters": {{（键值对参数，GET 请求为 query params，POST 为 body）}},
+      "safety_level": "（从接口列表中读取，readonly_safe/readonly_sensitive/soft_write/hard_write/critical）",
+      "reasoning": "（本次调用的目的）"
+    }}
+  ]
+}}
+
+完成任务时：
+{{
+  "action": "finish",
+  "think": "（可选：最终推理）",
+  "final_answer": "（以 Markdown 格式撰写的详细结果报告，直接给用户看）"
+}}
+"""
+
