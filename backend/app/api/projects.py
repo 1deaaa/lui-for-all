@@ -34,10 +34,29 @@ class ProjectImportRequest(BaseModel):
     description: str | None = None
     username: str | None = Field(default=None, description="需要目标系统登录时填写的账号")
     password: str | None = Field(default=None, description="需要目标系统登录时填写的密码")
+    login_route_id: str | None = Field(default=None, description="登录接口 route_id，如 POST:/api/auth/login")
+    login_field_username: str | None = Field(default="username", description="登录接口的用户名字段名")
+    login_field_password: str | None = Field(default="password", description="登录接口的密码字段名")
     source_path: str = Field(
         ...,
         description="目标项目本地源码目录的绝对路径",
     )
+
+
+class FetchRoutesRequest(BaseModel):
+    """从 OpenAPI 地址拉取路由列表请求"""
+    base_url: str
+    openapi_url: str | None = None
+
+
+class VerifyLoginRequest(BaseModel):
+    """验证登录接口请求"""
+    base_url: str
+    login_route_id: str
+    username: str
+    password: str
+    body_field_username: str = Field(default="username", description="登录接口的用户名字段名")
+    body_field_password: str = Field(default="password", description="登录接口的密码字段名")
 
 
 class TestConnectionRequest(BaseModel):
@@ -157,7 +176,10 @@ async def import_project(
         description=request.description,
         username=request.username,
         password=request.password,
-        source_path=request.source_path,  # 存储本地源码路径
+        login_route_id=request.login_route_id,
+        login_field_username=request.login_field_username or "username",
+        login_field_password=request.login_field_password or "password",
+        source_path=request.source_path,
         discovery_status="pending",
         metadata_={
             "discovery_progress": 0,
@@ -173,6 +195,85 @@ async def import_project(
         name=request.name,
         status="pending",
     )
+
+@router.post("/fetch-routes")
+async def fetch_routes(request: FetchRoutesRequest):
+    """从 OpenAPI 地址拉取路由列表，供前端选择登录接口"""
+    import httpx
+
+    base = request.base_url.rstrip("/")
+    if request.openapi_url:
+        if request.openapi_url.startswith("http"):
+            url = request.openapi_url
+        else:
+            suffix = request.openapi_url if request.openapi_url.startswith("/") else f"/{request.openapi_url}"
+            url = f"{base}{suffix}"
+    else:
+        url = f"{base}/openapi.json"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            spec = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"无法获取 OpenAPI 文档: {e}")
+
+    routes = []
+    for path, methods in spec.get("paths", {}).items():
+        for method, op in methods.items():
+            if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                summary = op.get("summary") or op.get("operationId") or ""
+                routes.append({
+                    "route_id": f"{method.upper()}:{path}",
+                    "method": method.upper(),
+                    "path": path,
+                    "summary": summary,
+                })
+    return {"routes": routes}
+
+
+@router.post("/verify-login")
+async def verify_login(request: VerifyLoginRequest):
+    """用提供的凭据调用登录接口，验证是否能拿到 token"""
+    import httpx
+    from app.services.auth_session_service import AuthSessionService
+
+    method_str, _, path = request.login_route_id.partition(":")
+    if not path:
+        raise HTTPException(status_code=400, detail="login_route_id 格式应为 METHOD:/path")
+
+    base = request.base_url.rstrip("/")
+    url = f"{base}{path if path.startswith('/') else '/' + path}"
+    body = {
+        request.body_field_username: request.username,
+        request.body_field_password: request.password,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            resp = await client.request(
+                method=method_str.upper(),
+                url=url,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            status_code = resp.status_code
+            try:
+                body_json = resp.json()
+            except Exception:
+                body_json = {}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"请求失败: {e}")
+
+    auth = AuthSessionService()
+    auth.capture_token(body_json)
+
+    if auth.token:
+        return {"success": True, "status_code": status_code, "message": "登录成功，token 已捕获"}
+    else:
+        return {"success": False, "status_code": status_code, "message": f"登录接口返回 HTTP {status_code}，未能从响应中捕获 token"}
+
 
 @router.post("/test-connection")
 async def test_connection(request: TestConnectionRequest):

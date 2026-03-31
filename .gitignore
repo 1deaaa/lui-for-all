@@ -186,3 +186,4 @@ sse_debug.log
 .DS_Store
 Thumbs.db
 agent-matchbox/.git
+.codepilot-uploads/

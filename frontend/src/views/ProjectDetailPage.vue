@@ -28,22 +28,26 @@ const capabilityGroups = computed(() => {
   return groups
 })
 
-const domainLabels: Record<string, string> = {
-  auth: '🔐 认证与授权',
-  user: '👤 用户管理',
-  admin: '🛡️ 管理员操作',
-  finance: '💰 账务与计费',
-  content: '📄 内容管理',
-  storage: '🗄️ 数据与存储',
-  analytics: '📊 统计与分析',
-  notification: '🔔 通知与推送',
-  system: '⚙️ 系统配置',
-  integration: '🔗 集成与外部接口',
-  unknown: '❓ 未分类',
+const domainInfo: Record<string, { label: string; icon: string }> = {
+  auth: { label: '认证与授权', icon: 'solar:lock-password-bold-duotone' },
+  user: { label: '用户管理', icon: 'solar:user-circle-bold-duotone' },
+  admin: { label: '管理员操作', icon: 'solar:shield-check-bold-duotone' },
+  finance: { label: '账务与计费', icon: 'solar:card-transfer-bold-duotone' },
+  content: { label: '内容管理', icon: 'solar:document-text-bold-duotone' },
+  storage: { label: '数据与存储', icon: 'solar:database-bold-duotone' },
+  analytics: { label: '统计与分析', icon: 'solar:chart-square-bold-duotone' },
+  notification: { label: '通知与推送', icon: 'solar:bell-bing-bold-duotone' },
+  system: { label: '系统配置', icon: 'solar:settings-bold-duotone' },
+  integration: { label: '集成与外部接口', icon: 'solar:link-round-bold-duotone' },
+  unknown: { label: '未分类', icon: 'solar:help-circle-bold-duotone' },
 }
 
 function getDomainLabel(domain: string): string {
-  return domainLabels[domain] || `📌 ${domain}`
+  return domainInfo[domain]?.label || domain
+}
+
+function getDomainIcon(domain: string): string {
+  return domainInfo[domain]?.icon || 'solar:pin-bold-duotone'
 }
 
 function getSafetyType(safety: string): string {
@@ -130,7 +134,8 @@ onMounted(() => {
           :disabled="project?.status !== 'completed'"
           :title="project?.status !== 'completed' ? '请先完成发现流程' : ''"
         >
-          💬 进入对话
+          <Icon icon="solar:chat-round-dots-bold-duotone" style="margin-right: 6px; font-size: 16px; vertical-align: -2px;" />
+          进入对话
         </el-button>
         <el-button
           @click="triggerDiscovery"
@@ -194,7 +199,10 @@ onMounted(() => {
           </template>
 
           <div v-for="(caps, domain) in capabilityGroups" :key="domain" class="domain-group">
-            <div class="domain-label">{{ getDomainLabel(domain as string) }}</div>
+            <div class="domain-label">
+              <Icon :icon="getDomainIcon(domain as string)" style="margin-right: 8px; vertical-align: middle; font-size: 18px;" />
+              <span>{{ getDomainLabel(domain as string) }}</span>
+            </div>
             <div class="capability-grid">
               <el-card
                 v-for="cap in caps"
@@ -230,7 +238,7 @@ onMounted(() => {
 .project-detail-page {
   height: 100%;
   overflow-y: auto;
-  padding: 4px;
+  padding: 32px 40px;
 }
 
 .page-header {

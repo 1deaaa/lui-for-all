@@ -183,6 +183,9 @@ async def stream_events(
                         "project_base_url": project.base_url if project else "",
                         "project_username": project.username if project else None,
                         "project_password": project.password if project else None,
+                        "project_login_route_id": project.login_route_id if project else None,
+                        "project_login_field_username": (project.login_field_username or "username") if project else "username",
+                        "project_login_field_password": (project.login_field_password or "password") if project else "password",
                         "project_description": project.description if project else None,
                     }
 
@@ -231,6 +234,9 @@ async def stream_events(
                 "project_base_url": task_run_data["project_base_url"],
                 "project_username": task_run_data["project_username"],
                 "project_password": task_run_data["project_password"],
+                "project_login_route_id": task_run_data.get("project_login_route_id"),
+                "project_login_field_username": task_run_data.get("project_login_field_username", "username"),
+                "project_login_field_password": task_run_data.get("project_login_field_password", "password"),
                 "project_description": task_run_data.get("project_description"),
                 "chat_history": chat_history_dicts,
                 "user_message": task_run_data["user_message"],
@@ -280,7 +286,7 @@ async def stream_events(
                 config,
                 stream_mode=["custom", "updates"],
             ):
-                print(f"DEBUG: SSE loop type={stream_type}")
+
                 if stream_type == "custom":
                     event_type = payload.get("event")
                     if event_type == "task_progress":

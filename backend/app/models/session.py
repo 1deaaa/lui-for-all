@@ -20,6 +20,9 @@ class Session(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     
+    # 会话标题（取首条用户消息前 20 字）
+    title: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     # 会话状态
     status: Mapped[str] = mapped_column(
         String(50),

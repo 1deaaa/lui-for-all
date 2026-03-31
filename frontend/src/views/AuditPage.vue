@@ -113,6 +113,7 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+  padding: 32px 40px;
 }
 
 .page-header {

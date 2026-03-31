@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useWindowSize } from '@vueuse/core'
-import { ChatDotRound, Folder, Document, Setting, Fold, Expand, Menu as MenuIcon } from '@element-plus/icons-vue'
+import { ChatDotRound, Folder, Document, Setting, Menu as MenuIcon } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -13,23 +13,10 @@ const { width } = useWindowSize()
 const isMobile = computed(() => width.value <= 768)
 
 // 菜单状态控制
-const isCollapse = ref(false)
 const drawerVisible = ref(false)
-
-// 自动响应移动端模式
-watch(isMobile, (newVal) => {
-  if (newVal) {
-    isCollapse.value = false // 移动端用 Drawer 显示完整菜单
-  }
-})
 
 // 当前激活的菜单
 const activeMenu = computed(() => route.path)
-
-// 切换桌面端侧边栏
-const toggleSidebar = () => {
-  isCollapse.value = !isCollapse.value
-}
 
 // 供 Menu 使用的核心导航结构
 const menuItems = [
@@ -46,7 +33,9 @@ projectStore.fetchProjects()
   <el-container class="app-container">
     <!-- 移动端顶部 Navbar -->
     <div v-if="isMobile" class="mobile-navbar">
-      <div class="logo-mobile">LUI ✨</div>
+      <div class="logo-mobile">
+        LUI <Icon icon="solar:stars-bold-duotone" class="sparkle-icon" />
+      </div>
       <el-button text class="menu-btn" @click="drawerVisible = true">
         <el-icon :size="20"><MenuIcon /></el-icon>
       </el-button>
@@ -69,31 +58,25 @@ projectStore.fetchProjects()
       </el-menu>
     </el-drawer>
 
-    <!-- 桌面侧边栏 -->
-    <el-aside v-if="!isMobile" :width="isCollapse ? '80px' : '260px'" class="app-aside glass-effect">
+    <!-- 桌面侧边栏 (极简固定) -->
+    <el-aside v-if="!isMobile" width="64px" class="app-aside">
       <div class="logo">
-        <span v-if="!isCollapse" class="logo-text">LUI for All</span>
-        <span v-else class="logo-icon">✨</span>
+        <span class="logo-icon">
+          <Icon icon="solar:box-minimalistic-bold" />
+        </span>
       </div>
       
       <el-menu
         :default-active="activeMenu"
-        :collapse="isCollapse"
+        :collapse="true"
         router
-        class="app-menu modern-menu"
+        class="app-menu flat-menu"
       >
         <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
           <el-icon><component :is="item.icon" /></el-icon>
           <template #title>{{ item.title }}</template>
         </el-menu-item>
       </el-menu>
-      
-      <div class="sidebar-toggle" @click="toggleSidebar">
-        <el-icon>
-          <Fold v-if="!isCollapse" />
-          <Expand v-else />
-        </el-icon>
-      </div>
     </el-aside>
     
     <!-- 主内容区 -->
@@ -112,28 +95,38 @@ projectStore.fetchProjects()
 <style>
 /* ================= 全局设计变量 ================= */
 :root {
-  --bg-color-main: #fcfcfc;
-  --bg-color-glass: rgba(255, 255, 255, 0.75);
-  --sidebar-blur: blur(20px);
-  --border-color-light: #eaedf1;
+  --bg-color-main: #ffffff;
+  --bg-color-sidebar: #f9f9f9;
+  --border-color-light: #e5e5e5;
   
-  /* oklch 高阶动态色彩 */
-  --color-primary: oklch(0.6 0.15 250);     /* 主亮蓝 */
-  --color-primary-light: oklch(0.9 0.05 250); 
-  --color-text-primary: #1a1a1c;
-  --color-text-secondary: #64748b;
+  /* 直角设计，极简黑白灰 */
+  --color-primary: #171717;     /* 深玄黑 */
+  --color-primary-light: #f4f4f4; 
+  --color-text-primary: #0f0f0f;
+  --color-text-secondary: #737373;
   
-  /* 阴影及微动效 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
-  --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
+  /* 覆盖 Element Plus 默认蓝色主题 */
+  --el-color-primary: #0f0f0f;
+  --el-color-primary-light-3: #3f3f3f;
+  --el-color-primary-light-5: #6f6f6f;
+  --el-color-primary-light-7: #a3a3a3;
+  --el-color-primary-light-8: #cccccc;
+  --el-color-primary-light-9: #e5e5e5;
+  --el-color-primary-dark-2: #000000;
   
-  --radius-lg: 16px;
-  --radius-md: 12px;
-  --radius-sm: 8px;
+  /* 阴影尽量克制，平面化设计 */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 4px 20px rgba(0, 0, 0, 0.05);
+  --shadow-hover: 0 8px 30px rgba(0, 0, 0, 0.08); /* 仅在高级浮岛使用 */
   
-  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 强制直角风格 */
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
+  
+  /* 动画曲线加强专业感 */
+  --transition-smooth: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* ================= 基础重置 ================= */
@@ -155,7 +148,7 @@ html, body, #app {
 /* ================= 动画特效 ================= */
 .fade-slide-enter-active,
 .fade-slide-leave-active {
-  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .fade-slide-enter-from {
@@ -180,11 +173,12 @@ html, body, #app {
 }
 
 .app-main {
-  padding: 24px;
-  /* 为卡片的阴影等留出呼吸空间 */
-  padding-bottom: 40px; 
-  overflow-y: auto;
-  overflow-x: hidden;
+  --el-main-padding: 0;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-color-main);
 }
 
 @media (max-width: 768px) {
@@ -229,35 +223,41 @@ html, body, #app {
   }
 }
 
-/* ================= 桌面侧边栏 (玻璃态) ================= */
+/* ================= 桌面侧边栏 (极简平面) ================= */
 .app-aside {
-  background-color: var(--bg-color-glass);
-  backdrop-filter: var(--sidebar-blur);
+  background-color: var(--bg-color-sidebar);
   border-right: 1px solid var(--border-color-light);
   display: flex;
   flex-direction: column;
-  transition: var(--transition-smooth);
-  box-shadow: 1px 0 10px rgba(0,0,0,0.02);
+  align-items: center;
   z-index: 10;
+  overflow: hidden;
 }
 
 .logo {
-  height: 80px;
+  height: 64px;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-text-primary);
-  border-bottom: 1px solid transparent;
-}
-
-.logo-text {
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
 }
 
 .logo-icon {
-  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  width: 36px;
+  height: 36px;
+  color: #0f0f0f;
+  background: transparent;
+  /* 移除丑陋的黑块，使用透明背景+深色Icon，更显高级 */
+}
+
+.sparkle-icon {
+  vertical-align: middle;
+  margin-left: 4px;
 }
 
 .drawer-logo {
@@ -266,7 +266,7 @@ html, body, #app {
   font-weight: bold;
 }
 
-/* ================= 组件复写: 现代化菜单 ================= */
+/* ================= 组件复写: 平面直角菜单 ================= */
 .el-menu {
   border-right: none !important;
   background-color: transparent !important;
@@ -274,98 +274,101 @@ html, body, #app {
 
 .app-menu, .drawer-menu {
   flex: 1;
-  padding: 12px 8px;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
 }
 
 .el-menu-item {
   color: var(--color-text-secondary) !important;
-  border-radius: var(--radius-md) !important;
-  margin-bottom: 8px !important;
-  height: 50px !important;
-  line-height: 50px !important;
-  font-weight: 500;
-  transition: var(--transition-smooth) !important;
+  border-radius: 0 !important; /* 彻底变为方形元素 */
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 44px !important;
+  height: 44px !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.el-menu--collapse .el-menu-item .el-tooltip__trigger {
+  padding: 0 !important;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
 }
 
 .el-menu-item:hover {
-  background-color: var(--bg-color-main) !important;
+  background-color: #f0f0f0 !important;
   color: var(--color-text-primary) !important;
 }
 
 .el-menu-item.is-active {
-  background-color: var(--color-primary-light) !important;
-  color: var(--color-primary) !important;
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #0f0f0f !important;
   font-weight: 600;
+  box-shadow: inset 3px 0 0 0 #0f0f0f; /* 高级左侧实线指示，响应主题 */
 }
 
 .el-menu-item .el-icon {
   font-size: 20px !important;
-  margin-right: 12px !important;
+  margin: 0 !important;
 }
 
-/* ================= 侧边栏 Toggle 控制器 ================= */
-.sidebar-toggle {
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  border-top: 1px solid var(--border-color-light);
-  transition: var(--transition-smooth);
-}
-
-.sidebar-toggle:hover {
-  background-color: var(--color-primary-light);
-  color: var(--color-primary);
-}
-
-/* ================= 全局 Element-Plus 卡片重构 ================= */
+/* ================= 全局 Element-Plus 重构 (直角平铺) ================= */
 .el-card {
-  border-radius: var(--radius-lg) !important;
+  border-radius: 0 !important;
   border: 1px solid var(--border-color-light) !important;
-  box-shadow: var(--shadow-md) !important;
-  transition: var(--transition-smooth) !important;
-  background-color: rgba(255, 255, 255, 0.9) !important;
-  backdrop-filter: blur(10px) !important;
+  box-shadow: none !important;
+  transition: border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  background-color: #ffffff !important;
 }
 
 .el-card:hover {
-  box-shadow: var(--shadow-hover) !important;
-  transform: translateY(-2px);
+  border-color: var(--color-text-primary) !important;
 }
 
 .el-card__header {
-  border-bottom-color: var(--border-color-light) !important;
+  border-bottom: 1px solid var(--border-color-light) !important;
   padding: 16px 20px !important;
   font-weight: 600 !important;
   color: var(--color-text-primary) !important;
+  background: #fcfcfc !important;
 }
 
 .el-button {
-  border-radius: var(--radius-md) !important;
+  border-radius: 0 !important;
   font-weight: 500 !important;
-  transition: var(--transition-smooth) !important;
+  box-shadow: none !important;
+  transition: background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1), color 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 .el-button--primary {
   background-color: var(--color-primary) !important;
   border-color: var(--color-primary) !important;
-  box-shadow: 0 4px 6px rgba(100, 100, 250, 0.2) !important;
+  color: #ffffff !important;
 }
 
-.el-button--primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 12px rgba(100, 100, 250, 0.3) !important;
+.el-button--primary:hover, .el-button--primary:focus {
+  background-color: #333333 !important;
+  border-color: #333333 !important;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .el-input__wrapper, .el-textarea__inner {
-  border-radius: var(--radius-md) !important;
+  border-radius: 0 !important;
   box-shadow: 0 0 0 1px var(--border-color-light) inset !important;
-  background-color: var(--bg-color-main) !important;
+  background-color: #ffffff !important;
+  transition: box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 .el-input__wrapper:focus-within, .el-textarea__inner:focus {
-  box-shadow: 0 0 0 1px var(--color-primary) inset, 0 0 0 4px var(--color-primary-light) !important;
+  box-shadow: 0 0 0 1px var(--color-primary) inset !important;
 }
 </style>

@@ -171,6 +171,7 @@ onMounted(loadSettings)
 .settings-page {
   height: 100%;
   overflow-y: auto;
+  padding: 32px 40px;
 }
 
 .page-header {
@@ -197,7 +198,7 @@ onMounted(loadSettings)
   align-items: center;
   gap: 4px;
   font-size: 14px;
-  animation: fadeIn 0.3s ease;
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .status-indicator.success {

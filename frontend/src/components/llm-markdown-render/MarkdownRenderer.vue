@@ -267,7 +267,7 @@ export default {
 .markdown-renderer ul li,
 .markdown-renderer ol li {
   margin-bottom: 0.25em;
-  color: #1a202c; /* 🔥 修复：明确设置列表项文字颜色为深色 */
+  color: #1a202c; /* 注意 修复：明确设置列表项文字颜色为深色 */
   line-height: 1.6;
 }
 

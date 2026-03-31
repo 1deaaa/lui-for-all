@@ -3,8 +3,10 @@ Agentic Loop 核心节点
 实现 ReAct 多轮工具调用循环：Think → Call → Observe → Think → ... → Finish
 """
 
+import asyncio
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -25,6 +27,69 @@ MAX_ITERATIONS = 10
 READ_ONLY_SAFETY = {"readonly_safe", "readonly_sensitive"}
 # 写入安全等级（需要审批）
 WRITE_SAFETY = {"soft_write", "hard_write", "critical"}
+
+# 项目级认证缓存：{ project_id: {token, auth_mode, cookie_name} }
+# 进程内持久化，同一个项目的所有会话共享，无需每轮重新登录
+_project_token_cache: dict[str, dict] = {}
+# 每个项目的登录锁，防止并发竞态导致重复登录
+_project_login_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _ensure_project_token(state: GraphState) -> str | None:
+    """
+    确保当前项目已登录并持有有效 token。
+    使用每项目锁防止并发竞态导致重复登录。
+    """
+    project_id = state.get("project_id", "")
+    if project_id in _project_token_cache:
+        return _project_token_cache[project_id].get("token")
+
+    login_route_id = state.get("project_login_route_id")
+    username = state.get("project_username") or ""
+    password = state.get("project_password") or ""
+    if not (login_route_id and username):
+        logger.info(f"[token_cache] project={project_id} 未配置登录路由或用户名，跳过自动登录")
+        return None
+
+    # 获取或创建该项目的登录锁
+    if project_id not in _project_login_locks:
+        _project_login_locks[project_id] = asyncio.Lock()
+    async with _project_login_locks[project_id]:
+        # double-check：锁内再次检查，避免多个协程串行重复登录
+        if project_id in _project_token_cache:
+            return _project_token_cache[project_id].get("token")
+
+        user_field = state.get("project_login_field_username") or "username"
+        pass_field = state.get("project_login_field_password") or "password"
+
+        logger.info(f"[token_cache] project={project_id} 开始自动登录 route={login_route_id} user_field={user_field}")
+        result = await _execute_http(
+            route_id=login_route_id,
+            parameters={user_field: username, pass_field: password},
+            state=state,
+            bearer_token=None,
+        )
+        token = result.get("captured_token")
+        auth_mode = result.get("captured_auth_mode", "bearer")
+        cookie_name = result.get("captured_cookie_name")
+        if token:
+            _project_token_cache[project_id] = {
+                "token": token,
+                "auth_mode": auth_mode,
+                "cookie_name": cookie_name,
+            }
+            logger.info(
+                f"[token_cache] project={project_id} 登录成功 "
+                f"auth_mode={auth_mode} cookie_name={cookie_name} "
+                f"token={token[:8]}..."
+            )
+        else:
+            logger.warning(
+                f"[token_cache] project={project_id} 登录失败，"
+                f"状态码={result.get('status_code')} "
+                f"响应体={str(result.get('response_body', ''))[:200]}"
+            )
+        return token
 
 
 def _emit(event: str, **payload: Any):
@@ -53,9 +118,17 @@ def _build_capability_list(available_capabilities: list[dict]) -> str:
 
 def _build_messages(state: GraphState) -> list[dict]:
     """构建本轮 LLM 消息列表"""
+    login_route = state.get("project_login_route_id") or ""
+    caps = [
+        c for c in state.get("available_capabilities", [])
+        if not login_route or not any(
+            isinstance(r, dict) and r.get("route_id") == login_route
+            for r in c.get("backed_by_routes", [])
+        )
+    ]
     system_prompt = AGENTIC_LOOP_SYSTEM_PROMPT.format(
         project_description=state.get("project_description") or "未知",
-        capability_list=_build_capability_list(state.get("available_capabilities", [])),
+        capability_list=_build_capability_list(caps),
     )
 
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -84,17 +157,96 @@ def _parse_route(route_id: str) -> tuple[str, str]:
     return "GET", route_id
 
 
+async def _execute_http(
+    route_id: str,
+    parameters: dict,
+    state: GraphState,
+    bearer_token: str | None,
+    auth_mode: str = "bearer",
+    cookie_name: str | None = None,
+) -> dict:
+    """底层 HTTP 执行，返回 {status_code, response_body, duration_ms, captured_token}"""
+    from app.executor.http_executor import HTTPExecutor
+    from app.services.auth_session_service import AuthSessionService
+
+    method, path = _parse_route(route_id)
+
+    # 替换路径模板变量
+    path_param_keys = re.findall(r'\{(\w+)\}', path)
+    remaining = dict(parameters)
+    for key in path_param_keys:
+        if key in remaining:
+            path = path.replace(f'{{{key}}}', str(remaining.pop(key)))
+    parameters = remaining
+
+    base_url = state.get("project_base_url", "http://localhost:8000").rstrip("/")
+    auth = AuthSessionService()
+    if bearer_token:
+        auth._token = bearer_token
+        auth._auth_mode = auth_mode
+        auth._cookie_name = cookie_name
+    headers = auth.build_headers({"Content-Type": "application/json"})
+
+    executor = HTTPExecutor(base_url=base_url, trace_id=state.get("trace_id"))
+    norm_path = path if path.startswith("/") else f"/{path}"
+    full_url = f"{base_url}{norm_path}"
+
+    logger.info(
+        f"[http] {method} {full_url} | "
+        f"has_token={bool(bearer_token)} | "
+        f"params={list(parameters.keys()) if parameters else []}"
+    )
+
+    status_code, response_body, duration_ms = await executor.execute(
+        method=method,
+        path=norm_path,
+        headers=headers,
+        params=parameters if method == "GET" else None,
+        body=parameters if method in ("POST", "PUT", "PATCH") else None,
+    )
+
+    # 先尝试从响应体捕获 token（Bearer 模式）
+    auth.capture_token(response_body)
+    # 再尝试从响应 cookies 捕获（Cookie/Session 模式）
+    auth.capture_from_cookies(executor.last_response_cookies)
+
+    logger.info(
+        f"[http] {method} {full_url} → {status_code} ({duration_ms}ms) | "
+        f"resp_cookies={list(executor.last_response_cookies.keys())} | "
+        f"captured_token={bool(auth.token)} | auth_mode={auth.auth_mode}"
+    )
+    if status_code == 401:
+        logger.warning(
+            f"[http] 401 详情 | url={full_url} | "
+            f"sent_token={bearer_token[:8] + '...' if bearer_token else 'None'} | "
+            f"resp_body={str(response_body)[:200]} | "
+            f"resp_cookies={executor.last_response_cookies} | "
+            f"resp_headers_auth={executor.last_response_headers.get('www-authenticate', 'N/A')}"
+        )
+
+    return {
+        "status_code": status_code,
+        "response_body": response_body,
+        "duration_ms": duration_ms,
+        "captured_token": auth.token,
+        "captured_auth_mode": auth.auth_mode,
+        "captured_cookie_name": auth.cookie_name,
+        "url": full_url,
+        "method": method,
+        "parameters": parameters,
+    }
+
+
 async def _execute_read_call(
     call: dict,
     state: GraphState,
+    current_token: str | None = None,
 ) -> dict:
-    """立即执行一个只读接口调用，返回结果摘要"""
+    """执行一个接口调用，自动处理项目级 token 缓存，返回结果摘要"""
     route_id = call.get("route_id", "")
     parameters = call.get("parameters", {})
     call_id = call.get("call_id", str(uuid.uuid4()))
     step_id = str(uuid.uuid4())
-
-    method, path = _parse_route(route_id)
 
     _emit(
         "tool_started",
@@ -105,23 +257,55 @@ async def _execute_read_call(
         route_id=route_id,
     )
 
-    base_url = state.get("project_base_url", "http://localhost:8000").rstrip("/")
-    from app.executor.http_executor import HTTPExecutor
-    from app.services.auth_session_service import AuthSessionService
+    # 从缓存取完整 auth 信息（token + mode + cookie_name）
+    project_id = state.get("project_id", "")
+    cached = _project_token_cache.get(project_id, {})
+    token = current_token or cached.get("token")
+    auth_mode = cached.get("auth_mode", "bearer")
+    cookie_name = cached.get("cookie_name")
 
-    auth = AuthSessionService()
-    headers = auth.build_headers({"Content-Type": "application/json"})
+    # 无缓存时自动登录
+    if not token:
+        token = await _ensure_project_token(state)
+        cached = _project_token_cache.get(project_id, {})
+        auth_mode = cached.get("auth_mode", "bearer")
+        cookie_name = cached.get("cookie_name")
 
     try:
-        executor = HTTPExecutor(base_url=base_url, trace_id=state.get("trace_id"))
-        status_code, response_body, duration_ms = await executor.execute(
-            method=method,
-            path=path if path.startswith("/") else f"/{path}",
-            headers=headers,
-            params=parameters if method == "GET" else None,
-            body=parameters if method in ("POST", "PUT", "PATCH") else None,
+        result = await _execute_http(
+            route_id, parameters, state,
+            bearer_token=token, auth_mode=auth_mode, cookie_name=cookie_name,
         )
-        auth.capture_token(response_body)
+        status_code = result["status_code"]
+        response_body = result["response_body"]
+        duration_ms = result["duration_ms"]
+
+        # 若收到 401，清除缓存并重新登录后重试一次
+        if status_code == 401:
+            logger.warning(f"[exec] 401 收到，清除缓存重试 project={project_id}")
+            _project_token_cache.pop(project_id, None)
+            new_token = await _ensure_project_token(state)
+            new_cached = _project_token_cache.get(project_id, {})
+            if new_token and new_token != token:
+                result = await _execute_http(
+                    route_id, parameters, state,
+                    bearer_token=new_token,
+                    auth_mode=new_cached.get("auth_mode", "bearer"),
+                    cookie_name=new_cached.get("cookie_name"),
+                )
+                status_code = result["status_code"]
+                response_body = result["response_body"]
+                duration_ms = result["duration_ms"]
+                token = new_token
+
+        # 若本次响应捕获到新 token，更新缓存（含 auth_mode 和 cookie_name）
+        if result.get("captured_token") and result["captured_token"] != token:
+            if project_id:
+                _project_token_cache[project_id] = {
+                    "token": result["captured_token"],
+                    "auth_mode": result.get("captured_auth_mode", "bearer"),
+                    "cookie_name": result.get("captured_cookie_name"),
+                }
 
         _emit(
             "tool_completed",
@@ -133,7 +317,6 @@ async def _execute_read_call(
             status_code=status_code,
         )
 
-        # 截断超大响应，避免 LLM token 爆炸
         body_str = json.dumps(response_body, ensure_ascii=False)
         if len(body_str) > 4000:
             body_str = body_str[:4000] + "... [已截断]"
@@ -144,13 +327,14 @@ async def _execute_read_call(
             "status": "success",
             "status_code": status_code,
             "result": body_str,
+            "captured_token": result.get("captured_token"),
             "artifact": {
                 "artifact_id": str(uuid.uuid4()),
                 "step_id": step_id,
                 "route_id": route_id,
-                "method": method,
-                "url": f"{base_url}{path if path.startswith('/') else '/' + path}",
-                "request_body": parameters,
+                "method": result["method"],
+                "url": result["url"],
+                "request_body": result["parameters"],
                 "status_code": status_code,
                 "response_body": response_body if isinstance(response_body, dict) else {"text": str(response_body)},
                 "duration_ms": duration_ms,
@@ -188,7 +372,7 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
     4. action=finish → 流式输出最终报告，结束循环
     """
     iterations = state.get("agentic_iterations", 0) + 1
-    logger.info(f"[agentic_loop] 第 {iterations} 轮开始")
+    logger.debug(f"[agentic_loop] 第 {iterations} 轮开始")
 
     # 超限保护
     if iterations > MAX_ITERATIONS:
@@ -286,31 +470,33 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
     new_history: list[dict[str, Any]] = [history_entry_ai]
     new_artifacts: list[Any] = []
 
+    existing_history: list[dict[str, Any]] = state.get("agentic_history") or []
+
     if action == "finish":
         # AI 决定结束，交给总结节点汇报
         return {
             "agentic_done": True,
             "agentic_iterations": iterations,
-            "agentic_history": new_history,
+            "agentic_history": existing_history + new_history,
             "execution_artifacts": new_artifacts,
         }
 
     elif action == "call":
         calls: list[dict] = decision.get("calls", [])
         if not calls:
-            logger.warning("[agentic_loop] action=call 但 calls 为空，强制结束")
+            logger.warning("[agentic_loop] action=call 但 calls 为空，视为 finish")
             return {
                 "agentic_done": True,
                 "agentic_iterations": iterations,
-                "agentic_history": new_history,
-                "summary_text": "AI 决定调用接口但未提供具体接口，任务结束。",
+                "agentic_history": existing_history + new_history,
+                "execution_artifacts": new_artifacts,
             }
 
         # 分流：只读立即执行，写入排队审批
         read_calls = [c for c in calls if c.get("safety_level", "readonly_safe") in READ_ONLY_SAFETY]
         write_calls = [c for c in calls if c.get("safety_level", "readonly_safe") in WRITE_SAFETY]
 
-        # 执行所有只读调用
+        # 执行所有只读调用（token 由 _ensure_project_token 自动管理）
         tool_results_summary: list[str] = []
         for call in read_calls:
             result = await _execute_read_call(call, state)
@@ -360,8 +546,8 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
             approved = approval_result.get("approved", False)
 
             if approved:
-                # 执行写入
-                write_result = await _execute_read_call(write_call, state)  # 复用执行函数
+                # 执行写入（token 由缓存自动管理）
+                write_result = await _execute_read_call(write_call, state)
                 approved_write_results.append(
                     f'write_id={write_id} route={route_id} status={write_result["status_code"]}\n结果: {write_result["result"]}'
                 )
@@ -389,7 +575,7 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
         return {
             "agentic_done": False,
             "agentic_iterations": iterations,
-            "agentic_history": new_history,
+            "agentic_history": existing_history + new_history,
             "execution_artifacts": new_artifacts,
         }
 
@@ -399,6 +585,6 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
         return {
             "agentic_done": True,
             "agentic_iterations": iterations,
-            "agentic_history": new_history,
+            "agentic_history": existing_history + new_history,
             "summary_text": f"AI 输出了未知指令 action={action}，任务中止。",
         }

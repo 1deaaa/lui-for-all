@@ -57,6 +57,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
         messages = [{"role": "system", "content": AGENT_ENTRY_PROMPT.format(
             capability_list=capability_list,
             project_description=project_description,
+            user_message=state["user_message"],
         )}]
         for msg in state.get("chat_history", []):
             messages.append({"role": msg["role"], "content": msg["content"]})
@@ -90,23 +91,21 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
                         reply_content += token
                         emit_runtime_event("token_emitted", token=token)
 
-        logger.info(f"[agent_entry] AI 原始回复: {full_content}")
+        logger.debug(f"[agent_entry] AI 原始回复: {full_content}")
         # 兜底：未解析出策略，尝试从文本长度和内容特征推断
         if strategy is None:
             clean_reply = full_content.strip()
-            # 如果回复中包含你好、谢谢、系统等词汇，或者没有明显的 JSON 结构且较短，推测为 direct
             greeting_keywords = ["你好", "您好", "hello", "hi", "助手", "功能", "做些什么"]
             is_simple_greeting = any(k in clean_reply.lower() for k in greeting_keywords)
-            
+
             if is_simple_greeting or (len(clean_reply) > 0 and not clean_reply.startswith("{") and not clean_reply.startswith("```")):
                 strategy = "direct"
                 reply_content = clean_reply
-                emit_runtime_event("token_emitted", token=f" [DEBUG fallback] {reply_content}")
+                emit_runtime_event("token_emitted", token=reply_content)
             else:
                 strategy = "agentic"
-                emit_runtime_event("thought_emitted", token=f" [DEBUG chosen agentic for raw: {full_content[:100]}] ")
 
-        logger.info(f"[agent_entry] 决策策略: {strategy}")
+        logger.debug(f"[agent_entry] 决策策略: {strategy}")
 
         state_update: dict[str, Any] = {
             "request_complexity": strategy,

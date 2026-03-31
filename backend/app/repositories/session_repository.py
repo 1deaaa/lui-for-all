@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.session import Message, Session
 
 
+
 class SessionRepository:
     """会话仓储"""
 
@@ -32,6 +33,25 @@ class SessionRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_by_project(self, project_id: str, limit: int = 50, offset: int = 0) -> list[Session]:
+        result = await self.db.execute(
+            select(Session)
+            .where(Session.project_id == project_id)
+            .order_by(Session.updated_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def update_title(self, session_id: str, title: str):
+        session = await self.get_by_id(session_id)
+        if session:
+            session.title = title
+
+    async def delete_session(self, session_id: str):
+        await self.db.execute(delete(Message).where(Message.session_id == session_id))
+        await self.db.execute(delete(Session).where(Session.id == session_id))
 
     async def delete_by_project(self, project_id: str):
         session_ids = select(Session.id).where(Session.project_id == project_id)

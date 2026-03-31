@@ -28,6 +28,10 @@ class GraphState(TypedDict):
     project_base_url: str
     project_username: str | None
     project_password: str | None
+    project_login_route_id: str | None  # 用户指定的登录接口，如 POST:/api/auth/login
+    project_login_field_username: str | None  # 登录接口的用户名字段名
+    project_login_field_password: str | None  # 登录接口的密码字段名
+    captured_token: str | None  # Agentic loop 跨轮次复用的认证 token
     project_description: str | None  # 项目全局业务描述（由 AI 或用户填写）
 
     # 整个对话上下文历史
@@ -43,8 +47,8 @@ class GraphState(TypedDict):
     available_capabilities: list[dict[str, Any]]
 
     # ───── Agentic Loop 核心字段 ─────
-    # 多轮对话历史（包含 AI 决策 + 工具结果），采用 append-only 策略
-    agentic_history: Annotated[list[dict[str, Any]], merge_lists]
+    # 多轮对话历史（包含 AI 决策 + 工具结果），每轮节点返回完整列表（替换语义）
+    agentic_history: list[dict[str, Any]]
     # 本轮 Loop 是否已结束（AI 决定汇报时设为 True）
     agentic_done: bool
     # 当前循环轮次（防止无限循环，最多 MAX_ITER 轮）

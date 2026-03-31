@@ -22,8 +22,10 @@ export const useSessionStore = defineStore('session', () => {
   const progressPercent = ref(0)
   const progressMessage = ref('')
   const runtimeEvents = ref<RuntimeEventItem[]>([])
+  const runtimeEventsByTaskRun = ref<Record<string, RuntimeEventItem[]>>({})
   const streamingMessageId = ref<string | null>(null)  // 正文消息 ID
   const streamingThoughtId = ref<string | null>(null)   // 推理消息 ID
+  const currentTaskRunId = ref<string | null>(null)
 
   const messageCount = computed(() => messages.value.length)
 
@@ -102,6 +104,13 @@ export const useSessionStore = defineStore('session', () => {
     if (runtimeEvents.value.length > 30) {
       runtimeEvents.value.splice(0, runtimeEvents.value.length - 30)
     }
+    if (currentTaskRunId.value) {
+      const key = currentTaskRunId.value
+      if (!runtimeEventsByTaskRun.value[key]) {
+        runtimeEventsByTaskRun.value[key] = []
+      }
+      runtimeEventsByTaskRun.value[key].push(event)
+    }
   }
 
   function startEventStream(taskRunId: string, resumeOpts?: { resumeWriteId: string, resumeAction: string }) {
@@ -119,6 +128,10 @@ export const useSessionStore = defineStore('session', () => {
     progressPercent.value = 0
     progressMessage.value = 'AI 已接收请求，正在启动执行链路'
     runtimeEvents.value = []
+    currentTaskRunId.value = taskRunId
+    if (!runtimeEventsByTaskRun.value[taskRunId]) {
+      runtimeEventsByTaskRun.value[taskRunId] = []
+    }
     // 重置流式消息 ID
     streamingMessageId.value = null
     streamingThoughtId.value = null
@@ -409,6 +422,8 @@ export const useSessionStore = defineStore('session', () => {
     progressPercent.value = 0
     progressMessage.value = ''
     runtimeEvents.value = []
+    runtimeEventsByTaskRun.value = {}
+    currentTaskRunId.value = null
   }
 
   return {
@@ -422,6 +437,7 @@ export const useSessionStore = defineStore('session', () => {
     progressPercent,
     progressMessage,
     runtimeEvents,
+    runtimeEventsByTaskRun,
     messageCount,
     createSession,
     sendMessage,

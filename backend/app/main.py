@@ -33,6 +33,10 @@ logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)
 logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("anthropic").setLevel(logging.WARNING)
+logging.getLogger("langgraph").setLevel(logging.WARNING)
+logging.getLogger("langchain").setLevel(logging.WARNING)
 
 
 def init_telemetry():

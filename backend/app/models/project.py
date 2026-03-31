@@ -31,6 +31,9 @@ class Project(Base):
     # Auth凭据支持
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    login_route_id: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="登录接口 route_id，如 POST:/api/auth/login")
+    login_field_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="登录接口的用户名字段名，默认 username")
+    login_field_password: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="登录接口的密码字段名，默认 password")
     
     # 发现状态
     discovery_status: Mapped[str] = mapped_column(

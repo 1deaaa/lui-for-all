@@ -59,11 +59,6 @@ TASK_PLAN_PROMPT = """
 选中的能力:
 {capabilities}
 
-上下文环境提供以下目标系统预设认证信息（如有）供登录API使用:
-Username: {username}
-Password: {password}
-若您选定的操作被认为是 "authenticated" 权限要求，并且您在图中找到了对方系统的登录路由（如 /login、/auth/token），您可以放心地将该登录请求设为 plan 的第一个 step（传递上方给您的账号密码）。引擎会自动捕获响应报文里的 jwt / token 并在后续步骤中代为注入 Authorization 表头。
-
 请制定执行计划，输出 JSON 格式:
 {{
     "plan": {{
@@ -191,6 +186,7 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 4. 写入接口（safety_level 为 soft_write、hard_write 或 critical）需要人类批准，你发起申请后会等待批准。
 5. 当你认为已经获取了足够的信息，或者已经完成了任务，请输出 action=finish。
 6. 如果在某轮中无法继续（接口不存在、参数不足、连续失败），请直接进入 action=finish 并在 think 字段中说明情况。
+7. **严禁调用任何登录类接口**（路径含 login、auth/token、signin 等）。认证由系统自动完成并注入请求头，你无需也不得触发登录流程。
 
 【输出格式（极为重要）】
 

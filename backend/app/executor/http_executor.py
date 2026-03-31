@@ -31,6 +31,16 @@ class HTTPExecutor:
         self.timeout = timeout
         self.trace_id = trace_id
         self.execution_log: list[dict[str, Any]] = []
+        self._last_response_cookies: dict[str, str] = {}
+        self._last_response_headers: dict[str, str] = {}
+
+    @property
+    def last_response_cookies(self) -> dict[str, str]:
+        return self._last_response_cookies
+
+    @property
+    def last_response_headers(self) -> dict[str, str]:
+        return self._last_response_headers
 
     def _inject_trace_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """注入 Trace ID 到请求头"""
@@ -122,6 +132,10 @@ class HTTPExecutor:
                     )
 
                 elapsed_ms = int((time.time() - start_time) * 1000)
+
+                # 保存响应 cookies 和 headers（供调用方捕获 session cookie）
+                self._last_response_cookies = dict(response.cookies)
+                self._last_response_headers = dict(response.headers)
 
                 # 解析响应
                 try:
