@@ -227,18 +227,20 @@ def format_sse_event(event: BaseModel) -> str:
 
 
 class WriteApprovalRequiredEvent(BaseModel):
-    """写入操作待人工审批事件"""
+    """写入操作单条/批量待人工审批事件"""
 
     event: EventType = Field(default=EventType.WRITE_APPROVAL_REQUIRED, frozen=True)
     session_id: str = Field(description="会话 ID")
     task_run_id: str = Field(description="任务运行 ID")
-    write_id: str = Field(description="写入操作唯一 ID")
-    route_id: str = Field(description="接口路由，如 POST:/api/users")
-    method: str = Field(description="HTTP 方法")
-    path: str = Field(description="接口路径")
-    parameters: dict = Field(default_factory=dict, description="请求参数")
-    reasoning: str = Field(default="", description="AI 为什么要执行这个写入")
-    safety_level: str = Field(default="soft_write", description="安全等级")
+    batch_id: str | None = Field(default=None, description="批量审批任务 ID")
+    items: list[dict] = Field(default_factory=list, description="操作项列表")
+    write_id: str | None = Field(default=None, description="单条操作唯一 ID（向后兼容）")
+    route_id: str | None = Field(default=None, description="接口路由（向后兼容）")
+    method: str | None = Field(default=None, description="HTTP 方法（向后兼容）")
+    path: str | None = Field(default=None, description="接口路径（向后兼容）")
+    parameters: dict = Field(default_factory=dict, description="请求参数（向后兼容）")
+    reasoning: str = Field(default="", description="AI 为什么要执行这个写入（向后兼容）")
+    safety_level: str = Field(default="soft_write", description="安全等级（向后兼容）")
 
 
 class AgenticIterationEvent(BaseModel):

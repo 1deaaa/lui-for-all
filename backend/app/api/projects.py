@@ -297,15 +297,32 @@ async def test_connection(request: TestConnectionRequest):
 
             content_type = response.headers.get("content-type", "")
             if "application/json" not in content_type:
-                return {"status": "warning", "message": f"连接成功，但地址返回的不是一个 JSON ({content_type})"}
+                return {"status": "warning", "message": f"连接成功，但地址返回的不是一个 JSON ({content_type})", "routes": []}
 
-            return {"status": "success", "message": "连接与 OpenAPI 探索可用"}
+            # 顺带解析路由列表，避免前端再发一次相同请求
+            routes = []
+            try:
+                spec = response.json()
+                for path, methods in spec.get("paths", {}).items():
+                    for method, op in methods.items():
+                        if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                            summary = op.get("summary") or op.get("operationId") or ""
+                            routes.append({
+                                "route_id": f"{method.upper()}:{path}",
+                                "method": method.upper(),
+                                "path": path,
+                                "summary": summary,
+                            })
+            except Exception:
+                pass
+
+            return {"status": "success", "message": "连接与 OpenAPI 探索可用", "routes": routes}
     except httpx.TimeoutException:
         raise HTTPException(status_code=408, detail=f"目标服务连接超时 ({test_url})。请查证地址是否可达或服务是否启动。")
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
         if status in (401, 403):
-            return {"status": "warning", "message": f"接口存在跨域拦截或强制授权阻断 (状态码: {status})。确认这是否符合预期。"}
+            return {"status": "warning", "message": f"接口存在跨域拦截或强制授权阻断 (状态码: {status})。确认这是否符合预期。", "routes": []}
         raise HTTPException(status_code=status, detail=f"访问目标时遭到了错误状态码: HTTP {status} ({test_url})")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"连接失败或服务未启动: {str(e)}")

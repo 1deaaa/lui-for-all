@@ -1,0 +1,294 @@
+<div align="center">
+
+# LUI-for-All
+
+**用自然语言，操作你的任何系统。**
+
+*Language User Interface · 零更改接入/移除 · 企业级安全*
+</div>
+
+---
+
+## 它解决什么问题？
+
+许多后端系统，尤其是**企业系统、办事系统、专业工作系统**往往功能强大，却极难使用——用户必须深入多级菜单、记住筛选项组合、反复填写表单，才能完成一件本可以用一句话描述的事。
+
+**LUI-for-All** 在你现有系统旁边放一个**独立文件夹，不碰你的一行代码**，就能让用户改用自然语言来操作它：
+
+```
+用户：「把上周所有待审批的采购单，按金额从高到低给我列出来，超过五万的高亮标出。」
+
+LUI：[自动识别意图 → 调用现有接口 → 渲染数据表 + 高亮标注]
+     ✓ 全程不修改你一行已有代码
+```
+
+> 它是一层可控、安全、零侵入的 **自然语言操作层**，架在你现有系统之上。
+
+---
+
+## 核心亮点与创新
+
+### 1. 零侵入接入，无痛移出
+
+整个 LUI 以 **独立文件夹** 形式挂靠在目标项目旁，对已有代码保有严格的 **只读权限**，所有运行时写操作隔离在 `workspace/` 目录内。**想要移除，只需删除这个文件夹**，原系统完全不受影响，零负担尝试接入。
+
+### 2.适用所有主流后端的自动建图
+
+系统启动时，会自动摄取目标项目暴露的 `OpenAPI / Swagger` 文档，并**获取原始路由完整函数实现**，将完整路由与逻辑交给LLM，确保它**真正知道该如何调用这个接口**，**调用这个接口会发生什么**。为目标系统生成一张 **能力地图**：
+
+- 每条路由自动归属 `domain`（如：财务、用户管理、审批流）
+- 每个能力标记最适合的展现组件（`best_modalities`）
+- 每个操作预标注安全等级与是否需要人工确认
+- 自动打上「是否被前端真实调用」标签，过滤僵尸接口
+
+无需手动维护任何映射表，**上游接口一旦更新，重新发现即可同步**。
+
+### 3. 8 种白名单 UI 组件，从根源杜绝渲染注入
+
+模型 **永远不允许** 输出原始 HTML / JS / CSS，从根源掐死前端注入攻击的可能性。所有界面元素均通过严格的声明式 JSON 协议下发，前端只渲染以下 8 种白名单组件：
+
+| 组件类型 | 用途 |
+|---|---|
+| `text_block` | 默认自然语言回答 |
+| `metric_card` | 关键指标面板 |
+| `data_table` | 可分页数据表 |
+| `echart_card` | 配置驱动图表（ECharts） |
+| `confirm_panel` | 高危操作审批拦截器 |
+| `filter_form` | 参数补充收集 |
+| `timeline_card` | 事件序列与流转 |
+| `diff_card` | 对照与变化展示 |
+
+灵感源自 Google A2UI 协议，彻底关闭大模型越权渲染的攻击面。
+
+### 4. LangGraph 多层执行内核 + 人工介入审核
+
+核心任务流水线由 LangGraph 编排，具备完整的持久化检查点。
+
+#### 图一：顶层节点路由
+
+```mermaid
+flowchart LR
+    START(["💬 用户消息"]) --> AE["agent_entry\n加载能力地图\nLLM 判断复杂度"]
+
+    AE -- "direct" --> D_END(["END ✓ 直接回答"])
+    AE -- "error"  --> E_END1(["END ✗ 异常"])
+    AE -- "agentic" --> AL["agentic_loop\n↩ ReAct 循环"]
+
+    AL -- "error"        --> E_END2(["END ✗ 异常"])
+    AL -- "done=False"   --> AL
+    AL -- "done=True"    --> SUM["summarize\nLLM 汇总"]
+
+    SUM --> EB["emit_blocks\nUI Block 装配"]
+    EB  --> F_END(["END ✓ SSE 推送"])
+```
+
+#### 图二：agentic_loop 内部（ReAct + 安全裁定）
+
+```mermaid
+flowchart TD
+    IN(["进入本轮 Loop"]) --> CHK{"iterations ≥ 10？"}
+    CHK -- 是 --> FORCE["agentic_done=True\n强制终止"]
+    CHK -- 否 --> LLM["LLM 推理\nSystem Prompt + 对话历史"]
+
+    LLM --> ACT{"action"}
+    ACT -- "finish"  --> DONE["agentic_done=True"]
+    ACT -- "unknown" --> UNK["强制结束 + 告警"]
+    ACT -- "call_tools" --> SEC{"安全等级"}
+
+    SEC -- "🟢 readonly_safe\n🟡 readonly_sensitive" --> EXEC["直接 HTTP 执行"]
+    SEC -- "🟠 soft_write\n🔴 hard_write\n🔐 critical" --> INT["interrupt()\n推送 ConfirmPanel"]
+
+    INT --> APV{"用户审批"}
+    APV -- "✅ 批准" --> EXEC
+    APV -- "❌ 拒绝" --> SKIP["跳过 + 审计日志"]
+
+    EXEC --> OBS["收集 ExecutionArtifact\n追加 Observation"]
+    SKIP --> OBS
+    OBS --> NEXT(["iterations+1\n返回上层路由"])
+```
+
+#### 图三：收尾链路（summarize → emit_blocks）
+
+```mermaid
+flowchart LR
+    ART(["ExecutionArtifacts"]) --> SUM["summarize\nLLM 结构化总结\n→ summary_text"]
+
+    SUM --> VIZ{"需要可视化？"}
+    VIZ -- 是 --> PICK["选取白名单组件\ndata_table / echart_card\nmetric_card / timeline_card\ndiff_card / confirm_panel …"]
+    VIZ -- 否 --> TXT["text_block"]
+
+    PICK --> SER["序列化 ui_blocks JSON"]
+    TXT  --> SER
+    SER  --> SSE(["SSE 推送 → 前端渲染"])
+```
+
+**5 级安全**：`readonly_safe` → `readonly_sensitive` → `soft_write` → `hard_write` → `critical`，任何写操作均通过 LangGraph `interrupt()` 硬性暂停，前端唤出 `ConfirmPanel`，用户确认后 Graph 从断点恢复，拒绝则跳过并记录审计日志。
+
+### 5. AG-UI 协议 + SSE 实时事件流
+
+前后端通信基于 Server-Sent Events，完整实现 AG-UI 事件流协议：
+- LangGraph 每个节点的进度实时推送到前端
+- 思考内容（Reasoning）流式显示，可折叠
+- 审批节点触发时，前端自动唤出 `ConfirmPanel`，无需轮询
+
+### 6. 全链路 OpenTelemetry 可观测
+
+每一次对话，从用户输入到最终渲染，全链路注入统一 `Trace ID`：
+- FastAPI 请求层
+- LangGraph 节点执行层
+- HTTP 执行器层
+
+不是黑盒，每一步决策均可溯源审计。
+
+### 7. Agent Matchbox 多模型网关
+
+内置 **Agent Matchbox** 多模型路由网关，支持多平台 LLM 统一调度、Token 配额管理与用量统计，切换模型无需改动业务代码。
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.11+（推荐 Conda 管理）
+- Node.js 18+ + pnpm 10
+- 目标项目需暴露 OpenAPI 文档（`/openapi.json` 或文件路径）
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/your-org/lui-for-all.git
+cd lui-for-all
+```
+
+### 2. 后端安装
+
+```bash
+# 创建并激活 Conda 环境
+conda create -n lui python=3.11 -y
+conda activate lui
+
+# 安装依赖
+pip install -r backend/requirements.txt
+
+# 复制配置文件
+cp backend/.env.example backend/.env
+# 编辑 .env，填写 LLM API Key 和目标项目地址
+```
+
+### 3. 前端安装
+
+```bash
+cd frontend
+pnpm install
+```
+
+### 4. 启动服务
+
+```bash
+# 终端 1：启动后端
+cd backend
+conda run -n lui uvicorn app.main:app --reload --port 8000
+
+# 终端 2：启动前端
+cd frontend
+pnpm dev
+```
+
+### 5. 接入你的第一个项目
+
+打开 `http://localhost:5173`，点击「新建项目」，粘贴目标系统的 OpenAPI 地址（如 `http://your-app/openapi.json`），系统将自动完成能力发现与建模，通常耗时 10-30 秒。
+
+完成后，在对话框中直接用自然语言向你的系统提问。
+
+---
+
+## 技术架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    前端 (Vue 3 + Vite)                       │
+│  ChatPage  ProjectsPage  SettingsPage                       │
+│  SSE 事件流 ──── AG-UI 协议 ──── UI Block 渲染器              │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ HTTP / SSE
+┌──────────────────────▼──────────────────────────────────────┐
+│                  后端 (FastAPI)                               │
+│  /api/sessions  /api/projects  /api/settings                │
+│       │                │                                     │
+│  LangGraph 编排器    Project Modeler                         │
+│  ┌────────────┐      ┌──────────────────────────┐           │
+│  │ 意图解析节点│      │ OpenAPI 摄取 & 能力建模   │           │
+│  │ 能力路由节点│      │ 语义 Embedding 聚类       │           │
+│  │ 规划节点   │      │ 能力地图持久化             │           │
+│  │ 安全裁定节点│      └──────────────────────────┘           │
+│  │ HTTP执行节点│                                              │
+│  │ 汇总渲染节点│  ←── Agent Matchbox (多模型网关)             │
+│  └────────────┘                                              │
+│       │                                                      │
+│  SQLite (lui.db + checkpoints.db)                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 关键目录结构
+
+```
+lui-for-all/
+├── backend/
+│   ├── app/
+│   │   ├── api/           # FastAPI 路由层 (projects, sessions, settings)
+│   │   ├── graph/         # LangGraph 状态机定义
+│   │   ├── orchestrator/  # 任务编排状态与节点
+│   │   ├── discovery/     # OpenAPI 摄取与能力建模
+│   │   ├── runtime/       # SSE 事件发射器
+│   │   ├── llm/           # Agent Matchbox 网关 + 提示词
+│   │   ├── models/        # SQLAlchemy ORM 模型
+│   │   └── schemas/       # Pydantic 数据契约
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── views/         # ChatPage, ProjectsPage
+│   │   ├── stores/        # Pinia 状态 (session, project)
+│   │   ├── components/    # UI Block 渲染组件
+│   │   └── api/           # HTTP / SSE 客户端
+│   └── package.json
+├── workspace/             # 运行时隔离沙箱（自动生成）
+│   ├── lui.db
+│   └── checkpoints.db
+└── LUI-for-all_Execution_Plan.md
+```
+
+---
+
+## 设计边界
+
+| LUI-for-All 是什么 | LUI-for-All 不是什么 |
+|---|---|
+| ✅ 自然语言操作层 | ❌ 简易API to MCP |
+| ✅ 接口能力编排器 | ❌ RPA / GUI 点选自动化 |
+| ✅ 只读安全默认，写操作需审批 | ❌ 无安全界限 CRUD 的系统 |
+| ✅ 声明式 UI Block 增强回答 | ❌ 前端重写器 / 低代码生成器 |
+| ✅ 零侵入挂靠在已有系统旁 | ❌ 替换、侵入已有系统 |
+
+---
+
+## 路线图
+
+- [x] MVP：FastAPI + LangGraph 核心流水线
+- [x] OpenAPI 能力自动发现与建模
+- [x] 8 种 UI Block 白名单组件
+- [x] AG-UI SSE 协议 + 实时流
+- [x] 人工确认（Human-in-the-loop）拦截器
+- [x] Agent Matchbox 多模型网关
+- [ ] Git 代码语义解析（计划中）
+- [ ] 能力地图可视化管理界面
+- [ ] 多租户与权限体系
+- [ ] 私有化部署文档
+
+---
+
+<div align="center">
+
+*让语言成为界面。*
+
+</div>

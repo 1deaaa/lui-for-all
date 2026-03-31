@@ -12,6 +12,8 @@ import type {
 
 export const useSessionStore = defineStore('session', () => {
   const currentSession = ref<Session | null>(null)
+  const historyList = ref<Session[]>([])
+  const historyLoading = ref(false)
   const messages = ref<Message[]>([])
   const currentTaskRun = ref<TaskRun | null>(null)
   const uiBlocks = ref<UIBlock[]>([])
@@ -26,6 +28,8 @@ export const useSessionStore = defineStore('session', () => {
   const streamingMessageId = ref<string | null>(null)  // 正文消息 ID
   const streamingThoughtId = ref<string | null>(null)   // 推理消息 ID
   const currentTaskRunId = ref<string | null>(null)
+  // 当前任务流式期间收集的 HTTP 调用记录
+  const pendingHttpCalls = ref<NonNullable<import('@/vite-env.d').Message['metadata']>['http_calls']>( [])
 
   const messageCount = computed(() => messages.value.length)
 
@@ -41,6 +45,7 @@ export const useSessionStore = defineStore('session', () => {
         project_id: projectId,
         status: response.data.status,
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       }
       messages.value = []
       uiBlocks.value = []
@@ -88,6 +93,15 @@ export const useSessionStore = defineStore('session', () => {
         created_at: new Date().toISOString(),
       }
 
+      // 若当前会话还没有标题，取本条消息前 20 字同步到 historyList
+      if (currentSession.value && !currentSession.value.title) {
+        const autoTitle = content.slice(0, 20)
+        currentSession.value = { ...currentSession.value, title: autoTitle }
+        const idx = historyList.value.findIndex(s => s.id === currentSession.value!.id)
+        if (idx !== -1) {
+          historyList.value.splice(idx, 1, { ...historyList.value[idx], title: autoTitle })
+        }
+      }
       startEventStream(response.data.task_run_id)
       return response.data
     } catch (e: any) {
@@ -113,14 +127,17 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function startEventStream(taskRunId: string, resumeOpts?: { resumeWriteId: string, resumeAction: string }) {
+  function startEventStream(taskRunId: string, resumeOpts?: { resumeWriteId?: string, resumeBatchId?: string, resumeAction: string, approvedIds?: string[] }) {
     if (eventSource.value) {
       eventSource.value.close()
     }
 
     let url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
     if (resumeOpts) {
-      url += `&resume_write_id=${resumeOpts.resumeWriteId}&resume_action=${resumeOpts.resumeAction}`
+      url += `&resume_write_id=${resumeOpts.resumeWriteId || ''}&resume_action=${resumeOpts.resumeAction}`
+      if (resumeOpts.approvedIds) {
+        url += `&resume_approved_ids=${resumeOpts.approvedIds.join(',')}`
+      }
     }
     
     eventSource.value = new EventSource(url)
@@ -128,6 +145,10 @@ export const useSessionStore = defineStore('session', () => {
     progressPercent.value = 0
     progressMessage.value = 'AI 已接收请求，正在启动执行链路'
     runtimeEvents.value = []
+    if (!resumeOpts) {
+      pendingHttpCalls.value = []
+    }
+    uiBlocks.value = []
     currentTaskRunId.value = taskRunId
     if (!runtimeEventsByTaskRun.value[taskRunId]) {
       runtimeEventsByTaskRun.value[taskRunId] = []
@@ -294,23 +315,46 @@ export const useSessionStore = defineStore('session', () => {
         })
         break
 
-      case 'tool_completed':
+      case 'tool_completed': {
+        // 从 route_id 拆出 HTTP method（格式如 "GET /api/xxx"）
+        const routeId: string = event.route_id || ''
+        const routeParts = routeId.split(' ')
+        const httpMethod = routeParts.length >= 2 ? routeParts[0].toUpperCase() : ''
+        const httpPath = routeParts.length >= 2 ? routeParts.slice(1).join(' ') : routeId
+        const sc: number | undefined = event.status_code
+        // 收集到临时列表，task_completed 时写入消息 metadata
+        if (sc) {
+          pendingHttpCalls.value = [
+            ...(pendingHttpCalls.value || []),
+            { method: httpMethod, url: httpPath, status_code: sc },
+          ]
+        }
         pushRuntimeEvent({
           id: `tool-done-${Date.now()}-${Math.random()}`,
           type: 'tool_completed',
           title: event.title || '工具调用完成',
           detail: event.detail,
-          status: event.status_code && event.status_code >= 400 ? 'failed' : 'completed',
+          status: sc && sc >= 400 ? 'failed' : 'completed',
+          status_code: sc,
+          method: httpMethod || undefined,
+          url: httpPath || undefined,
           created_at: new Date().toISOString(),
         })
         break
+      }
 
-      case 'task_completed':
+      case 'task_completed': {
+        const httpCallsSnapshot = pendingHttpCalls.value?.length ? [...pendingHttpCalls.value] : undefined
+        pendingHttpCalls.value = []
         if (event.summary) {
           if (streamingMessageId.value) {
-            // 已有流式正文消息：不覆盖，保留已输出的内容（避免重复）
-            // 仅将 summary_text 存到 currentTaskRun，不再 push 新消息
-          } else if (!streamingMessageId.value && !streamingThoughtId.value) {
+            // 已有流式正文消息：写入 http_calls metadata
+            const idx = messages.value.findIndex(m => m.id === streamingMessageId.value)
+            if (idx !== -1 && httpCallsSnapshot) {
+              const old = messages.value[idx]
+              messages.value.splice(idx, 1, { ...old, metadata: { http_calls: httpCallsSnapshot } })
+            }
+          } else if (!streamingThoughtId.value) {
             // 没有任何流式输出时，才 push、为常规非流式路径准备
             messages.value.push({
               id: `assistant-${Date.now()}`,
@@ -318,6 +362,7 @@ export const useSessionStore = defineStore('session', () => {
               content: event.summary,
               task_run_id: event.task_run_id,
               created_at: new Date().toISOString(),
+              metadata: httpCallsSnapshot ? { http_calls: httpCallsSnapshot } : undefined,
             })
           }
         }
@@ -331,6 +376,7 @@ export const useSessionStore = defineStore('session', () => {
         streamingThoughtId.value = null
         closeEventStream()
         break
+      }
 
       case 'ui_block_emitted':
         if (event.block_data) {
@@ -341,8 +387,10 @@ export const useSessionStore = defineStore('session', () => {
       case 'write_approval_required':
         uiBlocks.value.push({
           block_type: 'confirm_panel',
+          batch_id: (event as any).batch_id,
+          items: (event as any).items,
           approval_id: (event as any).write_id,
-          title: `需要审核写入操作: ${(event as any).method} ${(event as any).path}`,
+          title: `需要审核写入操作: ${(event as any).method || ''} ${(event as any).path || ''}`,
           description: (event as any).reasoning || '此操作涉及数据修改，请人工审核。',
           risk_level: (event as any).safety_level === 'critical' ? 'critical' : 'warning',
           timeout_seconds: 300,
@@ -399,6 +447,88 @@ export const useSessionStore = defineStore('session', () => {
     isStreaming.value = false
   }
 
+  const HISTORY_CACHE_PREFIX = 'lui_history_'
+
+  function _loadHistoryCache(projectId: string): Session[] {
+    try {
+      const raw = localStorage.getItem(HISTORY_CACHE_PREFIX + projectId)
+      return raw ? JSON.parse(raw) : []
+    } catch {
+      return []
+    }
+  }
+
+  function _saveHistoryCache(projectId: string, list: Session[]) {
+    try {
+      localStorage.setItem(HISTORY_CACHE_PREFIX + projectId, JSON.stringify(list))
+    } catch {}
+  }
+
+  async function fetchHistory(projectId: string) {
+    // 1. 先读本地缓存，立即展示
+    const cached = _loadHistoryCache(projectId)
+    if (cached.length > 0) {
+      historyList.value = cached
+    } else {
+      historyLoading.value = true
+    }
+
+    // 2. 后台向服务器同步，差异比对后更新
+    try {
+      const response = await axios.get('/api/sessions/', { params: { project_id: projectId, limit: 50 } })
+      const serverList: Session[] = response.data.sessions || []
+
+      // 差异比对：id 集合或 title/updated_at 有变化才更新
+      const changed =
+        serverList.length !== historyList.value.length ||
+        serverList.some((s, i) => {
+          const c = historyList.value[i]
+          return !c || c.id !== s.id || c.title !== s.title || c.updated_at !== s.updated_at
+        })
+
+      if (changed) {
+        historyList.value = serverList
+        _saveHistoryCache(projectId, serverList)
+      }
+    } catch (e: any) {
+      console.error('获取历史会话失败:', e)
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  async function loadSession(sessionId: string) {
+    closeEventStream()
+    loading.value = true
+    isStreaming.value = false
+    try {
+      const response = await axios.get(`/api/sessions/${sessionId}/messages`)
+      messages.value = response.data.messages || []
+      uiBlocks.value = []
+      runtimeEvents.value = []
+      runtimeEventsByTaskRun.value = {}
+      currentTaskRunId.value = null
+    } catch (e: any) {
+      error.value = e.message || '加载会话失败'
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    // 找到 projectId 用于更新缓存（删前先记录）
+    const projectId = historyList.value.find(s => s.id === sessionId)?.project_id
+      || currentSession.value?.project_id
+    await axios.delete(`/api/sessions/${sessionId}`)
+    historyList.value = historyList.value.filter(s => s.id !== sessionId)
+    if (projectId) {
+      _saveHistoryCache(projectId, historyList.value)
+    }
+    if (currentSession.value?.id === sessionId) {
+      clearSession()
+    }
+  }
+
   async function fetchMessages(sessionId: string) {
     loading.value = true
     try {
@@ -428,6 +558,8 @@ export const useSessionStore = defineStore('session', () => {
 
   return {
     currentSession,
+    historyList,
+    historyLoading,
     messages,
     currentTaskRun,
     uiBlocks,
@@ -442,6 +574,9 @@ export const useSessionStore = defineStore('session', () => {
     createSession,
     sendMessage,
     fetchMessages,
+    fetchHistory,
+    loadSession,
+    deleteSession,
     clearSession,
     startEventStream,
     closeEventStream,

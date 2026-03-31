@@ -86,6 +86,13 @@ async function testConnection() {
       if (data.status === 'warning') {
         ElMessage.warning(data.message)
       }
+      // 顺带存入路由列表，避免聚焦下拉框时再发一次请求
+      if (data.routes && data.routes.length > 0) {
+        routeOptions.value = data.routes.map((r: any) => ({
+          route_id: r.route_id,
+          label: `${r.method} ${r.path}${r.summary ? '  · ' + r.summary : ''}`,
+        }))
+      }
       return true
     }
   } catch (error) {
@@ -97,9 +104,10 @@ async function testConnection() {
   }
 }
 
-// 拉取路由列表
-async function fetchRoutes() {
+// 拉取路由列表（已有缓存时跳过，刷新按钮可强制重拉）
+async function fetchRoutes(force = false) {
   if (!importForm.value.base_url) return
+  if (!force && routeOptions.value.length > 0) return
   routesLoading.value = true
   routeOptions.value = []
   importForm.value.login_route_id = ''
@@ -497,7 +505,7 @@ function getStatusText(status: string): string {
                   :value="r.route_id"
                 />
               </el-select>
-              <el-button :loading="routesLoading" @click="fetchRoutes">刷新</el-button>
+              <el-button :loading="routesLoading" @click="fetchRoutes(true)">刷新</el-button>
             </div>
           </el-form-item>
           <el-form-item label="用户名字段">

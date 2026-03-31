@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import AuditService
-from app.db import async_session, get_session
+from app.db import async_session, get_session as get_db_session
 from app.models.session import Message, Session
 from app.models.task import TaskRun
 from app.orchestrator.graph import graph_app
@@ -56,7 +56,7 @@ class MessageResponse(BaseModel):
 @router.post("/", response_model=CreateSessionResponse)
 async def create_session(
     request: CreateSessionRequest,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """创建新会话"""
     session_id = str(uuid.uuid4())
@@ -80,11 +80,40 @@ async def create_session(
     )
 
 
+@router.get("/")
+async def list_sessions(
+    project_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """获取项目的历史会话列表"""
+    sessions = await SessionRepository(db).list_by_project(project_id, limit, offset)
+    return {
+        "sessions": [
+            {
+                "id": s.id,
+                "project_id": s.project_id,
+                "title": s.title,
+                "status": s.status,
+                "created_at": s.created_at.isoformat(),
+                "updated_at": s.updated_at.isoformat(),
+            }
+            for s in sessions
+        ]
+    }
+
+
+class PatchSessionRequest(BaseModel):
+    """更新会话请求"""
+    title: str | None = None
+
+
 @router.post("/{session_id}/messages")
 async def send_message(
     session_id: str,
     request: SendMessageRequest,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """发送消息并触发任务执行"""
     session_repository = SessionRepository(db)
@@ -102,6 +131,10 @@ async def send_message(
         content=request.content,
     )
     await session_repository.add_message(user_message)
+
+    # 若会话还没有标题，取首条用户消息前 20 字作为标题
+    if not session.title:
+        await session_repository.update_title(session_id, request.content[:20])
 
     task_run_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
@@ -132,6 +165,7 @@ async def stream_events(
     task_run_id: str | None = None,
     resume_write_id: str | None = None,
     resume_action: str | None = None,
+    resume_approved_ids: str | None = None,
 ):
     """SSE 事件流 - 执行 LangGraph 图（支持打断与恢复）"""
 
@@ -276,8 +310,12 @@ async def stream_events(
                     await db.commit()
 
             from langgraph.types import Command
-            if resume_write_id:
-                input_data = Command(resume={"approved": resume_action == "approve", "write_id": resume_write_id})
+            if resume_write_id or resume_approved_ids is not None:
+                if resume_approved_ids is not None:
+                    approved_ids = [i.strip() for i in resume_approved_ids.split(",") if i.strip()]
+                else:
+                    approved_ids = [resume_write_id] if resume_action == "approve" else []
+                input_data = Command(resume={"approved_ids": approved_ids, "write_id": resume_write_id})
             else:
                 input_data = initial_state
 
@@ -346,10 +384,12 @@ async def stream_events(
                             WriteApprovalRequiredEvent(
                                 session_id=session_id,
                                 task_run_id=task_run_id,
-                                write_id=payload.get("write_id", ""),
-                                route_id=payload.get("route_id", ""),
-                                method=payload.get("method", ""),
-                                path=payload.get("path", ""),
+                                batch_id=payload.get("batch_id"),
+                                items=payload.get("items", []),
+                                write_id=payload.get("write_id"),
+                                route_id=payload.get("route_id"),
+                                method=payload.get("method"),
+                                path=payload.get("path"),
                                 parameters=payload.get("parameters", {}),
                                 reasoning=payload.get("reasoning", ""),
                                 safety_level=payload.get("safety_level", "soft_write"),
@@ -447,12 +487,37 @@ async def stream_events(
                     await db.commit()
 
                     if final_state.get("summary_text") and not final_state.get("error"):
+                        # 提取 HTTP 调用摘要存入消息 metadata，供历史加载时还原标签
+                        http_calls = []
+                        for a in (task_run.execution_artifacts or []):
+                            # method/url 存在 artifact 子字典中
+                            sub = a.get("artifact") or {}
+                            method = (sub.get("method") or "").upper()
+                            full_url = sub.get("url") or ""
+                            # 只保留 path 部分，去掉 scheme+host
+                            from urllib.parse import urlparse
+                            parsed = urlparse(full_url)
+                            url = parsed.path or full_url
+                            # 兜底：从 route_id 拆解
+                            if not method:
+                                parts = (a.get("route_id") or "").split(" ", 1)
+                                if len(parts) == 2:
+                                    method, url = parts[0].upper(), parts[1]
+                            sc = sub.get("status_code") or a.get("status_code")
+                            if sc is not None:
+                                http_calls.append({
+                                    "method": method,
+                                    "url": url,
+                                    "status_code": sc,
+                                    "duration_ms": sub.get("duration_ms"),
+                                })
                         assistant_message = Message(
                             id=str(uuid.uuid4()),
                             session_id=session_id,
                             role="assistant",
                             content=final_state["summary_text"],
                             task_run_id=task_run_id,
+                            metadata_={"http_calls": http_calls} if http_calls else {},
                         )
                         await session_repository.add_message(assistant_message)
                         await db.commit()
@@ -518,7 +583,7 @@ async def stream_events(
 async def get_messages(
     session_id: str,
     limit: int = 50,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """获取会话消息列表"""
     messages = await SessionRepository(db).list_messages(session_id, limit)
@@ -531,6 +596,7 @@ async def get_messages(
                 "content": m.content,
                 "task_run_id": m.task_run_id,
                 "created_at": m.created_at.isoformat(),
+                "metadata": m.metadata_ or {},
             }
             for m in messages
         ],
@@ -541,7 +607,7 @@ async def get_messages(
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """获取会话详情"""
     session = await SessionRepository(db).get_by_id(session_id)
@@ -560,6 +626,38 @@ async def get_session(
     }
 
 
+@router.patch("/{session_id}")
+async def patch_session(
+    session_id: str,
+    request: PatchSessionRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """更新会话信息（如标题）"""
+    repo = SessionRepository(db)
+    session = await repo.get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if request.title is not None:
+        await repo.update_title(session_id, request.title)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{session_id}")
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """删除会话及其所有消息"""
+    repo = SessionRepository(db)
+    session = await repo.get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    await repo.delete_session(session_id)
+    await db.commit()
+    return {"ok": True}
+
+
 class ApprovalActionRequest(BaseModel):
     action: str = Field(pattern="^(approve|reject)$")
 
@@ -569,7 +667,7 @@ async def handle_approval(
     session_id: str,
     approval_id: str,
     request: ApprovalActionRequest,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """处理写入审批（兼容旧接口）"""
     return await _resume_graph_with_approval(session_id, approval_id, request.action, db)
@@ -584,7 +682,7 @@ async def handle_write_approval(
     session_id: str,
     write_id: str,
     request: WriteApprovalRequest,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     处理 Agentic Loop 中的写入操作审批。

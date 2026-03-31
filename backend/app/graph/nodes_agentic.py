@@ -512,58 +512,94 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                 except Exception:
                     pass  # 非关键路径，忽略
 
-        # 处理写入调用——审批
+        # 处理写入调用——批量审批（带自动放行缓存）
         approved_write_results: list[str] = []
-        for write_call in write_calls:
-            write_id = str(uuid.uuid4())
-            route_id = write_call.get("route_id", "")
-            method, path = _parse_route(route_id)
 
-            # 向前端发射审批请求事件
-            _emit(
-                "write_approval_required",
-                write_id=write_id,
-                route_id=route_id,
-                method=method,
-                path=path,
-                parameters=write_call.get("parameters", {}),
-                reasoning=write_call.get("reasoning", ""),
-                safety_level=write_call.get("safety_level", "soft_write"),
-            )
+        # 准备自动放行缓存
+        approved_cache = state.get("approved_writes_cache") or []
+        new_approved_cache = list(approved_cache)
 
-            # interrupt：暂停图执行，等待用户操作
-            approval_result = interrupt({
-                "type": "write_approval",
-                "write_id": write_id,
-                "route_id": route_id,
-                "method": method,
-                "path": path,
-                "parameters": write_call.get("parameters", {}),
-                "reasoning": write_call.get("reasoning", ""),
-                "safety_level": write_call.get("safety_level", "soft_write"),
-            })
+        if write_calls:
+            items_to_approve = []
 
-            approved = approval_result.get("approved", False)
+            for wc in write_calls:
+                rid = wc.get("route_id", "")
+                params = wc.get("parameters", {})
+                m, p = _parse_route(rid)
 
-            if approved:
-                # 执行写入（token 由缓存自动管理）
-                write_result = await _execute_read_call(write_call, state)
-                approved_write_results.append(
-                    f'write_id={write_id} route={route_id} status={write_result["status_code"]}\n结果: {write_result["result"]}'
-                )
-                if write_result.get("artifact"):
-                    from app.schemas.task import ExecutionArtifact
-                    try:
-                        artifact = ExecutionArtifact(**write_result["artifact"])
-                        new_artifacts.append(artifact)
-                    except Exception:
-                        pass
-            else:
-                approved_write_results.append(
-                    f'write_id={write_id} route={route_id} → 用户已拒绝，跳过执行'
-                )
+                # 生成指纹：route + params
+                params_str = json.dumps(params, sort_keys=True)
+                fingerprint = f"{rid}|{params_str}"
 
-        # 将本轮工具结果追加为 observation 消息（供下轮 LLM 参考）
+                # 1. 检查缓存是否已批准
+                if fingerprint in approved_cache:
+                    logger.info(f"[agentic_loop] 自动放行已批准过的请求: {fingerprint}")
+                    write_result = await _execute_read_call(wc, state)
+                    approved_write_results.append(
+                        f'write_id=cached route={rid} status={write_result["status_code"]}\n(自动放行) 结果: {write_result["result"]}'
+                    )
+                    if write_result.get("artifact"):
+                        from app.schemas.task import ExecutionArtifact
+                        try:
+                            artifact = ExecutionArtifact(**write_result["artifact"])
+                            new_artifacts.append(artifact)
+                        except Exception: pass
+                    continue
+
+                # 2. 加入待审批列表
+                items_to_approve.append({
+                    "write_id": str(uuid.uuid4()),
+                    "fingerprint": fingerprint,
+                    "route_id": rid,
+                    "method": m,
+                    "path": p,
+                    "parameters": params,
+                    "reasoning": wc.get("reasoning", ""),
+                    "safety_level": wc.get("safety_level", "soft_write"),
+                    "_wc": wc  # 暂存原始调用对象
+                })
+
+            if items_to_approve:
+                batch_id = str(uuid.uuid4())
+                serializable_items = [{k: v for k, v in it.items() if k not in ("_wc", "fingerprint")} for it in items_to_approve]
+
+                # 向前端发射审批请求事件
+                _emit("write_approval_required", batch_id=batch_id, items=serializable_items)
+
+                # interrupt：暂停图执行，等待一次性批量审批
+                approval_response = interrupt({
+                    "type": "batch_write_approval",
+                    "batch_id": batch_id,
+                    "items": serializable_items
+                })
+
+                approved_ids = set(approval_response.get("approved_ids", []))
+
+                # 逐个执行被批准的项
+                for item in items_to_approve:
+                    wid = item["write_id"]
+                    rid = item["route_id"]
+                    wc = item["_wc"]
+
+                    if wid in approved_ids:
+                        # 加入缓存，防止本轮之后 AI 重试时重复弹出
+                        if item["fingerprint"] not in new_approved_cache:
+                            new_approved_cache.append(item["fingerprint"])
+
+                        write_result = await _execute_read_call(wc, state)
+                        approved_write_results.append(
+                            f'write_id={wid} route={rid} status={write_result["status_code"]}\n结果: {write_result["result"]}'
+                        )
+                        if write_result.get("artifact"):
+                            from app.schemas.task import ExecutionArtifact
+                            try:
+                                artifact = ExecutionArtifact(**write_result["artifact"])
+                                new_artifacts.append(artifact)
+                            except Exception: pass
+                    else:
+                        approved_write_results.append(f'write_id={wid} route={rid} → 用户已拒绝')
+
+        # 将本轮工具结果追加为 observation 消息
         all_results = tool_results_summary + approved_write_results
         if all_results:
             observation_content = "【工具执行结果】\n" + "\n\n".join(all_results)
@@ -577,6 +613,7 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
             "agentic_iterations": iterations,
             "agentic_history": existing_history + new_history,
             "execution_artifacts": new_artifacts,
+            "approved_writes_cache": new_approved_cache[-20:]
         }
 
     else:

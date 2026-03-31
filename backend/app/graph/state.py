@@ -56,6 +56,10 @@ class GraphState(TypedDict):
     # 本轮 AI 决策中发现的待审批写入操作列表（每轮开始时重置）
     pending_writes: list[dict[str, Any]]
 
+    # 已批准的写入操作指纹集合（route_id + params_hash）
+    # 用于在一轮循环中 AI 自我纠错重试时，自动放行已批准过的完全相同请求
+    approved_writes_cache: list[str]
+
     # 执行产物（所有轮次的 HTTP 执行结果汇总）
     execution_artifacts: Annotated[list[ExecutionArtifact], merge_lists]
 

@@ -179,25 +179,6 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
 # ==================== UI Block 生成节点 ====================
 
 async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
-    """生成执行时间线 UI Block"""
-    ui_blocks: list[dict[str, Any]] = []
+    """UI Block 生成节点（仅保留审批类 block，执行记录由运行时事件流承载）"""
     emit_runtime_event("task_progress", node_name="emit_blocks", progress=0.98, message="正在组织前端展示结构")
-
-    artifacts = state.get("execution_artifacts", [])
-    if artifacts:
-        events = [
-            {
-                "timestamp": datetime.utcnow().isoformat(),
-                "title": f"执行 {getattr(a, 'method', '?')} {getattr(a, 'url', '?')}",
-                "description": f"状态码: {getattr(a, 'status_code', '?')}",
-                "status": "completed" if getattr(a, 'status_code', 0) and getattr(a, 'status_code', 0) < 400 else "failed",
-            }
-            for a in artifacts
-        ]
-        ui_blocks.append({
-            "block_type": "timeline_card",
-            "title": "执行记录",
-            "events": events,
-        })
-
-    return {"ui_blocks": ui_blocks, "current_node": "emit_blocks"}
+    return {"ui_blocks": [], "current_node": "emit_blocks"}

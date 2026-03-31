@@ -39,9 +39,18 @@ export interface Project {
 export interface Session {
   id: string
   project_id: string
+  title?: string
   status: string
   thread_id?: string
   created_at: string
+  updated_at: string
+}
+
+export interface HttpCallRecord {
+  method: string
+  url: string
+  status_code: number
+  duration_ms?: number
 }
 
 export interface Message {
@@ -51,6 +60,7 @@ export interface Message {
   thought?: string
   task_run_id?: string
   created_at: string
+  metadata?: { http_calls?: HttpCallRecord[] }
 }
 
 export interface TaskRun {
@@ -72,6 +82,9 @@ export interface RuntimeEventItem {
   title: string
   detail?: string
   status?: string
+  status_code?: number
+  method?: string
+  url?: string
   created_at: string
 }
 

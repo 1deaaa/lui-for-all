@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
+import type { Session } from '@/vite-env.d'
 import BlockRenderer from '@/components/BlockRenderer.vue'
 import { ElMessage } from 'element-plus'
 import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
@@ -33,13 +34,32 @@ const readyProjects = computed(() =>
   projectStore.projects.filter((p) => p.discovery_status === 'completed')
 )
 
-// 快速切换项目：选中 -> 创建新会话
+// 快速切换项目：选中 -> 拉取历史 -> 创建新会话
 async function selectProject(projectId: string) {
   const found = projectStore.projects.find((p) => p.id === projectId)
   if (!found) return
   projectStore.currentProject = found
   sessionStore.clearSession()
+  await sessionStore.fetchHistory(projectId)
   await startSession(projectId)
+}
+
+// 切换到历史会话
+async function switchToHistory(session: Session) {
+  if (sessionStore.currentSession?.id === session.id) return
+  sessionStore.clearSession()
+  sessionStore.currentSession = session
+  await sessionStore.loadSession(session.id)
+}
+
+// 删除历史会话
+async function handleDeleteSession(session: Session, e: MouseEvent) {
+  e.stopPropagation()
+  await sessionStore.deleteSession(session.id)
+  // 若删完后无活跃会话，自动建一条新的
+  if (!sessionStore.currentSession && selectedProject.value) {
+    await startSession(selectedProject.value.id)
+  }
 }
 
 // 创建对话 session
@@ -48,6 +68,7 @@ async function startSession(projectId: string) {
   sessionCreating.value = true
   try {
     await sessionStore.createSession(projectId)
+    await sessionStore.fetchHistory(projectId)
   } catch (e: any) {
     ElMessage.error('创建会话失败: ' + (e.message || '未知错误'))
   } finally {
@@ -141,6 +162,22 @@ watch(
         <div class="project-item-url">{{ p.base_url }}</div>
       </div>
 
+      <!-- 历史会话列表 -->
+      <template v-if="selectedProject && sessionStore.historyList.length > 0">
+        <div class="panel-divider" />
+        <div class="panel-title-sm">历史对话</div>
+        <div
+          v-for="s in sessionStore.historyList"
+          :key="s.id"
+          class="history-item"
+          :class="{ active: sessionStore.currentSession?.id === s.id }"
+          @click="switchToHistory(s)"
+        >
+          <div class="history-item-title">{{ s.title || '未命名对话' }}</div>
+          <button class="history-item-del" @click="handleDeleteSession(s, $event)" title="删除">&times;</button>
+        </div>
+      </template>
+
       <div class="panel-divider" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0" />
       <div class="panel-title-sm" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0">
         其他项目（建模未完成）
@@ -165,8 +202,15 @@ watch(
           <span class="chat-project-url">{{ selectedProject.base_url }}</span>
         </template>
         <span v-else class="chat-hint-topbar">← 请在左侧选择一个项目</span>
-        <el-button v-if="sessionStore.currentSession" text size="small" @click="selectProject(selectedProject!.id)">
-          新建会话
+        <el-button
+          v-if="selectedProject"
+          size="small"
+          :loading="sessionCreating"
+          :disabled="sessionStore.isStreaming"
+          @click="startSession(selectedProject.id)"
+          class="new-chat-btn"
+        >
+          + 新建对话
         </el-button>
       </div>
 
@@ -210,6 +254,24 @@ watch(
               <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
                 <div class="thought-content">{{ msg.thought }}</div>
               </div>
+            </div>
+            <!-- HTTP 执行标签（仅 assistant 消息且有 http_calls 时显示）-->
+            <div
+              v-if="msg.role === 'assistant' && msg.metadata?.http_calls?.length"
+              class="msg-http-calls"
+            >
+              <span
+                v-for="(call, ci) in msg.metadata.http_calls"
+                :key="ci"
+                class="http-badge"
+                :class="{
+                  'http-badge--ok': call.status_code >= 200 && call.status_code < 300,
+                  'http-badge--redirect': call.status_code >= 300 && call.status_code < 400,
+                  'http-badge--client-err': call.status_code >= 400 && call.status_code < 500,
+                  'http-badge--server-err': call.status_code >= 500,
+                  'http-badge--unknown': !call.status_code || call.status_code === 0,
+                }"
+              >{{ call.method }} {{ call.url }} <span class="http-badge-code">{{ call.status_code }}</span></span>
             </div>
             <div v-if="msg.content" class="message-text">
               <MarkdownRenderer :content="msg.content" />
@@ -264,8 +326,25 @@ watch(
             :key="event.id"
             class="runtime-event-item"
           >
-            <span class="runtime-event-title">{{ event.title }}</span>
-            <span class="runtime-event-detail">{{ event.detail }}</span>
+            <!-- HTTP 执行结果标签 -->
+            <template v-if="event.type === 'tool_completed' && event.status_code">
+              <span
+                class="http-badge"
+                :class="{
+                  'http-badge--ok': event.status_code >= 200 && event.status_code < 300,
+                  'http-badge--redirect': event.status_code >= 300 && event.status_code < 400,
+                  'http-badge--client-err': event.status_code >= 400 && event.status_code < 500,
+                  'http-badge--server-err': event.status_code >= 500,
+                  'http-badge--unknown': !event.status_code || event.status_code === 0,
+                }"
+              >{{ event.method ? event.method + ' ' : '' }}{{ event.status_code }}</span>
+              <span class="runtime-event-title">{{ event.url || event.title }}</span>
+              <span class="runtime-event-detail">{{ event.detail }}</span>
+            </template>
+            <template v-else>
+              <span class="runtime-event-title">{{ event.title }}</span>
+              <span class="runtime-event-detail">{{ event.detail }}</span>
+            </template>
           </div>
         </div>
       </div>
@@ -341,6 +420,45 @@ watch(
   letter-spacing: 0.05em;
 }
 
+.history-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 8px 2px;
+  transition: background 0.15s;
+}
+.history-item:hover {
+  background: var(--color-bg-hover, #f5f5f5);
+}
+.history-item.active {
+  background: var(--color-primary-light, #eff6ff);
+}
+.history-item-title {
+  flex: 1;
+  font-size: 13px;
+  color: var(--color-text-primary, #171717);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-item-del {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: #a3a3a3;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.history-item:hover .history-item-del {
+  display: block;
+}
+
 /* ============ 运行时进度条（输入框上方折叠式） ============ */
 .runtime-bar {
   flex-shrink: 0;
@@ -396,26 +514,62 @@ watch(
 
 .runtime-event-item {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
   border-radius: 6px;
   background: #fdfdfd;
   border: 1px solid #e5e5e5;
   border-left: 3px solid #a3a3a3;
-  text-align: center;
   width: 100%;
+}
+
+.http-badge {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: monospace;
+  letter-spacing: 0.5px;
+}
+.http-badge--ok {
+  background: #dcfce7;
+  color: #15803d;
+}
+.http-badge--redirect {
+  background: #fef9c3;
+  color: #92400e;
+}
+.http-badge--client-err {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.http-badge--server-err {
+  background: #fce7f3;
+  color: #9d174d;
+}
+.http-badge--unknown {
+  background: #f3f4f6;
+  color: #6b7280;
 }
 
 .runtime-event-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-primary, #0f0f0f);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .runtime-event-detail {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-secondary, #737373);
+  flex-shrink: 0;
 }
 
 .panel-divider {
@@ -519,6 +673,11 @@ watch(
   color: var(--color-text-primary, #0f0f0f);
 }
 
+.new-chat-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .chat-project-url {
   font-size: 12px;
   color: var(--color-text-secondary, #a3a3a3);
@@ -549,7 +708,7 @@ watch(
 /* 内部限制宽度以达成优雅阅读 */
 .message-list > * {
   width: 100%;
-  max-width: 960px;
+  max-width: 1120px;
 }
 
 /* 欢迎屏 */
@@ -608,7 +767,7 @@ watch(
 }
 
 .message-bubble {
-  max-width: 85%;
+  max-width: 92%;
   font-size: 15px;
   line-height: 1.7;
   word-break: break-word;
@@ -627,6 +786,17 @@ watch(
   color: var(--color-text-primary, #0f0f0f);
   padding: 4px 0;
   width: 100%;
+}
+
+.msg-http-calls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.http-badge-code {
+  font-weight: 800;
+  margin-left: 4px;
 }
 
 /* Markdown 渲染样式规范化 */
@@ -823,7 +993,7 @@ watch(
 
 .input-wrapper {
   width: 100%;
-  max-width: 960px; /* 匹配主阅读流宽度 */
+  max-width: 1120px; /* 匹配主阅读流宽度 */
   border-radius: 0;
   border: 1px solid var(--border-color-light, #e5e5e5);
   background: #ffffff;
