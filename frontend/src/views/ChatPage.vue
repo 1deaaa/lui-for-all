@@ -16,6 +16,10 @@ const inputMessage = ref('')
 const messageContainer = ref<HTMLElement | null>(null)
 const sessionCreating = ref(false)
 const runtimeExpanded = ref(false)
+const isSidebarCollapsed = ref(false)
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value
+}
 // 每条消息的思考内容折叠状态（默认折叠）
 const thoughtExpanded = ref<Record<string, boolean>>({})
 function toggleThought(msgId: string) {
@@ -141,7 +145,8 @@ watch(
 <template>
   <div class="chat-page">
     <!-- 左侧项目面板 -->
-    <div class="project-panel">
+    <div class="project-panel" :class="{ collapsed: isSidebarCollapsed }">
+      <div class="project-panel-inner">
       <div class="panel-title">项目列表</div>
 
       <div v-if="readyProjects.length === 0" class="panel-empty">
@@ -191,27 +196,31 @@ watch(
         <div class="project-item-name">{{ p.name }}</div>
         <el-tag size="small" type="info">{{ p.discovery_status }}</el-tag>
       </div>
+      </div>
     </div>
 
     <!-- 右侧对话区 -->
     <div class="chat-area">
       <!-- 顶栏 -->
       <div class="chat-topbar">
+        <button class="icon-btn sidebar-toggle-btn" @click="toggleSidebar" title="收起/展开项目列表">
+          <Icon :icon="isSidebarCollapsed ? 'solar:hamburger-menu-linear' : 'solar:sidebar-minimalistic-linear'" />
+        </button>
         <template v-if="selectedProject">
           <span class="chat-project-name">{{ selectedProject.name }}</span>
           <span class="chat-project-url">{{ selectedProject.base_url }}</span>
         </template>
         <span v-else class="chat-hint-topbar">← 请在左侧选择一个项目</span>
-        <el-button
+        <button
           v-if="selectedProject"
-          size="small"
-          :loading="sessionCreating"
-          :disabled="sessionStore.isStreaming"
+          :disabled="sessionStore.isStreaming || sessionCreating"
           @click="startSession(selectedProject.id)"
-          class="new-chat-btn"
+          class="new-chat-btn custom"
         >
-          + 新建对话
-        </el-button>
+          <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
+          <Icon v-else icon="solar:chat-round-line-bold-duotone" class="btn-icon" />
+          <span>新建对话</span>
+        </button>
       </div>
 
       <!-- 消息流 -->
@@ -394,6 +403,20 @@ watch(
   flex-shrink: 0;
   border-right: 1px solid var(--border-color-light, #e5e5e5);
   background: var(--bg-color-main, #ffffff);
+  overflow-y: hidden;
+  overflow-x: hidden;
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.project-panel.collapsed {
+  width: 0;
+  opacity: 0;
+  border-right-color: transparent;
+}
+
+.project-panel-inner {
+  width: 260px;
+  height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px 0 0;
@@ -532,7 +555,7 @@ watch(
   border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
-  font-family: monospace;
+  font-family: var(--font-mono);
   letter-spacing: 0.5px;
 }
 .http-badge--ok {
@@ -678,6 +701,70 @@ watch(
   flex-shrink: 0;
 }
 
+.new-chat-btn.custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0f0f0f;
+  color: #fff;
+  border: 1px solid #0f0f0f;
+  padding: 10px 18px;
+  border-radius: 0;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s, box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.new-chat-btn.custom:hover {
+  background: #2a2a2a;
+  transform: scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.new-chat-btn.custom:active {
+  transform: scale(0.97);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.new-chat-btn.custom:disabled {
+  background: #a3a3a3;
+  border-color: #a3a3a3;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.new-chat-btn.custom .btn-icon {
+  font-size: 18px;
+}
+.new-chat-btn.custom .is-loading {
+  font-size: 18px;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.icon-btn.sidebar-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: #0f0f0f;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 0;
+  transition: background 0.15s, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-right: 4px;
+}
+.icon-btn.sidebar-toggle-btn:hover {
+  background: #f0f0f0;
+}
+.icon-btn.sidebar-toggle-btn:active {
+  transform: scale(0.92);
+}
+
 .chat-project-url {
   font-size: 12px;
   color: var(--color-text-secondary, #a3a3a3);
@@ -819,7 +906,7 @@ watch(
 .message-text :deep(li) { margin: 6px 0; }
 .message-text :deep(strong) { font-weight: 600; color: #000; }
 .message-text :deep(code) {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--font-mono);
   background: #f4f4f4;
   padding: 2px 6px;
   border-radius: 0;
@@ -893,8 +980,8 @@ watch(
   max-height: 800px;
   opacity: 1;
   padding: 0 14px 10px;
-  /* 展开方向：ease-out，先快后慢，自然展开 */
-  transition: max-height 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  /* 展开方向：线性动画 */
+  transition: max-height 0.45s linear, opacity 0.35s linear;
 }
 
 .thought-content {
@@ -913,7 +1000,7 @@ watch(
 .inline-event-chip {
   display: inline-block;
   font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--font-mono);
   padding: 2px 8px;
   border-radius: 4px;
   background: #f0f0f0;

@@ -648,7 +648,7 @@ function getStatusText(status: string): string {
 }
 
 .url-text {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-all;
 }

@@ -423,7 +423,7 @@ export default {
   line-height: 1.65;
   font-size: 0.92rem;
   border-top: 1px solid rgba(148, 163, 184, 0.16);
-  font-family: 'Fira Code', 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .markdown-renderer code {
@@ -431,7 +431,7 @@ export default {
   border-radius: 6px;
   padding: 0.2em 0.45em;
   font-size: 0.9rem;
-  font-family: 'Fira Code', 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   color: #0f172a;
 }
 

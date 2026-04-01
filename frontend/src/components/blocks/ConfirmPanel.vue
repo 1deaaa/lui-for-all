@@ -191,13 +191,13 @@ async function handleAction(action: 'approve' | 'reject') {
 
 .method-tag {
   font-weight: bold;
-  font-family: monospace;
+  font-family: var(--font-mono);
   transform: scale(0.85);
   transform-origin: left;
 }
 
 .path-text {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: #4b5563;
   background: rgba(0,0,0,0.05);

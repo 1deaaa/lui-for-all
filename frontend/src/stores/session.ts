@@ -529,7 +529,10 @@ export const useSessionStore = defineStore('session', () => {
     isStreaming.value = false
     try {
       const response = await axios.get(`/api/sessions/${sessionId}/messages`)
-      messages.value = response.data.messages || []
+      messages.value = (response.data.messages || []).map((m: any) => ({
+        ...m,
+        thought: m.metadata?.thought,
+      }))
       uiBlocks.value = []
       runtimeEvents.value = []
       runtimeEventsByTaskRun.value = {}
@@ -559,7 +562,10 @@ export const useSessionStore = defineStore('session', () => {
     loading.value = true
     try {
       const response = await axios.get(`/api/sessions/${sessionId}/messages`)
-      messages.value = response.data.messages || []
+      messages.value = (response.data.messages || []).map((m: any) => ({
+        ...m,
+        thought: m.metadata?.thought,
+      }))
     } catch (e: any) {
       error.value = e.message || '获取消息失败'
       console.error('获取消息失败:', e)

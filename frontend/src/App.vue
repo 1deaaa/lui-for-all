@@ -127,6 +127,11 @@ projectStore.fetchProjects()
   
   /* 动画曲线加强专业感 */
   --transition-smooth: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 全局字体定义：双语回退（英文优先，中文兜底） */
+  --font-main: "Inter", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-ui: "Outfit", "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Noto Sans SC", monospace;
 }
 
 /* ================= 基础重置 ================= */
@@ -134,8 +139,21 @@ projectStore.fetchProjects()
   margin: 0;
   padding: 0;
   box-sizing: border-box;
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* 默认使用 Inter，系统备选 */
+  font-family: var(--font-main);
   -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.015em; /* 增加紧致高级感 */
+}
+
+/* 航天/智能感 UI 关键标签 */
+.logo, .el-button, .sidebar-label, .confirm-title {
+  font-family: var(--font-ui) !important;
+}
+
+/* 技术/数据类极客感显示 */
+code, pre, .mono-text, .http-tag, .http-badge {
+  font-family: var(--font-mono) !important;
+  letter-spacing: 0 !important;
 }
 
 html, body, #app {

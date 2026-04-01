@@ -489,6 +489,7 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
     history_entry_ai: dict[str, Any] = {
         "role": "assistant",
         "content": full_text,
+        "think": think_text,
     }
     new_history: list[dict[str, Any]] = [history_entry_ai]
     new_artifacts: list[Any] = []

@@ -579,13 +579,25 @@ async def stream_events(
                                     "status_code": sc,
                                     "duration_ms": a.get("duration_ms"),
                                 })
+                        thoughts = []
+                        for entry in final_state.get("agentic_history", []):
+                            if entry.get("role") == "assistant" and entry.get("think"):
+                                thoughts.append(entry.get("think"))
+                        thought_content = "\n\n".join(thoughts) if thoughts else ""
+
+                        metadata = {}
+                        if http_calls:
+                            metadata["http_calls"] = http_calls
+                        if thought_content:
+                            metadata["thought"] = thought_content
+
                         assistant_message = Message(
                             id=str(uuid.uuid4()),
                             session_id=session_id,
                             role="assistant",
                             content=final_state["summary_text"],
                             task_run_id=task_run_id,
-                            metadata_={"http_calls": http_calls} if http_calls else {},
+                            metadata_=metadata,
                         )
                         await session_repository.add_message(assistant_message)
                         await db.commit()
