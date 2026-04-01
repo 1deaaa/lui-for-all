@@ -135,6 +135,9 @@ export const useSessionStore = defineStore('session', () => {
     let url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
     if (resumeOpts) {
       url += `&resume_write_id=${resumeOpts.resumeWriteId || ''}&resume_action=${resumeOpts.resumeAction}`
+      if (resumeOpts.resumeBatchId) {
+        url += `&resume_batch_id=${resumeOpts.resumeBatchId}`
+      }
       if (resumeOpts.approvedIds) {
         url += `&resume_approved_ids=${resumeOpts.approvedIds.join(',')}`
       }
@@ -143,19 +146,20 @@ export const useSessionStore = defineStore('session', () => {
     eventSource.value = new EventSource(url)
     isStreaming.value = true
     progressPercent.value = 0
-    progressMessage.value = 'AI 已接收请求，正在启动执行链路'
+    progressMessage.value = resumeOpts ? 'AI 正在执行已批准操作...' : 'AI 已接收请求，正在启动执行链路'
     runtimeEvents.value = []
     if (!resumeOpts) {
+      // 全新任务：清空所有状态
       pendingHttpCalls.value = []
+      uiBlocks.value = []
+      streamingMessageId.value = null
+      streamingThoughtId.value = null
+    } else {
+      // resume 模式：保留审批面板（uiBlocks）和已有流式消息索引
+      // 不重置 streamingMessageId，让恢复后的正文 token 继续追加到已有消息中
+      uiBlocks.value = []  // 清除审批面板（已批准，新的 write_approval_required 事件会重新追加）
     }
-    uiBlocks.value = []
     currentTaskRunId.value = taskRunId
-    if (!runtimeEventsByTaskRun.value[taskRunId]) {
-      runtimeEventsByTaskRun.value[taskRunId] = []
-    }
-    // 重置流式消息 ID
-    streamingMessageId.value = null
-    streamingThoughtId.value = null
 
     const register = (eventName: string) => {
       eventSource.value?.addEventListener(eventName, (rawEvent) => {
@@ -203,16 +207,20 @@ export const useSessionStore = defineStore('session', () => {
       'approval_required',
       'write_approval_required',
       'agentic_iteration',
+      'approval_pending',
       'task_completed',
       'error',
     ].forEach(register)
 
     eventSource.value.onerror = (e) => {
+      // 如果 isStreaming 已经是 false，说明已通过 approval_pending 事件正常处理，不当作错误
+      if (!isStreaming.value) return
+
       console.error('SSE 连接错误:', e)
-      
-      // 检查是否是因为审批中断导致的正常关闭
+
+      // 检查是否是因为审批中断导致的正常关闭（兜底，有 confirm_panel 时不报错）
       const isExpectedPause = uiBlocks.value.some(b => b.block_type === 'confirm_panel')
-      
+
       if (!isExpectedPause && !error.value) {
         error.value = 'SSE 连接中断，请检查后端服务'
       }
@@ -316,11 +324,20 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'tool_completed': {
-        // 从 route_id 拆出 HTTP method（格式如 "GET /api/xxx"）
+        // 从 route_id 拆出 HTTP method（格式可能是 "GET /api/xxx" 或 "GET:/api/xxx" 或仅有路径）
         const routeId: string = event.route_id || ''
-        const routeParts = routeId.split(' ')
-        const httpMethod = routeParts.length >= 2 ? routeParts[0].toUpperCase() : ''
-        const httpPath = routeParts.length >= 2 ? routeParts.slice(1).join(' ') : routeId
+        let httpMethod = ''
+        let httpPath = routeId
+        
+        if (routeId.includes(' ')) {
+          const parts = routeId.split(' ')
+          httpMethod = parts[0].toUpperCase()
+          httpPath = parts.slice(1).join(' ')
+        } else if (routeId.includes(':')) {
+          const parts = routeId.split(':')
+          httpMethod = parts[0].toUpperCase()
+          httpPath = parts.slice(1).join(':')
+        }
         const sc: number | undefined = event.status_code
         // 收集到临时列表，task_completed 时写入消息 metadata
         if (sc) {
@@ -431,6 +448,15 @@ export const useSessionStore = defineStore('session', () => {
           ? { ...currentTaskRun.value, status: 'failed', error: error.value || undefined }
           : currentTaskRun.value
         isStreaming.value = false
+        closeEventStream()
+        break
+
+      case 'approval_pending':
+        // 图因 interrupt 暂停，SSE 将由后端关闭
+        // 前端停止 streaming 状态，但 uiBlocks（审批面板）保留
+        isStreaming.value = false
+        progressPercent.value = 0
+        progressMessage.value = '等待审批中...'
         closeEventStream()
         break
 

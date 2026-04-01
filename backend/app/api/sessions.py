@@ -3,8 +3,11 @@
 处理会话创建、消息发送与 SSE 流式执行
 """
 
+import logging
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -166,6 +169,7 @@ async def stream_events(
     resume_write_id: str | None = None,
     resume_action: str | None = None,
     resume_approved_ids: str | None = None,
+    resume_batch_id: str | None = None,
 ):
     """SSE 事件流 - 执行 LangGraph 图（支持打断与恢复）"""
 
@@ -300,7 +304,11 @@ async def stream_events(
                 "summarize": 0.93,
                 "emit_blocks": 1.0,
             }
+            # final_state 用于收集流式 updates，初始从空模板开始
+            # 注意：这不是图的完整检查点状态，仅用于当次 stream 的结果汇总
             final_state = dict(initial_state)
+            # 追踪图本次执行是否因 interrupt 而暂停（write_approval）
+            graph_interrupted = False
 
             async with async_session() as db:
                 task_repository = TaskRepository(db)
@@ -310,12 +318,26 @@ async def stream_events(
                     await db.commit()
 
             from langgraph.types import Command
-            if resume_write_id or resume_approved_ids is not None:
+            is_resume = bool(resume_write_id or resume_approved_ids is not None)
+            if is_resume:
                 if resume_approved_ids is not None:
                     approved_ids = [i.strip() for i in resume_approved_ids.split(",") if i.strip()]
                 else:
                     approved_ids = [resume_write_id] if resume_action == "approve" else []
                 input_data = Command(resume={"approved_ids": approved_ids, "write_id": resume_write_id})
+                # resume 时：从 checkpoint 恢复 final_state，避免 artifacts 丢失
+                try:
+                    _checkpoint_state = await graph_app.aget_state(config)
+                    if _checkpoint_state and _checkpoint_state.values:
+                        # 用 checkpoint 的已有值覆盖空白模板
+                        for k, v in _checkpoint_state.values.items():
+                            if k in ("execution_artifacts", "ui_blocks"):
+                                # 列表类型：直接用 checkpoint 值作为基础
+                                final_state[k] = list(v) if v else []
+                            else:
+                                final_state[k] = v
+                except Exception as ckpt_err:
+                    logger.warning(f"[stream_events] resume 时读取 checkpoint 状态失败: {ckpt_err}")
             else:
                 input_data = initial_state
 
@@ -327,6 +349,11 @@ async def stream_events(
 
                 if stream_type == "custom":
                     event_type = payload.get("event")
+                    if event_type == "write_approval_required":
+                        if is_resume and payload.get("batch_id") == resume_batch_id:
+                            # 过滤掉由于图流恢复导致节点重新执行而再发射出的同一个审批请求事件
+                            continue
+                    
                     if event_type == "task_progress":
                         yield format_sse_event(
                             TaskProgressEvent(
@@ -380,6 +407,8 @@ async def stream_events(
                         )
                     elif event_type == "write_approval_required":
                         from app.schemas.event import WriteApprovalRequiredEvent
+                        # 标记：图即将 interrupt，等待审批
+                        graph_interrupted = True
                         yield format_sse_event(
                             WriteApprovalRequiredEvent(
                                 session_id=session_id,
@@ -439,6 +468,37 @@ async def stream_events(
                                 progress=node_progress_map.get(node_name, 0),
                             )
                         )
+
+            # ── 检查图是否因 interrupt 而暂停，而非真正完成 ──
+            # 当 interrupt() 被调用时，astream 会提前停止迭代；
+            # 此处通过 aget_state 再次确认。graph_interrupted 标志由
+            # write_approval_required 事件设置，用于快速判断。
+            if not graph_interrupted:
+                # 双重保险：即使没收到事件，也检查检查点状态
+                try:
+                    _gs = await graph_app.aget_state(config)
+                    if _gs and _gs.next:
+                        graph_interrupted = True
+                except Exception:
+                    pass
+
+            if graph_interrupted:
+                # 图暂停在 interrupt，等待用户审批——不写消息，不发 task_completed
+                async with async_session() as db:
+                    task_repository = TaskRepository(db)
+                    task_run = await task_repository.get_by_id(task_run_id)
+                    if task_run:
+                        task_run.status = "waiting_approval"
+                        await db.commit()
+                # 向前端发送暂停通知，让前端保持审批面板显示
+                from app.schemas.event import ApprovalPendingEvent
+                yield format_sse_event(
+                    ApprovalPendingEvent(
+                        session_id=session_id,
+                        task_run_id=task_run_id,
+                    )
+                )
+                return  # SSE 连接到此关闭，等用户审批后 resume
 
             async with async_session() as db:
                 task_repository = TaskRepository(db)

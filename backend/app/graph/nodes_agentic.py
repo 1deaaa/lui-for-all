@@ -10,7 +10,11 @@ import re
 import uuid
 from typing import Any
 
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.types import interrupt
+
+# 全局内存缓存：专门对抗 LangGraph interrupt 的恢复重跑机制，拦截重复副作用
+_task_run_llm_cache = {}
 
 from app.graph.llm_client import llm_client
 from app.graph.state import GraphState
@@ -362,7 +366,7 @@ async def _execute_read_call(
         }
 
 
-async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
+async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     """
     Agentic Loop 核心节点（ReAct 模式）
     每次调用：
@@ -383,83 +387,102 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
             "summary_text": f"执行超过最大轮次 {MAX_ITERATIONS} 轮，已强制终止。",
         }
 
-    # 发射轮次通知
-    _emit("agentic_iteration", iteration=iterations)
-    _emit("task_progress", node_name="agentic_loop", progress=min(0.85, 0.1 + iterations * 0.12), message=f"第 {iterations} 轮推理中")
+    task_run_id = config.get("configurable", {}).get("thread_id", "")
+    cache_key = f"{task_run_id}_{iterations}"
 
-    # 构建消息
-    messages = _build_messages(state)
+    if cache_key in _task_run_llm_cache:
+        logger.info(f"[agentic_loop] 命中打断恢复缓存，跳过 LLM 重复调用: {cache_key}")
+        cached = _task_run_llm_cache[cache_key]
+        decision = cached.get("decision", {})
+        full_text = cached.get("full_text", "")
+        think_text = cached.get("think_text", "")
+    else:
+        # ── 正常情况执行 LLM 推理计算 ──
+        # 发射轮次通知 (由于使用了防重放缓存，重跑节点时不会重复发送通知)
+        _emit("agentic_iteration", iteration=iterations)
+        _emit("task_progress", node_name="agentic_loop", progress=min(0.85, 0.1 + iterations * 0.12), message=f"第 {iterations} 轮推理中")
 
-    # 流式调用 LLM
-    full_text = ""
-    is_json_mode = None  # None:未判定, True:调用接口JSON, False:直接回答(纯文本)
-    early_buffer = ""
+        # 构建消息
+        messages = _build_messages(state)
 
-    try:
-        async for chunk_type, token in llm_client.stream_chat_completion(
-            messages=messages,
-            temperature=0.3,
-        ):
-            if chunk_type == "reasoning":
-                _emit("thought_emitted", token=token)
-            else:
-                full_text += token
+        # 流式调用 LLM
+        full_text = ""
+        early_buffer = ""
 
-    except Exception as exc:
-        logger.error(f"[agentic_loop] LLM 调用失败: {exc}", exc_info=True)
-        return {
-            "agentic_done": True,
-            "agentic_iterations": iterations,
-            "error": f"AI 决策失败: {exc}",
-        }
+        try:
+            async for chunk_type, token in llm_client.stream_chat_completion(
+                messages=messages,
+                temperature=0.3,
+            ):
+                if chunk_type == "reasoning":
+                    _emit("thought_emitted", token=token)
+                else:
+                    full_text += token
 
-    # 如果全为空（网络极度异常），或者走到这儿是 is_json_mode=True
-    # 解析 JSON 决策
-    try:
-        import json_repair
-        # 提取 JSON，LLM 可能包在 ```json ``` 内
-        text_clean = full_text.strip()
-        if text_clean.startswith("```"):
-            text_clean = text_clean.split("```", 2)[1]
-            if text_clean.startswith("json"):
-                text_clean = text_clean[4:]
-            text_clean = text_clean.rsplit("```", 1)[0].strip()
+        except Exception as exc:
+            logger.error(f"[agentic_loop] LLM 调用失败: {exc}", exc_info=True)
+            return {
+                "agentic_done": True,
+                "agentic_iterations": iterations,
+                "error": f"AI 决策失败: {exc}",
+            }
 
-        decision = json_repair.loads(text_clean)
-        # 如果 text_clean 没提取好，json_repair 甚至能直接解析原始带有 markdown 的文本
-        if not isinstance(decision, dict):
-            decision = json_repair.loads(full_text)
-            
-        if not isinstance(decision, dict):
-            raise ValueError("解析结果不是 JSON 对象")
-            
-    except Exception as exc:
-        logger.error(f"[agentic_loop] JSON 解析失败: {exc}\n原文: {full_text[:500]}")
-        # 增加鲁棒性：如果无法解析 JSON，但内容看起来像是在直接回答，则强制 finish
-        if len(full_text) > 20 and not full_text.strip().startswith("{"):
-            import asyncio
-            # 伪流式发射：每次发2个字符，间隔0.025秒（每秒约80字符，符合视觉习惯）
-            for i in range(0, len(full_text), 2):
-                _emit("token_emitted", token=full_text[i: i+2])
-                await asyncio.sleep(0.025)
+        # 解析 JSON 决策
+        try:
+            import json_repair
+            # 提取 JSON，LLM 可能包在 ```json ``` 内
+            text_clean = full_text.strip()
+            if text_clean.startswith("```"):
+                text_clean = text_clean.split("```", 2)[1]
+                if text_clean.startswith("json"):
+                    text_clean = text_clean[4:]
+                text_clean = text_clean.rsplit("```", 1)[0].strip()
+
+            decision = json_repair.loads(text_clean)
+            # 如果 text_clean 没提取好，json_repair 甚至能直接解析原始带有 markdown 的文本
+            if not isinstance(decision, dict):
+                decision = json_repair.loads(full_text)
+                
+            if not isinstance(decision, dict):
+                raise ValueError("解析结果不是 JSON 对象")
+                
+        except Exception as exc:
+            logger.error(f"[agentic_loop] JSON 解析失败: {exc}\n原文: {full_text[:500]}")
+            # 增加鲁棒性：如果无法解析 JSON，但内容看起来像是在直接回答，则强制 finish
+            if len(full_text) > 20 and not full_text.strip().startswith("{"):
+                import asyncio
+                # 伪流式发射：每次发2个字符，间隔0.025秒（每秒约80字符，符合视觉习惯）
+                for i in range(0, len(full_text), 2):
+                    _emit("token_emitted", token=full_text[i: i+2])
+                    await asyncio.sleep(0.025)
+                
+                return {
+                    "agentic_done": True,
+                    "agentic_iterations": iterations,
+                    "summary_text": full_text.strip(),
+                }
             
             return {
                 "agentic_done": True,
                 "agentic_iterations": iterations,
-                "summary_text": full_text.strip(),
+                "error": f"AI 输出格式错误，无法解析决策 JSON: {exc}",
             }
-        
-        return {
-            "agentic_done": True,
-            "agentic_iterations": iterations,
-            "error": f"AI 输出格式错误，无法解析决策 JSON: {exc}",
-        }
 
+    is_first_run_of_this_iteration = cache_key not in _task_run_llm_cache
+
+    if is_first_run_of_this_iteration:
+        # 新产生的有效决策，写入防重放缓存
+        _task_run_llm_cache[cache_key] = {
+            "decision": decision,
+            "full_text": full_text,
+            "think_text": decision.get("think", ""),
+        }
+        
     action = decision.get("action", "finish")
     think_text = decision.get("think", "")
 
-    # 发射本轮推理思考到前端
-    if think_text:
+    # 首次执行时，发射本轮推理思考到前端
+    if is_first_run_of_this_iteration and think_text:
         _emit("thought_emitted", token=f"\n**[第{iterations}轮]** {think_text}\n")
 
     # 追加 AI 本轮决策到历史
@@ -473,6 +496,9 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
     existing_history: list[dict[str, Any]] = state.get("agentic_history") or []
 
     if action == "finish":
+        # 完结此轮和缓存
+        _task_run_llm_cache.pop(cache_key, None)
+        logger.info(f"[agentic_loop] 正常完成任务。")
         # AI 决定结束，交给总结节点汇报
         return {
             "agentic_done": True,
@@ -547,9 +573,13 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                             logger.error(f"[agentic_loop] Failed to parse ExecutionArtifact for cached write: {e}", exc_info=True)
                     continue
 
+                import hashlib
+                # 使用确定性的哈希值作为 write_id，防止 langgraph 恢复重新执行节点时 ID 变化
+                deterministic_id = hashlib.md5(fingerprint.encode("utf-8")).hexdigest()
+                
                 # 2. 加入待审批列表
                 items_to_approve.append({
-                    "write_id": str(uuid.uuid4()),
+                    "write_id": deterministic_id,
                     "fingerprint": fingerprint,
                     "route_id": rid,
                     "method": m,
@@ -561,10 +591,15 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                 })
 
             if items_to_approve:
-                batch_id = str(uuid.uuid4())
+                import hashlib
+                # batch_id 也必须是确定性的，以包含的所有 write_id 为基础计算签名的哈希
+                all_ids = sorted([item["write_id"] for item in items_to_approve])
+                batch_id = hashlib.md5("".join(all_ids).encode("utf-8")).hexdigest()
+                
                 serializable_items = [{k: v for k, v in it.items() if k not in ("_wc", "fingerprint")} for it in items_to_approve]
 
-                # 向前端发射审批请求事件
+                # 只有在这是该批次“第一次”被评估时，才向前端发射审批请求事件
+                # (langgraph 恢复重跑该节点时，无需重复发送事件)
                 _emit("write_approval_required", batch_id=batch_id, items=serializable_items)
 
                 # interrupt：暂停图执行，等待一次性批量审批
@@ -609,6 +644,9 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                 "role": "user",
                 "content": observation_content,
             })
+
+        # 本轮结束，清理缓存
+        _task_run_llm_cache.pop(cache_key, None)
 
         return {
             "agentic_done": False,

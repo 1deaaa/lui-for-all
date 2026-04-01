@@ -67,6 +67,7 @@ class EventType(str, Enum):
     # Agentic Loop 专用
     WRITE_APPROVAL_REQUIRED = "write_approval_required"  # 写入操作待人工批准
     AGENTIC_ITERATION = "agentic_iteration"              # 每轮循环开始通知
+    APPROVAL_PENDING = "approval_pending"                # 图因 interrupt 暂停，等待前端审批
 
     # 错误
     ERROR = "error"
@@ -252,3 +253,10 @@ class AgenticIterationEvent(BaseModel):
     iteration: int = Field(description="当前轮次（从 1 开始）")
     think: str | None = Field(default=None, description="本轮 AI 推理摘要（可为空）")
 
+
+class ApprovalPendingEvent(BaseModel):
+    """图因 interrupt 暂停等待审批事件"""
+
+    event: EventType = Field(default=EventType.APPROVAL_PENDING, frozen=True)
+    session_id: str = Field(description="会话 ID")
+    task_run_id: str = Field(description="任务运行 ID")
