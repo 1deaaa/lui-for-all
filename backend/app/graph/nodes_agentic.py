@@ -322,8 +322,8 @@ async def _execute_read_call(
         )
 
         body_str = json.dumps(response_body, ensure_ascii=False)
-        if len(body_str) > 4000:
-            body_str = body_str[:4000] + "... [已截断]"
+        if len(body_str) > 32000:
+            body_str = body_str[:32000] + "... [数据过长，已被系统从 32K 处截断]"
 
         return {
             "call_id": call_id,
