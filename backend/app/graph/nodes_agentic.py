@@ -509,8 +509,8 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                 try:
                     artifact = ExecutionArtifact(**result["artifact"])
                     new_artifacts.append(artifact)
-                except Exception:
-                    pass  # 非关键路径，忽略
+                except Exception as e:
+                    logger.error(f"[agentic_loop] Failed to parse ExecutionArtifact: {e}", exc_info=True)
 
         # 处理写入调用——批量审批（带自动放行缓存）
         approved_write_results: list[str] = []
@@ -543,7 +543,8 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                         try:
                             artifact = ExecutionArtifact(**write_result["artifact"])
                             new_artifacts.append(artifact)
-                        except Exception: pass
+                        except Exception as e:
+                            logger.error(f"[agentic_loop] Failed to parse ExecutionArtifact for cached write: {e}", exc_info=True)
                     continue
 
                 # 2. 加入待审批列表
@@ -595,7 +596,8 @@ async def agentic_loop_node(state: GraphState) -> dict[str, Any]:
                             try:
                                 artifact = ExecutionArtifact(**write_result["artifact"])
                                 new_artifacts.append(artifact)
-                            except Exception: pass
+                            except Exception as e:
+                                logger.error(f"[agentic_loop] Failed to parse ExecutionArtifact for write: {e}", exc_info=True)
                     else:
                         approved_write_results.append(f'write_id={wid} route={rid} → 用户已拒绝')
 

@@ -418,7 +418,16 @@ async def stream_events(
                 elif stream_type == "updates":
                     for node_name, node_update in payload.items():
                         if isinstance(node_update, dict):
-                            final_state.update(node_update)
+                            for k, v in node_update.items():
+                                if k in ("execution_artifacts", "ui_blocks"):
+                                    # 累加列表形式的状态，防止多轮 Agentic 循环的最后一轮(finish)出现空列表覆盖掉之前的结果
+                                    current_list = final_state.get(k, [])
+                                    if current_list is None:
+                                        current_list = []
+                                    current_list.extend(v)
+                                    final_state[k] = current_list
+                                else:
+                                    final_state[k] = v
                             if node_update.get("error"):
                                 final_state["error"] = node_update.get("error")
 
@@ -488,28 +497,27 @@ async def stream_events(
 
                     if final_state.get("summary_text") and not final_state.get("error"):
                         # 提取 HTTP 调用摘要存入消息 metadata，供历史加载时还原标签
+                        from urllib.parse import urlparse
                         http_calls = []
                         for a in (task_run.execution_artifacts or []):
-                            # method/url 存在 artifact 子字典中
-                            sub = a.get("artifact") or {}
-                            method = (sub.get("method") or "").upper()
-                            full_url = sub.get("url") or ""
+                            # ExecutionArtifact 序列化后字段直接在顶层（method, url, status_code）
+                            method = (a.get("method") or "").upper()
+                            full_url = a.get("url") or ""
                             # 只保留 path 部分，去掉 scheme+host
-                            from urllib.parse import urlparse
                             parsed = urlparse(full_url)
                             url = parsed.path or full_url
-                            # 兜底：从 route_id 拆解
+                            # 兜底：从 route_id 拆解 method 和 url
                             if not method:
                                 parts = (a.get("route_id") or "").split(" ", 1)
                                 if len(parts) == 2:
                                     method, url = parts[0].upper(), parts[1]
-                            sc = sub.get("status_code") or a.get("status_code")
+                            sc = a.get("status_code")
                             if sc is not None:
                                 http_calls.append({
                                     "method": method,
                                     "url": url,
                                     "status_code": sc,
-                                    "duration_ms": sub.get("duration_ms"),
+                                    "duration_ms": a.get("duration_ms"),
                                 })
                         assistant_message = Message(
                             id=str(uuid.uuid4()),
