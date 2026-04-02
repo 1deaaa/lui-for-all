@@ -544,11 +544,10 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function deleteSession(sessionId: string) {
-    // 找到 projectId 用于更新缓存（删前先记录）
+  function deleteSession(sessionId: string) {
+    // 乐观删除 UI
     const projectId = historyList.value.find(s => s.id === sessionId)?.project_id
       || currentSession.value?.project_id
-    await axios.delete(`/api/sessions/${sessionId}`)
     historyList.value = historyList.value.filter(s => s.id !== sessionId)
     if (projectId) {
       _saveHistoryCache(projectId, historyList.value)
@@ -556,6 +555,11 @@ export const useSessionStore = defineStore('session', () => {
     if (currentSession.value?.id === sessionId) {
       clearSession()
     }
+
+    // 后端异步执行删除，不阻塞用户的后续操作与本地 UI 更新
+    axios.delete(`/api/sessions/${sessionId}`).catch(e => {
+      console.error('异步删除会话失败:', e)
+    })
   }
 
   async function fetchMessages(sessionId: string) {

@@ -38,14 +38,13 @@ const readyProjects = computed(() =>
   projectStore.projects.filter((p) => p.discovery_status === 'completed')
 )
 
-// 快速切换项目：选中 -> 拉取历史 -> 创建新会话
+// 快速切换项目：选中 -> 拉取历史 -> 清理当前会话
 async function selectProject(projectId: string) {
   const found = projectStore.projects.find((p) => p.id === projectId)
   if (!found) return
   projectStore.currentProject = found
   sessionStore.clearSession()
   await sessionStore.fetchHistory(projectId)
-  await startSession(projectId)
 }
 
 // 切换到历史会话
@@ -60,13 +59,9 @@ async function switchToHistory(session: Session) {
 async function handleDeleteSession(session: Session, e: MouseEvent) {
   e.stopPropagation()
   await sessionStore.deleteSession(session.id)
-  // 若删完后无活跃会话，自动建一条新的
-  if (!sessionStore.currentSession && selectedProject.value) {
-    await startSession(selectedProject.value.id)
-  }
 }
 
-// 创建对话 session
+// 创建对话 session (只在真正需要发送消息时调用)
 async function startSession(projectId: string) {
   if (sessionCreating.value) return
   sessionCreating.value = true
@@ -78,6 +73,11 @@ async function startSession(projectId: string) {
   } finally {
     sessionCreating.value = false
   }
+}
+
+// 新建对话（仅清理本地状态，等发送消息时真正创建）
+function handleNewChat() {
+  sessionStore.clearSession()
 }
 
 // 发送消息
@@ -114,10 +114,6 @@ onMounted(async () => {
   if (projectId) {
     await selectProject(projectId)
     return
-  }
-  // 如果已有当前项目且没有会话，自动建一个
-  if (selectedProject.value && !sessionStore.currentSession) {
-    await startSession(selectedProject.value.id)
   }
 })
 
@@ -171,16 +167,18 @@ watch(
       <template v-if="selectedProject && sessionStore.historyList.length > 0">
         <div class="panel-divider" />
         <div class="panel-title-sm">历史对话</div>
-        <div
-          v-for="s in sessionStore.historyList"
-          :key="s.id"
-          class="history-item"
-          :class="{ active: sessionStore.currentSession?.id === s.id }"
-          @click="switchToHistory(s)"
-        >
-          <div class="history-item-title">{{ s.title || '未命名对话' }}</div>
-          <button class="history-item-del" @click="handleDeleteSession(s, $event)" title="删除">&times;</button>
-        </div>
+        <TransitionGroup name="history-list" tag="div" class="history-list-wrapper">
+          <div
+            v-for="s in sessionStore.historyList"
+            :key="s.id"
+            class="history-item"
+            :class="{ active: sessionStore.currentSession?.id === s.id }"
+            @click="switchToHistory(s)"
+          >
+            <div class="history-item-title">{{ s.title || '未命名对话' }}</div>
+            <button class="history-item-del" @click="handleDeleteSession(s, $event)" title="删除">&times;</button>
+          </div>
+        </TransitionGroup>
       </template>
 
       <div class="panel-divider" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0" />
@@ -214,7 +212,7 @@ watch(
         <button
           v-if="selectedProject"
           :disabled="sessionStore.isStreaming || sessionCreating"
-          @click="startSession(selectedProject.id)"
+          @click="handleNewChat"
           class="new-chat-btn custom"
         >
           <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
@@ -261,7 +259,9 @@ watch(
                 <el-icon class="thought-toggle" :class="{ expanded: thoughtExpanded[msg.id] }"><ArrowDown /></el-icon>
               </div>
               <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
-                <div class="thought-content">{{ msg.thought }}</div>
+                <div class="thought-content">
+                  <MarkdownRenderer :content="msg.thought" />
+                </div>
               </div>
             </div>
             <!-- HTTP 执行标签（仅 assistant 消息且有 http_calls 时显示）-->
@@ -480,6 +480,32 @@ watch(
 }
 .history-item:hover .history-item-del {
   display: block;
+}
+
+/* ============ 历史列表过渡动画 ============ */
+.history-list-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.history-list-enter-active,
+.history-list-leave-active {
+  transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+}
+.history-list-enter-from {
+  opacity: 0;
+  transform: translateY(-15px) scale(0.98);
+}
+.history-list-leave-to {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+.history-list-leave-active {
+  position: absolute;
+  width: calc(100% - 16px); /* 减去水平 margin，确保宽度与非 absolute 一致 */
+}
+.history-list-move {
+  transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 /* ============ 运行时进度条（输入框上方折叠式） ============ */
@@ -969,24 +995,49 @@ watch(
 
 /* 默认折叠（仅显示标题），展开后全显 */
 .thought-body {
-  overflow: hidden;
-  max-height: 0;
+  display: grid;
+  grid-template-rows: 0fr;
   opacity: 0;
-  /* 收起方向：ease-in，先慢后快，干脆收回 */
-  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.6, 1), opacity 0.2s cubic-bezier(0.4, 0, 0.6, 1);
+  transition: grid-template-rows 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s;
   padding: 0 14px;
 }
 .thought-body.expanded {
-  max-height: 800px;
+  grid-template-rows: 1fr;
   opacity: 1;
   padding: 0 14px 10px;
-  /* 展开方向：线性动画 */
-  transition: max-height 0.45s linear, opacity 0.35s linear;
 }
 
 .thought-content {
-  white-space: pre-wrap;
   line-height: 1.6;
+  overflow: hidden;
+  font-size: 13px !important;
+  color: #8c8c8c !important;
+}
+.thought-content :deep(.markdown-renderer),
+.thought-content :deep(.rendered-content),
+.thought-content :deep(p),
+.thought-content :deep(li),
+.thought-content :deep(span),
+.thought-content :deep(strong),
+.thought-content :deep(em),
+.thought-content :deep(a),
+.thought-content :deep(h1),
+.thought-content :deep(h2),
+.thought-content :deep(h3),
+.thought-content :deep(h4),
+.thought-content :deep(h5),
+.thought-content :deep(h6),
+.thought-content :deep(th),
+.thought-content :deep(td) {
+  color: #8c8c8c !important;
+  font-size: 13px !important;
+}
+
+/* 针对内部代码块等颜色降级 */
+.thought-content :deep(code) {
+  color: #6b6b6b !important;
+  font-size: 12px !important;
+  background-color: rgba(15, 23, 42, 0.04) !important;
 }
 
 /* 内联 HTTP 执行记录 chip */
