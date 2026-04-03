@@ -38,6 +38,10 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("anthropic").setLevel(logging.WARNING)
 logging.getLogger("langgraph").setLevel(logging.WARNING)
 logging.getLogger("langchain").setLevel(logging.WARNING)
+logging.getLogger("docket").setLevel(logging.WARNING)
+logging.getLogger("pydocket").setLevel(logging.WARNING)
+logging.getLogger("fakeredis").setLevel(logging.WARNING)
+logging.getLogger("fastmcp").setLevel(logging.WARNING)
 
 
 def init_telemetry():
