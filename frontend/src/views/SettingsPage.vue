@@ -4,19 +4,21 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { Check, Close } from '@element-plus/icons-vue'
 
-// 设置表单
 const settings = ref({
   llm_api_base: '',
   llm_api_key: '',
   llm_model_id: '',
   llm_extra_body: '',
   safety_default_action: 'confirm',
+  mcp_api_token: '',
 })
 
 const saving = ref(false)
 const testing = ref(false)
 const loading = ref(false)
+const fetchingModels = ref(false)
 const testStatus = ref<'success' | 'error' | null>(null)
+const availableModels = ref<string[]>([])
 
 async function loadSettings() {
   loading.value = true
@@ -28,6 +30,7 @@ async function loadSettings() {
       llm_model_id: response.data.llm_model_id || '',
       llm_extra_body: response.data.llm_extra_body || '',
       safety_default_action: response.data.safety_default_action || 'confirm',
+      mcp_api_token: response.data.mcp_api_token || '',
     }
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error.message || '读取设置失败')
@@ -53,8 +56,11 @@ async function saveSettings() {
 function formatApiBase() {
   let url = settings.value.llm_api_base.trim()
   if (!url) return
-  if (url.endsWith('/')) {
-    url = url.replace(/\/+$/, '')
+  // 先清理掉末尾所有的冗余斜杠
+  url = url.replace(/\/+$/, '')
+  // 如果清理完后没有加上 /v1，则自动补全即可兼容绝大多数兼容端点
+  if (!url.endsWith('/v1')) {
+    url = url + '/v1'
   }
   settings.value.llm_api_base = url
 }
@@ -94,6 +100,41 @@ async function testConnection() {
   }
 }
 
+// 生成随机 Token
+function generateMcpToken() {
+  settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
+  ElMessage.success('已生成随机 Token（保存后生效）')
+}
+
+// 获取模型列表
+async function fetchModels() {
+  if (!settings.value.llm_api_base) {
+    ElMessage.warning('请先填写 API 端点')
+    return
+  }
+  formatApiBase()
+  fetchingModels.value = true
+  try {
+    const response = await axios.post('/api/settings/models', settings.value)
+    availableModels.value = response.data.models || []
+    if (availableModels.value.length === 0) {
+      ElMessage.warning('获取到的模型列表为空')
+    } else {
+      ElMessage.success(`成功获取了 ${availableModels.value.length} 个模型`)
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error.message || '获取模型列表失败，请检查 Base URL 和 API Key')
+  } finally {
+    fetchingModels.value = false
+  }
+}
+
+function handleModelSelectVisible(visible: boolean) {
+  if (visible && availableModels.value.length === 0) {
+    fetchModels()
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -114,13 +155,34 @@ onMounted(loadSettings)
             @blur="formatApiBase"
           />
         </el-form-item>
-        
-        <el-form-item label="模型 ID">
-          <el-input v-model="settings.llm_model_id" placeholder="模型 ID" />
-        </el-form-item>
 
         <el-form-item label="API Key">
           <el-input v-model="settings.llm_api_key" type="password" show-password placeholder="LLM API Key" />
+        </el-form-item>
+
+        <el-form-item label="模型 ID">
+          <div style="display: flex; gap: 8px; width: 100%;">
+            <el-select 
+              v-model="settings.llm_model_id" 
+              placeholder="选择或输入模型 ID" 
+              filterable 
+              allow-create 
+              default-first-option
+              :loading="fetchingModels"
+              @visible-change="handleModelSelectVisible"
+              style="flex-grow: 1;"
+            >
+              <el-option
+                v-for="model in availableModels"
+                :key="model"
+                :label="model"
+                :value="model"
+              />
+            </el-select>
+            <el-button @click="fetchModels" :loading="fetchingModels" title="刷新获取服务器上的模型列表">
+              探测模型
+            </el-button>
+          </div>
         </el-form-item>
 
         <el-form-item label="附加参数(JSON)">
@@ -141,6 +203,21 @@ onMounted(loadSettings)
             <el-option label="确认" value="confirm" />
             <el-option label="阻断" value="block" />
           </el-select>
+        </el-form-item>
+
+        <el-divider content-position="left">MCP 对外服务网关</el-divider>
+
+        <el-form-item label="API Token">
+          <el-input 
+            v-model="settings.mcp_api_token" 
+            type="password"
+            show-password
+            placeholder="必须配置 Token 才能允许外部 Agent 访问 (请求必须带 Bearer Token)"
+          >
+            <template #append>
+              <el-button @click="generateMcpToken">随机生成</el-button>
+            </template>
+          </el-input>
         </el-form-item>
 
         <el-form-item>

@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from app.api import approvals, audit, projects, sessions, settings as settings_api
 from app.config import settings
 from app.db import init_db
+from app.mcp.server import mcp as mcp_server
 
 # 配置日志
 logging.basicConfig(
@@ -69,9 +70,14 @@ def init_telemetry():
     logger.info("✅ OpenTelemetry 初始化完成")
 
 
+# ── MCP 子应用（Streamable HTTP 传输）──
+# path="/" 表示 MCP 端点相对于挂载点 /mcp 即为 /mcp/
+_mcp_http_app = mcp_server.http_app(path="/")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
+    """应用生命周期管理（同时管理 MCP 会话生命周期）"""
     logger.info("🚀 LUI-for-All 启动中...")
 
     # 初始化 OpenTelemetry
@@ -90,7 +96,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ agent-matchbox 初始化失败: {e}")
 
-    yield
+    # 启动 MCP 会话管理器（FastMCP Streamable HTTP 需要）
+    async with _mcp_http_app.lifespan(_mcp_http_app):
+        logger.info("✅ MCP 连接桥启动完成 → /mcp")
+        yield
 
     logger.info("🛑 LUI-for-All 关闭中...")
 
@@ -120,6 +129,38 @@ app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
+
+
+# ── MCP 连接桥 Bearer Token 鉴权中间件 ──
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
+    """对 /mcp 路径下所有请求校验 Bearer Token"""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/mcp"):
+            if not settings.mcp_api_token:
+                return JSONResponse(
+                    {"detail": "Unauthorized: MCP API token is not configured. Access denied."},
+                    status_code=401,
+                )
+
+            _EXPECTED_AUTH = f"Bearer {settings.mcp_api_token}"
+            auth = request.headers.get("Authorization", "")
+            if auth != _EXPECTED_AUTH:
+                return JSONResponse(
+                    {"detail": "Unauthorized: invalid or missing MCP API token"},
+                    status_code=401,
+                )
+        return await call_next(request)
+
+app.add_middleware(MCPBearerAuthMiddleware)
+logger.info("🔒 MCP 强制鉴权已启用（无 token 则阻断）")
+
+# 挂载 MCP 子应用
+app.mount("/mcp", _mcp_http_app)
 
 
 @app.get("/health")

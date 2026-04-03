@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # 安全配置
     safety_default_action: Literal["allow", "block", "confirm"] = "confirm"
 
+    # MCP 对话网关鉴权 Token
+    # 配置后所有 /mcp 请求需携带 Authorization: Bearer <token>
+    # 不配置则开放访问（本地开发模式）
+    mcp_api_token: str | None = Field(
+        default=None,
+        description="MCP 对话网关静态 Bearer Token（LUI_MCP_API_TOKEN）",
+    )
+
     # OpenTelemetry 配置
     otlp_endpoint: str | None = Field(
         default=None,
