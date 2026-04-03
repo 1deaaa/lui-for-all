@@ -507,6 +507,37 @@ async def update_project(
     return {"project_id": project_id, "status": "updated"}
 
 
+class CapabilityUpdateRequest(BaseModel):
+    """能力信息修改请求"""
+    permission_level: str | None = None
+
+
+@router.patch("/{project_id}/capabilities/{capability_id}")
+async def update_capability(
+    project_id: str,
+    capability_id: str,
+    request: CapabilityUpdateRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """修改能力的权限级别等信息"""
+    result = await db.execute(
+        select(CapabilityRecord).where(
+            CapabilityRecord.project_id == project_id,
+            CapabilityRecord.capability_id == capability_id
+        )
+    )
+    capability = result.scalar_one_or_none()
+    
+    if not capability:
+        raise HTTPException(status_code=404, detail="能力不存在")
+
+    if request.permission_level is not None:
+        capability.permission_level = request.permission_level
+
+    await db.commit()
+    return {"capability_id": capability_id, "status": "updated"}
+
+
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: str,

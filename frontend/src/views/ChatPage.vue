@@ -7,6 +7,7 @@ import type { Session } from '@/vite-env.d'
 import BlockRenderer from '@/components/BlockRenderer.vue'
 import { ElMessage } from 'element-plus'
 import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
+import RouteMapAnalyzer from '@/components/project/RouteMapDrawer.vue'
 
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
@@ -44,6 +45,9 @@ async function selectProject(projectId: string) {
   if (!found) return
   projectStore.currentProject = found
   sessionStore.clearSession()
+  
+  // 并行后台拉取详情信息及历史会话，不阻塞主线程动画
+  projectStore.fetchProjectDetails(projectId)
   await sessionStore.fetchHistory(projectId)
 }
 
@@ -209,16 +213,21 @@ watch(
           <span class="chat-project-url">{{ selectedProject.base_url }}</span>
         </template>
         <span v-else class="chat-hint-topbar">← 请在左侧选择一个项目</span>
-        <button
-          v-if="selectedProject"
-          :disabled="sessionStore.isStreaming || sessionCreating"
-          @click="handleNewChat"
-          class="new-chat-btn custom"
-        >
-          <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
-          <Icon v-else icon="solar:chat-round-line-bold-duotone" class="btn-icon" />
-          <span>新建对话</span>
-        </button>
+        
+        <div class="topbar-actions" v-if="selectedProject">
+          <!-- 路由图谱/分析报告 -->
+          <RouteMapAnalyzer />
+
+          <button
+            :disabled="sessionStore.isStreaming || sessionCreating"
+            @click="handleNewChat"
+            class="new-chat-btn custom"
+          >
+            <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
+            <Icon v-else icon="solar:chat-round-line-bold-duotone" class="btn-icon" />
+            <span>新建对话</span>
+          </button>
+        </div>
       </div>
 
       <!-- 消息流 -->
@@ -722,12 +731,15 @@ watch(
   color: var(--color-text-primary, #0f0f0f);
 }
 
-.new-chat-btn {
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-left: auto;
   flex-shrink: 0;
 }
 
-.new-chat-btn.custom {
+.new-chat-btn {
   display: flex;
   align-items: center;
   gap: 8px;

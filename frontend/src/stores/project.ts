@@ -7,6 +7,12 @@ export const useProjectStore = defineStore('project', () => {
   // 状态
   const projects = ref<Project[]>([])
   const currentProject = ref<Project | null>(null)
+  
+  // 详情数据缓存
+  const currentRouteMap = ref<any>(null)
+  const currentCapabilities = ref<any[]>([])
+  const isDetailsLoading = ref(false)
+
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -55,6 +61,62 @@ export const useProjectStore = defineStore('project', () => {
       console.error('获取项目失败:', e)
     } finally {
       loading.value = false
+    }
+  }
+
+  // 获取正在对话的选定项目附加详情（能力和路由图谱，后台预加载）
+  async function fetchProjectDetails(id: string) {
+    // 快速从 localStorage 恢复（实现刷新后瞬间可见）
+    const localRouteStr = localStorage.getItem(`lui_route_map_${id}`)
+    const localCapsStr = localStorage.getItem(`lui_caps_${id}`)
+    
+    let hasLocalData = false
+    if (localRouteStr && localCapsStr) {
+      try {
+        currentRouteMap.value = JSON.parse(localRouteStr)
+        currentCapabilities.value = JSON.parse(localCapsStr)
+        hasLocalData = true
+      } catch (e) {
+        console.warn('解析本地缓存失败，弃用缓存')
+      }
+    }
+
+    if (!hasLocalData && currentRouteMap.value?.project_id !== id) {
+      // 如果没有本地缓存且内存不是当前项目，先暂且设为空，避免查看到上个项目的脏数据
+      currentRouteMap.value = null
+      currentCapabilities.value = []
+    }
+
+    isDetailsLoading.value = true
+
+    // 静默发起网络请求拉取最新数据（Stale-While-Revalidate）
+    try {
+      const [routeRes, capRes] = await Promise.allSettled([
+        axios.get(`/api/projects/${id}/route-map`),
+        axios.get(`/api/projects/${id}/capabilities`)
+      ])
+
+      if (routeRes.status === 'fulfilled') {
+        currentRouteMap.value = routeRes.value.data
+        try {
+          localStorage.setItem(`lui_route_map_${id}`, JSON.stringify(routeRes.value.data))
+        } catch (err) {
+          console.warn('localStorage 写入失败(可能超限):', err)
+        }
+      }
+      if (capRes.status === 'fulfilled') {
+        const caps = capRes.value.data.capabilities || []
+        currentCapabilities.value = caps
+        try {
+          localStorage.setItem(`lui_caps_${id}`, JSON.stringify(caps))
+        } catch (err) {
+          console.warn('localStorage 写入失败(可能超限):', err)
+        }
+      }
+    } catch (e: any) {
+      console.error('后台加载项目详情时发生错误:', e)
+    } finally {
+      isDetailsLoading.value = false
     }
   }
 
@@ -144,6 +206,9 @@ export const useProjectStore = defineStore('project', () => {
     // 状态
     projects,
     currentProject,
+    currentRouteMap,
+    currentCapabilities,
+    isDetailsLoading,
     loading,
     error,
     // 计算属性
@@ -151,6 +216,7 @@ export const useProjectStore = defineStore('project', () => {
     // 方法
     fetchProjects,
     fetchProject,
+    fetchProjectDetails,
     importProject,
     triggerDiscovery,
     deleteProject,

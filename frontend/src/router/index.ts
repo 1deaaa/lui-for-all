@@ -15,12 +15,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '项目' },
   },
   {
-    path: '/projects/:id',
-    name: 'ProjectDetail',
-    component: () => import('@/views/ProjectDetailPage.vue'),
-    meta: { title: '项目详情' },
-  },
-  {
     path: '/audit',
     name: 'Audit',
     component: () => import('@/views/AuditPage.vue'),

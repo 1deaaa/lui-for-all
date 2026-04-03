@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 
 const projectStore = useProjectStore()
@@ -222,6 +222,28 @@ async function triggerDiscovery(projectId: string) {
   }
 }
 
+// 处理点击发现按钮
+async function handleDiscoveryClick(project: any) {
+  if (project.discovery_status === 'completed') {
+    try {
+      await ElMessageBox.confirm(
+        '重新建模将清除已生成的认知图谱和权限映射数据，并重新拉取 OpenAPI 进行分析。这个过程需要耗费一些时间，是否确定重新建模？',
+        '重新建模确认',
+        {
+          confirmButtonText: '确定重构',
+          cancelButtonText: '取消',
+          type: 'warning',
+        }
+      )
+    } catch {
+      return // user canceled
+    }
+  }
+  
+  triggerDiscovery(project.id)
+  startPolling()
+}
+
 async function removeProject(projectId: string) {
   try {
     await projectStore.deleteProject(projectId)
@@ -340,6 +362,7 @@ function getStatusText(status: string): string {
         :key="project.id"
         shadow="hover"
         class="project-card"
+        @click="enterProject(project.id)"
       >
         <template #header>
           <div class="card-header">
@@ -413,12 +436,12 @@ function getStatusText(status: string): string {
           <el-button
             size="small"
             :type="project.discovery_status === 'failed' ? 'danger' : 'default'"
-            @click.stop="triggerDiscovery(project.id); startPolling()"
+            @click.stop="handleDiscoveryClick(project)"
             :loading="project.discovery_status === 'in_progress'"
-            :disabled="project.discovery_status === 'completed' || project.discovery_status === 'in_progress'"
+            :disabled="project.discovery_status === 'in_progress'"
           >
             <template v-if="project.discovery_status === 'completed'">
-              <Icon icon="solar:check-circle-bold-duotone" style="margin-right: 4px; vertical-align: middle;" />已建模
+              <Icon icon="solar:refresh-circle-bold-duotone" style="margin-right: 4px; vertical-align: middle;" />重新建模
             </template>
             <template v-else-if="project.discovery_status === 'in_progress'">
               建模中...
