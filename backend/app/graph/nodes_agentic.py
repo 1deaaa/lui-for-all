@@ -104,11 +104,11 @@ def _emit(event: str, **payload: Any):
 def _build_capability_list(available_capabilities: list[dict]) -> str:
     """构建接口列表文本，注入 Agentic System Prompt"""
     lines = []
-    for cap in available_capabilities[:80]:
+    for cap in available_capabilities:
         cap_id = cap.get("capability_id", "")
         safety = cap.get("safety_level", "readonly_safe")
         name = cap.get("name") or ""
-        desc = (cap.get("description") or "")[:60]
+        desc = cap.get("description") or ""
         routes = cap.get("backed_by_routes", [])
         # 取第一个路由作为 route_id 示例
         route_id = ""

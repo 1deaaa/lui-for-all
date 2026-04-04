@@ -35,13 +35,11 @@ async def generate_project_context(
     """自动生成并更新项目上下文"""
     route_count = len(route_map.routes)
     
-    # 抽取具有代表性的摘要接口（比如前20个）
+    # 抽取摘要接口，交由 AI 进行项目用途总结
     routes_summary_lines = []
-    for r in route_map.routes[:20]:
+    for r in route_map.routes:
         summary_str = r.summary or "无备注"
         routes_summary_lines.append(f"- {r.method.value.upper()} {r.path} : {summary_str}")
-    if route_count > 20:
-        routes_summary_lines.append(f"... (以及其他 {route_count - 20} 个接口)")
     routes_summary = "\n".join(routes_summary_lines)
     
     # 尝试探索可能存在的元数据文档

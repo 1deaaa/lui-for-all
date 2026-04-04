@@ -42,9 +42,9 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
         # 构建能力列表（简短摘要，供入口决策参考）
         available_capabilities = state.get("available_capabilities", [])
         cap_list_lines = []
-        for cap in available_capabilities[:60]:
+        for cap in available_capabilities:
             cap_id = cap.get("capability_id", "")
-            summary = cap.get("summary") or cap.get("name") or cap.get("description", "")[:40]
+            summary = cap.get("summary") or cap.get("name") or cap.get("description") or ""
             cap_list_lines.append(f"- {cap_id}: {summary}")
         capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
 
