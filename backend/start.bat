@@ -9,5 +9,5 @@ if not exist ".env" (
     copy .env.example .env
 )
 
-REM 启动服务
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+REM 启动服务 (通过 run.py 以应用自定义的日志降噪配置和热重载)
+python run.py

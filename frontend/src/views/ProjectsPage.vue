@@ -246,10 +246,21 @@ async function handleDiscoveryClick(project: any) {
 
 async function removeProject(projectId: string) {
   try {
+    await ElMessageBox.confirm(
+      '确定要删除该项目吗？删除后将无法恢复，所有关联的发现数据和会话记录都将被清除。',
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
     await projectStore.deleteProject(projectId)
     ElMessage.success('项目已删除')
   } catch (error: any) {
-    ElMessage.error('删除失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
+    }
   }
 }
 

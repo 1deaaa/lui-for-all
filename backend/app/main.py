@@ -20,14 +20,15 @@ from app.config import settings
 from app.db import init_db
 from app.mcp.server import mcp as mcp_server
 
-# 配置日志
+# 配置应用自身的日志（uvicorn 的 HTTP 访问日志由 run.py 中的 log_config 管理）
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-# 降噪南方第三方库的调试日志，避免大量 SQL/IO 输出掠炸控制台
+# 降噪第三方库的调试日志（兜底，run.py 的 log_config 会在 uvicorn 启动后也生效）
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)

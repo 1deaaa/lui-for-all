@@ -228,6 +228,8 @@ class OpenAPIIngestor:
         # 生成版本号
         version = openapi_doc.get("info", {}).get("version", "1.0.0")
 
+        print(f"\n[OpenAPIIngestor] 🔍 OpenAPI 解析完成，共发现 {len(routes)} 个接口端点")
+
         return RouteMap(
             project_id=str(uuid.uuid4()),  # 临时 ID，调用方会覆盖
             version=version,

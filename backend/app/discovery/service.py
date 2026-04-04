@@ -104,6 +104,15 @@ class DiscoveryService:
 
         await self.db.commit()
 
+        # 建模阶段总结
+        print(f"\n{'='*50}")
+        print(f"🚀 项目建模完成: {project.name if project else project_id}")
+        print(f"   - OpenAPI 接口总数: {len(route_map.routes)}")
+        ai_cap_count = sum(1 for cap in capability_graph.capabilities if cap.source_code_analysis is not None)
+        print(f"   - AI 精准识别接口: {ai_cap_count}")
+        print(f"   - 规则降级接口: {len(route_map.routes) - ai_cap_count}")
+        print(f"{'='*50}\n")
+
         await report(100, "项目建图完成")
 
         return route_map, capability_graph

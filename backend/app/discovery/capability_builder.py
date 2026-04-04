@@ -210,7 +210,7 @@ class CapabilityGraphBuilder:
             return {}
 
         await self._report_progress(30, f"正在从 {source_path} 提取路由函数体...")
-        print(f"[CapabilityBuilder] 开始精准提取 {len(self.routes)} 条路由的函数体")
+        print(f"\n[CapabilityBuilder] 🔧 开始精准提取 {len(self.routes)} 条路由的函数源码...")
 
         # 1. 提取源码
         try:
@@ -223,7 +223,7 @@ class CapabilityGraphBuilder:
         snippets = extractor.extract_batch(route_pairs)
 
         found = sum(1 for s in snippets.values() if s is not None)
-        print(f"[CapabilityBuilder] 函数体提取完成：{found}/{len(self.routes)} 条路由找到源码")
+        print(f"[CapabilityBuilder] ✅ 函数源码提取完成：{found}/{len(self.routes)} 条路由找到具体实现代码")
 
         # 2. 按 32K 并入独立块
         MAX_LENGTH = 32000
@@ -306,7 +306,7 @@ class CapabilityGraphBuilder:
 
         success_count = len(analysis_map)
         await self._report_progress(82, f"AI 分析完成：成功识别并分析出 {success_count} 条有效路由能力")
-        print(f"[CapabilityBuilder] 批量分析完成：共从 LLM 解析出 {success_count} 条路由。")
+        print(f"[CapabilityBuilder] 🤖 AI 建模分析完成：成功识别并分析出 {success_count} 条有效路由能力 (剩余 {len(self.routes) - success_count} 条由规则降级处理)")
         return analysis_map
 
     async def build(self) -> CapabilityGraph:
