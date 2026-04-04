@@ -21,6 +21,7 @@ from app.graph.state import GraphState
 from app.llm.prompts import AGENTIC_LOOP_SYSTEM_PROMPT
 from app.runtime import get_runtime_emitter
 from app.services.execution_service import ExecutionService
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -599,18 +600,23 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 
                 serializable_items = [{k: v for k, v in it.items() if k not in ("_wc", "fingerprint")} for it in items_to_approve]
 
-                # 只有在这是该批次“第一次”被评估时，才向前端发射审批请求事件
-                # (langgraph 恢复重跑该节点时，无需重复发送事件)
-                _emit("write_approval_required", batch_id=batch_id, items=serializable_items)
-
-                # interrupt：暂停图执行，等待一次性批量审批
-                approval_response = interrupt({
-                    "type": "batch_write_approval",
-                    "batch_id": batch_id,
-                    "items": serializable_items
-                })
-
-                approved_ids = set(approval_response.get("approved_ids", []))
+                if settings.safety_default_action == "allow":
+                    logger.info("[agentic_loop] 命中安全配置 allow，跳过审批自动放行所有请求")
+                    _emit("task_progress", node_name="agentic_loop", progress=min(0.85, 0.1 + iterations * 0.12), message="已开启全局默认允许，自动放行所有操作")
+                    approved_ids = set(all_ids)
+                else:
+                    # 只有在这是该批次“第一次”被评估时，才向前端发射审批请求事件
+                    # (langgraph 恢复重跑该节点时，无需重复发送事件)
+                    _emit("write_approval_required", batch_id=batch_id, items=serializable_items)
+    
+                    # interrupt：暂停图执行，等待一次性批量审批
+                    approval_response = interrupt({
+                        "type": "batch_write_approval",
+                        "batch_id": batch_id,
+                        "items": serializable_items
+                    })
+    
+                    approved_ids = set(approval_response.get("approved_ids", []))
 
                 # 逐个执行被批准的项
                 for item in items_to_approve:

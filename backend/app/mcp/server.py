@@ -148,6 +148,14 @@ async def chat(
     from app.repositories.project_repository import ProjectRepository
     from app.repositories.session_repository import SessionRepository
     from app.repositories.task_repository import TaskRepository
+    from app.config import settings
+
+    if settings.safety_default_action != "allow":
+        raise RuntimeError(
+            "MCP 调用拒绝：当前系统安全性尚未就绪。MCP 取代了人类视觉审计环节，"
+            "您必须前往前台「系统设置」中，主动将「默认动作」切换为「全部允许」以确认开放此全自动通道。"
+            "警告：只有在您确信接入的 AI Agent 是安全、受控的情况下才可以执行此操作！"
+        )
 
     await ctx.report_progress(0, 100)
     short_msg = message[:60] + ("..." if len(message) > 60 else "")

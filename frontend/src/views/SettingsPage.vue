@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Close } from '@element-plus/icons-vue'
 
 const settings = ref({
@@ -135,6 +135,25 @@ function handleModelSelectVisible(visible: boolean) {
   }
 }
 
+async function handleSafetyActionChange(val: string) {
+  if (val === 'allow') {
+    try {
+      await ElMessageBox.confirm(
+        '您正在开启全局默认允许（跳过审批）。所有工具调用将等同于人类默认批准，包括写文件和执行毁灭性指令等。确定开启吗？',
+        '高危操作确认',
+        { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' }
+      )
+      await ElMessageBox.confirm(
+        '请再次确认：如果您开启此选项以开放给 MCP 客户端调用，系统的一切安全门槛都将被彻底移除以实现全自动。如果接入的外部 AI 具有破坏性，系统将直接放行！您确实要继续吗？',
+        '最后严重警告',
+        { type: 'error', confirmButtonText: '我确定并承担风险', cancelButtonText: '放弃' }
+      )
+    } catch {
+      settings.value.safety_default_action = 'confirm'
+    }
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -198,14 +217,36 @@ onMounted(loadSettings)
         <el-divider content-position="left">安全配置</el-divider>
         
         <el-form-item label="默认动作">
-          <el-select v-model="settings.safety_default_action">
-            <el-option label="允许" value="allow" />
-            <el-option label="确认" value="confirm" />
-            <el-option label="阻断" value="block" />
-          </el-select>
+          <div style="width: 100%;">
+            <el-select v-model="settings.safety_default_action" @change="handleSafetyActionChange">
+              <el-option label="⚠️全部允许" value="allow" />
+              <el-option label="✅需要审批" value="confirm" />
+              <el-option label="🚫直接阻止" value="block" />
+            </el-select>
+            <div v-if="settings.safety_default_action === 'allow'" class="allow-warning">
+              ⚠️ 警告：当前已开启全局默认允许，将跳过一切人类审批。如果您是在使用 MCP 模式（开放给其他 AI 客户端独立调用本应用的能力以实现全自动），则必须开启此项。请务必信任您所接入的外部大模型。
+            </div>
+          </div>
         </el-form-item>
 
         <el-divider content-position="left">MCP 对外服务网关</el-divider>
+
+        <div style="padding: 0 40px 20px; width: 100%; box-sizing: border-box;">
+          <el-alert
+            title="绝对警告：MCP 使用风险"
+            type="error"
+            description="绝对禁止在重要且无法回滚的环境（如线上生产数据库、重要资金账户等）中使用此功能。由于外部大模型的严重幻觉可能导致非预期的灾难性写入和执行操作，带来不可估量的后果。如果你不知道自己在干什么，请不要使用此功能。"
+            show-icon
+            :closable="false"
+            style="margin-bottom: 20px"
+          />
+        </div>
+
+        <el-form-item label="使用前提">
+          <div style="font-size: 14px; color: #E6A23C; font-weight: bold; background: #fdf6ec; padding: 8px 12px; border-radius: 4px; width: 100%;">
+            如果要开放 MCP 服务给外部客户端调用，必须在上方安全配置中将「默认动作」切换为「全部允许」！否则外部调用将全部失败。
+          </div>
+        </el-form-item>
 
         <el-form-item label="API Token">
           <el-input 
@@ -218,6 +259,31 @@ onMounted(loadSettings)
               <el-button @click="generateMcpToken">随机生成</el-button>
             </template>
           </el-input>
+        </el-form-item>
+
+        <el-form-item label="客户端配置">
+          <div style="width: 100%; font-size: 13px; color: #606266; line-height: 1.6;">
+            <strong>【 Cursor 配置方式 (SSE) 】</strong>
+            <pre class="code-block">
+Type: sse
+Name: lui-for-all
+URL: http://127.0.0.1:6687/mcp/sse</pre>
+            
+            <strong>【 标准 MCP 客户端配置示例 (如 Claude Desktop 等基于 stdio 的客户端) 】</strong><br/>
+            请将以下内容填入客户端的 `mcp.json` 或 `claude_desktop_config.json` 中，并注意替换对应环境变量。
+            <pre class="code-block">
+{
+  "mcpServers": {
+    "lui-for-all": {
+      "command": "fastmcp",
+      "args": ["run", "app/mcp/server.py:mcp"],
+      "env": {
+        "LUI_MCP_API_TOKEN": "{{ settings.mcp_api_token || '您的TOKEN' }}"
+      }
+    }
+  }
+}</pre>
+          </div>
         </el-form-item>
 
         <el-form-item>
@@ -289,5 +355,29 @@ onMounted(loadSettings)
 @keyframes fadeIn {
   from { opacity: 0; transform: translateX(-10px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+.allow-warning {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #cf222e;
+  line-height: 1.5;
+  background: #ffebe9;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 129, 130, 0.4);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.code-block {
+  background: #f5f7fa;
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid #dcdfe6;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  overflow-x: auto;
+  margin: 6px 0 16px;
+  color: #303133;
 }
 </style>

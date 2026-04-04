@@ -157,7 +157,7 @@ export const useSessionStore = defineStore('session', () => {
     } else {
       // resume 模式：保留审批面板（uiBlocks）和已有流式消息索引
       // 不重置 streamingMessageId，让恢复后的正文 token 继续追加到已有消息中
-      uiBlocks.value = []  // 清除审批面板（已批准，新的 write_approval_required 事件会重新追加）
+      // 不清除审批面板，以保证就地批准标记不消失
     }
     currentTaskRunId.value = taskRunId
 

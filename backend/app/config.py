@@ -48,6 +48,11 @@ class Settings(BaseSettings):
         description="MCP 对话网关静态 Bearer Token（LUI_MCP_API_TOKEN）",
     )
 
+    safety_default_action: Literal["allow", "confirm", "block"] = Field(
+        default="confirm",
+        description="全局默认审批动作：allow(始终放行)、confirm(人工审批)、block(直接拒绝)",
+    )
+
     # OpenTelemetry 配置
     otlp_endpoint: str | None = Field(
         default=None,

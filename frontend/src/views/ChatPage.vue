@@ -8,6 +8,7 @@ import BlockRenderer from '@/components/BlockRenderer.vue'
 import { ElMessage } from 'element-plus'
 import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
 import RouteMapAnalyzer from '@/components/project/RouteMapDrawer.vue'
+import { formatHttpStatusTooltip } from '@/utils/httpStatus'
 
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
@@ -278,18 +279,28 @@ watch(
               v-if="msg.role === 'assistant' && msg.metadata?.http_calls?.length"
               class="msg-http-calls"
             >
-              <span
+              <el-tooltip
                 v-for="(call, ci) in msg.metadata.http_calls"
                 :key="ci"
-                class="http-badge"
-                :class="{
-                  'http-badge--ok': call.status_code >= 200 && call.status_code < 300,
-                  'http-badge--redirect': call.status_code >= 300 && call.status_code < 400,
-                  'http-badge--client-err': call.status_code >= 400 && call.status_code < 500,
-                  'http-badge--server-err': call.status_code >= 500,
-                  'http-badge--unknown': !call.status_code || call.status_code === 0,
-                }"
-              >{{ call.method }} {{ call.url }} <span class="http-badge-code">{{ call.status_code }}</span></span>
+                :show-after="120"
+                :hide-after="0"
+                placement="top"
+                effect="dark"
+                trigger="hover"
+                popper-class="http-status-tooltip"
+                :content="formatHttpStatusTooltip(call.status_code)"
+              >
+                <span
+                  class="http-badge"
+                  :class="{
+                    'http-badge--ok': call.status_code >= 200 && call.status_code < 300,
+                    'http-badge--redirect': call.status_code >= 300 && call.status_code < 400,
+                    'http-badge--client-err': call.status_code >= 400 && call.status_code < 500,
+                    'http-badge--server-err': call.status_code >= 500,
+                    'http-badge--unknown': !call.status_code || call.status_code === 0,
+                  }"
+                >{{ call.method }} {{ call.url }} <span class="http-badge-code">{{ call.status_code }}</span></span>
+              </el-tooltip>
             </div>
             <div v-if="msg.content" class="message-text">
               <MarkdownRenderer :content="msg.content" />
@@ -345,17 +356,27 @@ watch(
             class="runtime-event-item"
           >
             <!-- HTTP 执行结果标签 -->
-            <template v-if="event.type === 'tool_completed' && event.status_code">
-              <span
-                class="http-badge"
-                :class="{
-                  'http-badge--ok': event.status_code >= 200 && event.status_code < 300,
-                  'http-badge--redirect': event.status_code >= 300 && event.status_code < 400,
-                  'http-badge--client-err': event.status_code >= 400 && event.status_code < 500,
-                  'http-badge--server-err': event.status_code >= 500,
-                  'http-badge--unknown': !event.status_code || event.status_code === 0,
-                }"
-              >{{ event.method ? event.method + ' ' : '' }}{{ event.status_code }}</span>
+            <template v-if="event.type === 'tool_completed' && event.status_code !== undefined && event.status_code !== null">
+              <el-tooltip
+                :show-after="120"
+                :hide-after="0"
+                placement="top"
+                effect="dark"
+                trigger="hover"
+                popper-class="http-status-tooltip"
+                :content="formatHttpStatusTooltip(event.status_code)"
+              >
+                <span
+                  class="http-badge"
+                  :class="{
+                    'http-badge--ok': event.status_code >= 200 && event.status_code < 300,
+                    'http-badge--redirect': event.status_code >= 300 && event.status_code < 400,
+                    'http-badge--client-err': event.status_code >= 400 && event.status_code < 500,
+                    'http-badge--server-err': event.status_code >= 500,
+                    'http-badge--unknown': !event.status_code || event.status_code === 0,
+                  }"
+                >{{ event.method ? event.method + ' ' : '' }}{{ event.status_code }}</span>
+              </el-tooltip>
               <span class="runtime-event-title">{{ event.url || event.title }}</span>
               <span class="runtime-event-detail">{{ event.detail }}</span>
             </template>
@@ -592,6 +613,7 @@ watch(
   font-weight: 700;
   font-family: var(--font-mono);
   letter-spacing: 0.5px;
+  cursor: help;
 }
 .http-badge--ok {
   background: #dcfce7;
@@ -922,6 +944,12 @@ watch(
 .http-badge-code {
   font-weight: 800;
   margin-left: 4px;
+}
+
+:global(.http-status-tooltip) {
+  max-width: 360px;
+  white-space: pre-line;
+  line-height: 1.6;
 }
 
 /* Markdown 渲染样式规范化 */

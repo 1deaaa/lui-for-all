@@ -16,8 +16,8 @@ router = APIRouter()
 
 class SettingsPayload(BaseModel):
     """系统设置载荷"""
-
     mcp_api_token: str | None = Field(default=None, description="MCP API Token")
+    safety_default_action: str | None = Field(default="confirm", description="全局默认审批动作")
 
 
 class SettingsResponse(SettingsPayload):
@@ -38,6 +38,7 @@ async def get_runtime_settings():
     """读取当前系统设置"""
     return SettingsResponse(
         mcp_api_token=settings.mcp_api_token,
+        safety_default_action=settings.safety_default_action,
     )
 
 
@@ -53,8 +54,16 @@ async def save_runtime_settings(payload: SettingsPayload):
         quote_mode="never",
     )
 
+    set_key(
+        str(env_path),
+        "LUI_SAFETY_DEFAULT_ACTION",
+        payload.safety_default_action or "confirm",
+        quote_mode="never",
+    )
+
     reload_settings()
 
     return SettingsResponse(
         mcp_api_token=settings.mcp_api_token,
+        safety_default_action=settings.safety_default_action,
     )
