@@ -30,24 +30,6 @@ class Settings(BaseSettings):
     app_name: str = "LUI-for-All"
     debug: bool = False
 
-    # LLM 配置
-    llm_api_base: str = Field(
-        default="https://api.openai.com/v1",
-        description="LLM API 基础 URL",
-    )
-    llm_api_key: str = Field(
-        default="",
-        description="LLM API Key",
-    )
-    llm_model_id: str = Field(
-        default="gpt-4o",
-        description="LLM 模型 ID",
-    )
-    llm_extra_body: str = Field(
-        default="",
-        description="LLM 请求额外参数 (JSON)",
-    )
-
     # 数据库配置
     db_path: str = Field(
         default=str(WORKSPACE_DIR / "lui.db"),
@@ -57,15 +39,6 @@ class Settings(BaseSettings):
         default=str(WORKSPACE_DIR / "checkpoints.db"),
         description="LangGraph Checkpoint 数据库路径",
     )
-
-    # 目标项目配置
-    target_base_url: str = Field(
-        default="http://localhost:8000",
-        description="目标项目 API 基础 URL",
-    )
-
-    # 安全配置
-    safety_default_action: Literal["allow", "block", "confirm"] = "confirm"
 
     # MCP 对话网关鉴权 Token
     # 配置后所有 /mcp 请求需携带 Authorization: Bearer <token>
