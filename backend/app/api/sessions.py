@@ -5,7 +5,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 
 logger = logging.getLogger(__name__)
 
@@ -551,7 +551,7 @@ async def stream_events(
                         task_run.error = final_state.get("error")
                     else:
                         task_run.status = "completed"
-                        task_run.completed_at = datetime.utcnow()
+                        task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
 
                     await db.commit()
 

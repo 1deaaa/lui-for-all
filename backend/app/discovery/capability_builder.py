@@ -8,7 +8,7 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Awaitable, Callable, List
 
@@ -385,10 +385,10 @@ class CapabilityGraphBuilder:
 
         return CapabilityGraph(
             project_id=self.route_map.project_id,
-            version=f"v{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            version=f"v{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
             capabilities=capabilities,
             domain_summary=domain_summary,
-            generated_at=datetime.utcnow().isoformat(),
+            generated_at=datetime.now(UTC).isoformat(),
         )
 
 

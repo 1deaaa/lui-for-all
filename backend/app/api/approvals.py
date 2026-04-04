@@ -4,7 +4,7 @@
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -54,14 +54,14 @@ async def approve_request(
             detail=f"审批已处理，当前状态: {approval.status}",
         )
 
-    if datetime.utcnow() > approval.expires_at:
+    if datetime.now(UTC).replace(tzinfo=None) > approval.expires_at:
         approval.status = "timeout"
         await db.commit()
         raise HTTPException(status_code=400, detail="审批已超时")
 
     # 更新审批状态
     approval.status = "approved"
-    approval.decided_at = datetime.utcnow()
+    approval.decided_at = datetime.now(UTC).replace(tzinfo=None)
     approval.decided_by = "user"  # TODO: 从认证获取用户信息
     approval.decision_reason = request.reason
 
@@ -94,14 +94,14 @@ async def reject_request(
             detail=f"审批已处理，当前状态: {approval.status}",
         )
 
-    if datetime.utcnow() > approval.expires_at:
+    if datetime.now(UTC).replace(tzinfo=None) > approval.expires_at:
         approval.status = "timeout"
         await db.commit()
         raise HTTPException(status_code=400, detail="审批已超时")
 
     # 更新审批状态
     approval.status = "rejected"
-    approval.decided_at = datetime.utcnow()
+    approval.decided_at = datetime.now(UTC).replace(tzinfo=None)
     approval.decided_by = "user"
     approval.decision_reason = request.reason
 

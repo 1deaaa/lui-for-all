@@ -36,6 +36,7 @@ class ProjectRepository:
             select(RouteMapRecord)
             .where(RouteMapRecord.project_id == project_id)
             .order_by(RouteMapRecord.created_at.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

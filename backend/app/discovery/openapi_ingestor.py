@@ -5,7 +5,7 @@ OpenAPI 摄取器
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any
 
 import httpx
@@ -236,7 +236,7 @@ class OpenAPIIngestor:
             base_url=self.base_url,
             routes=routes,
             schemas=schemas,
-            discovered_at=datetime.utcnow().isoformat(),
+            discovered_at=datetime.now(UTC).isoformat(),
             source="openapi",
         )
 

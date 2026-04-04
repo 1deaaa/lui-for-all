@@ -521,10 +521,13 @@ async def update_capability(
 ):
     """修改能力的权限级别等信息"""
     result = await db.execute(
-        select(CapabilityRecord).where(
+        select(CapabilityRecord)
+        .where(
             CapabilityRecord.project_id == project_id,
             CapabilityRecord.capability_id == capability_id
         )
+        .order_by(CapabilityRecord.created_at.desc())
+        .limit(1)
     )
     capability = result.scalar_one_or_none()
     

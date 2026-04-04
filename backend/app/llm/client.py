@@ -38,9 +38,15 @@ class LLMClient:
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
         if response_format:
-            kwargs["model_kwargs"] = {"response_format": response_format}
+            kwargs["response_format"] = response_format
 
-        response = await llm.ainvoke(messages, **kwargs)
+        # 若有需要绑定到模型的运行时参数，用 bind() 覆盖（不影响其他调用）
+        # 注：旧版用 model_kwargs={"response_format": ...}，新版 langchain-openai 已不支持该方式
+        target_llm = llm.bind(**{k: v for k, v in kwargs.items()
+                                 if k in ("response_format",)}) if response_format else llm
+        invoke_kwargs = {k: v for k, v in kwargs.items() if k not in ("response_format",)}
+
+        response = await target_llm.ainvoke(messages, **invoke_kwargs)
 
         content = response.content if isinstance(response.content, str) else str(response.content)
         token_usage = {}
