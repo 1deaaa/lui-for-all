@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Close } from '@element-plus/icons-vue'
 
 const settings = ref({
+  // 安全与扩展配置
+  safety_default_action: 'confirm',
+  mcp_api_token: '',
+  
+  // 主模型配置
   llm_api_base: '',
   llm_api_key: '',
   llm_model_id: '',
-  llm_extra_body: '',
-  safety_default_action: 'confirm',
-  mcp_api_token: '',
+  llm_extra_body: ''
 })
 
 const saving = ref(false)
@@ -23,15 +25,20 @@ const availableModels = ref<string[]>([])
 async function loadSettings() {
   loading.value = true
   try {
-    const response = await axios.get('/api/settings')
+    const [settingsRes, llmRes] = await Promise.all([
+      axios.get('/api/settings'),
+      axios.get('/api/llm-status/main')
+    ])
+    
     settings.value = {
-      llm_api_base: response.data.llm_api_base || '',
-      llm_api_key: response.data.llm_api_key || '',
-      llm_model_id: response.data.llm_model_id || '',
-      llm_extra_body: response.data.llm_extra_body || '',
-      safety_default_action: response.data.safety_default_action || 'confirm',
-      mcp_api_token: response.data.mcp_api_token || '',
+      safety_default_action: settingsRes.data.safety_default_action || 'confirm',
+      mcp_api_token: settingsRes.data.mcp_api_token || '',
+      llm_api_base: llmRes.data.llm_api_base || '',
+      llm_api_key: llmRes.data.llm_api_key || '',
+      llm_model_id: llmRes.data.llm_model_id || '',
+      llm_extra_body: llmRes.data.llm_extra_body || ''
     }
+    
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error.message || '读取设置失败')
   } finally {
@@ -40,11 +47,28 @@ async function loadSettings() {
 }
 
 // 保存设置
-async function saveSettings() {
+async function saveSettings(silent = false) {
+  if (loading.value) return // 防止初始加载触发
   saving.value = true
   try {
-    await axios.put('/api/settings', settings.value)
-    ElMessage.success('设置已保存到 backend/.env')
+    formatApiBase()
+    formatExtraBody() // 保存前格式化
+    
+    await Promise.all([
+      axios.put('/api/settings', {
+        safety_default_action: settings.value.safety_default_action,
+        mcp_api_token: settings.value.mcp_api_token
+      }),
+      axios.put('/api/llm-status/main', {
+        llm_api_base: settings.value.llm_api_base,
+        llm_api_key: settings.value.llm_api_key,
+        llm_model_id: settings.value.llm_model_id,
+        llm_extra_body: settings.value.llm_extra_body
+      })
+    ])
+    if (!silent) {
+      ElMessage.success('设置已保存并生效')
+    }
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error.message || '保存设置失败')
   } finally {
@@ -56,9 +80,7 @@ async function saveSettings() {
 function formatApiBase() {
   let url = settings.value.llm_api_base.trim()
   if (!url) return
-  // 先清理掉末尾所有的冗余斜杠
   url = url.replace(/\/+$/, '')
-  // 如果清理完后没有加上 /v1，则自动补全即可兼容绝大多数兼容端点
   if (!url.endsWith('/v1')) {
     url = url + '/v1'
   }
@@ -69,10 +91,8 @@ function formatApiBase() {
 function formatExtraBody() {
   let body = settings.value.llm_extra_body.trim()
   if (!body) return
-  
   if (!body.startsWith('{')) body = '{' + body
   if (!body.endsWith('}')) body = body + '}'
-  
   try {
     const parsed = JSON.parse(body)
     settings.value.llm_extra_body = JSON.stringify(parsed, null, 2)
@@ -85,11 +105,16 @@ function formatExtraBody() {
 // 测试连接
 async function testConnection() {
   formatApiBase()
-  formatExtraBody() // 测试前自动修复 JSON
+  formatExtraBody()
   testing.value = true
   testStatus.value = null
   try {
-    const response = await axios.post('/api/settings/test-llm', settings.value)
+    const response = await axios.post('/api/llm-status/test', {
+      llm_api_base: settings.value.llm_api_base,
+      llm_api_key: settings.value.llm_api_key,
+      llm_model_id: settings.value.llm_model_id,
+      llm_extra_body: settings.value.llm_extra_body
+    })
     ElMessage.success(`测试成功！模型回复：\n${response.data.reply}`)
     testStatus.value = 'success'
   } catch (error: any) {
@@ -98,12 +123,6 @@ async function testConnection() {
   } finally {
     testing.value = false
   }
-}
-
-// 生成随机 Token
-function generateMcpToken() {
-  settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
-  ElMessage.success('已生成随机 Token（保存后生效）')
 }
 
 // 获取模型列表
@@ -115,15 +134,20 @@ async function fetchModels() {
   formatApiBase()
   fetchingModels.value = true
   try {
-    const response = await axios.post('/api/settings/models', settings.value)
+    const response = await axios.post('/api/llm-status/probe', {
+      llm_api_base: settings.value.llm_api_base,
+      llm_api_key: settings.value.llm_api_key,
+      llm_model_id: '',
+      llm_extra_body: ''
+    })
     availableModels.value = response.data.models || []
     if (availableModels.value.length === 0) {
       ElMessage.warning('获取到的模型列表为空')
     } else {
-      ElMessage.success(`成功获取了 ${availableModels.value.length} 个模型`)
+      ElMessage.success(`成功探测了 ${availableModels.value.length} 个模型`)
     }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || '获取模型列表失败，请检查 Base URL 和 API Key')
+    ElMessage.error(error?.response?.data?.detail || error.message || '探测模型失败')
   } finally {
     fetchingModels.value = false
   }
@@ -133,6 +157,13 @@ function handleModelSelectVisible(visible: boolean) {
   if (visible && availableModels.value.length === 0) {
     fetchModels()
   }
+}
+
+// 生成随机 Token 并立即保存
+async function generateMcpToken() {
+  settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
+  await saveSettings(true)
+  ElMessage.success('已生成随机 Token 并已保存')
 }
 
 async function handleSafetyActionChange(val: string) {
@@ -154,230 +185,486 @@ async function handleSafetyActionChange(val: string) {
   }
 }
 
+const windowHost = window.location.host
+const mcpJsonExample = computed(() => {
+  const token = settings.value.mcp_api_token || '在这里填入您的Token'
+  const url = `http://${windowHost}/mcp/sse`
+  
+  // 提供标准的 SSE 直接连接 JSON
+  return JSON.stringify({
+    "mcpServers": {
+      "lui-for-all-remote": {
+        "type": "sse",
+        "url": url,
+        "headers": {
+          "Authorization": `Bearer ${token}`
+        }
+      }
+    }
+  }, null, 2)
+})
+
+async function copyMcpJson() {
+  try {
+    await navigator.clipboard.writeText(mcpJsonExample.value)
+    ElMessage.success('JSON 已复制到剪贴板！')
+  } catch (e) {
+    ElMessage.error('复制失败，请手动选取复制。')
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
 <template>
   <div class="settings-page">
-    <div class="page-header">
-      <h2>系统设置</h2>
+    <div class="header-section">
+      <div class="header-titles">
+        <h2>系统与核心配置</h2>
+        <p class="subtitle">管理主干模型策略与服务端点暴露，所有更改即时生效</p>
+      </div>
     </div>
 
-    <el-card class="settings-card" v-loading="loading">
-      <el-form :model="settings" label-width="120px">
-        <el-divider content-position="left">LLM 配置</el-divider>
-        
-        <el-form-item label="API 端点">
-          <el-input 
-            v-model="settings.llm_api_base" 
-            placeholder="例如: https://api.openai.com/v1 (以 v1 结尾，无需末尾斜线)" 
-            @blur="formatApiBase"
-          />
-        </el-form-item>
-
-        <el-form-item label="API Key">
-          <el-input v-model="settings.llm_api_key" type="password" show-password placeholder="LLM API Key" />
-        </el-form-item>
-
-        <el-form-item label="模型 ID">
-          <div style="display: flex; gap: 8px; width: 100%;">
-            <el-select 
-              v-model="settings.llm_model_id" 
-              placeholder="选择或输入模型 ID" 
-              filterable 
-              allow-create 
-              default-first-option
-              :loading="fetchingModels"
-              @visible-change="handleModelSelectVisible"
-              style="flex-grow: 1;"
-            >
-              <el-option
-                v-for="model in availableModels"
-                :key="model"
-                :label="model"
-                :value="model"
-              />
-            </el-select>
-            <el-button @click="fetchModels" :loading="fetchingModels" title="刷新获取服务器上的模型列表">
-              探测模型
-            </el-button>
-          </div>
-        </el-form-item>
-
-        <el-form-item label="附加参数(JSON)">
-          <el-input 
-            v-model="settings.llm_extra_body" 
-            type="textarea"
-            :rows="3"
-            placeholder='传给 LLM 的额外 JSON 参数（将自动修复首尾大括号），例如: "custom_field": "value"'
-            @blur="formatExtraBody"
-          />
-        </el-form-item>
-
-        <el-divider content-position="left">安全配置</el-divider>
-        
-        <el-form-item label="默认动作">
-          <div style="width: 100%;">
-            <el-select v-model="settings.safety_default_action" @change="handleSafetyActionChange">
-              <el-option label="⚠️全部允许" value="allow" />
-              <el-option label="✅需要审批" value="confirm" />
-              <el-option label="🚫直接阻止" value="block" />
-            </el-select>
-            <div v-if="settings.safety_default_action === 'allow'" class="allow-warning">
-              ⚠️ 警告：当前已开启全局默认允许，将跳过一切人类审批。如果您是在使用 MCP 模式（开放给其他 AI 客户端独立调用本应用的能力以实现全自动），则必须开启此项。请务必信任您所接入的外部大模型。
-            </div>
-          </div>
-        </el-form-item>
-
-        <el-divider content-position="left">MCP 对外服务网关</el-divider>
-
-        <div style="padding: 0 40px 20px; width: 100%; box-sizing: border-box;">
-          <el-alert
-            title="绝对警告：MCP 使用风险"
-            type="error"
-            description="绝对禁止在重要且无法回滚的环境（如线上生产数据库、重要资金账户等）中使用此功能。由于外部大模型的严重幻觉可能导致非预期的灾难性写入和执行操作，带来不可估量的后果。如果你不知道自己在干什么，请不要使用此功能。"
-            show-icon
-            :closable="false"
-            style="margin-bottom: 20px"
-          />
-        </div>
-
-        <el-form-item label="使用前提">
-          <div style="font-size: 14px; color: #E6A23C; font-weight: bold; background: #fdf6ec; padding: 8px 12px; border-radius: 4px; width: 100%;">
-            如果要开放 MCP 服务给外部客户端调用，必须在上方安全配置中将「默认动作」切换为「全部允许」！否则外部调用将全部失败。
-          </div>
-        </el-form-item>
-
-        <el-form-item label="API Token">
-          <el-input 
-            v-model="settings.mcp_api_token" 
-            type="password"
-            show-password
-            placeholder="必须配置 Token 才能允许外部 Agent 访问 (请求必须带 Bearer Token)"
-          >
-            <template #append>
-              <el-button @click="generateMcpToken">随机生成</el-button>
+    <div class="content-scroll" v-loading="loading">
+      <el-form :model="settings" label-position="top" class="settings-form">
+        <div class="cards-grid">
+          
+          <!-- LLM Config Card -->
+          <el-card class="setting-card fade-in-up llm-card" shadow="never" style="animation-delay: 0.05s;">
+            <template #header>
+              <div class="card-header">
+                <Icon icon="lucide:cpu" class="card-icon" />
+                <div style="flex: 1;">
+                  <div class="card-title">主模型配置</div>
+                  <div class="card-desc">配置核心智能体所依赖的模型接口与凭据</div>
+                </div>
+                
+                <div class="llm-actions">
+                  <transition name="el-fade-in">
+                    <div v-if="testStatus === 'success'" class="status-indicator success">
+                      <Icon icon="lucide:check-circle-2" /> <span>连通</span>
+                    </div>
+                  </transition>
+                  <transition name="el-fade-in">
+                    <div v-if="testStatus === 'error'" class="status-indicator error">
+                      <Icon icon="lucide:x-circle" /> <span>失败</span>
+                    </div>
+                  </transition>
+                  <el-button @click="testConnection" :loading="testing" plain round size="default" class="test-btn">
+                    <Icon icon="lucide:zap" class="btn-icon" /> 测试连接
+                  </el-button>
+                </div>
+              </div>
             </template>
-          </el-input>
-        </el-form-item>
-
-        <el-form-item label="客户端配置">
-          <div style="width: 100%; font-size: 13px; color: #606266; line-height: 1.6;">
-            <strong>【 Cursor 配置方式 (SSE) 】</strong>
-            <pre class="code-block">
-Type: sse
-Name: lui-for-all
-URL: http://127.0.0.1:6687/mcp/sse</pre>
             
-            <strong>【 标准 MCP 客户端配置示例 (如 Claude Desktop 等基于 stdio 的客户端) 】</strong><br/>
-            请将以下内容填入客户端的 `mcp.json` 或 `claude_desktop_config.json` 中，并注意替换对应环境变量。
-            <pre class="code-block">
-{
-  "mcpServers": {
-    "lui-for-all": {
-      "command": "fastmcp",
-      "args": ["run", "app/mcp/server.py:mcp"],
-      "env": {
-        "LUI_MCP_API_TOKEN": "{{ settings.mcp_api_token || '您的TOKEN' }}"
-      }
-    }
-  }
-}</pre>
-          </div>
-        </el-form-item>
+            <el-row :gutter="24">
+              <el-col :span="24" :md="12">
+                <el-form-item label="API 服务端点 (Base URL)">
+                  <el-input 
+                    v-model="settings.llm_api_base" 
+                    placeholder="如: https://api.openai.com/v1" 
+                    @blur="formatApiBase"
+                    @change="() => saveSettings(false)"
+                  >
+                    <template #prefix>
+                      <Icon icon="lucide:globe" />
+                    </template>
+                  </el-input>
+                </el-form-item>
+              </el-col>
+              <el-col :span="24" :md="12">
+                <el-form-item label="API 秘钥 (API Key)">
+                  <el-input 
+                    v-model="settings.llm_api_key" 
+                    type="password" 
+                    show-password 
+                    placeholder="系统管理密钥不会在前端明文显示" 
+                    @change="() => saveSettings(false)"
+                  >
+                    <template #prefix>
+                      <Icon icon="lucide:key" />
+                    </template>
+                  </el-input>
+                </el-form-item>
+              </el-col>
+            </el-row>
 
-        <el-form-item>
-          <div class="form-actions">
-            <el-button type="primary" @click="saveSettings" :loading="saving">
-              保存设置
-            </el-button>
-            <el-button type="success" @click="testConnection" :loading="testing">
-              测试连接
-            </el-button>
+            <el-row :gutter="24">
+              <el-col :span="24" :md="12">
+                <el-form-item label="主分配模型 (Model ID)">
+                  <div class="model-select-wrap">
+                    <el-select 
+                      v-model="settings.llm_model_id" 
+                      placeholder="选择或输入模型 ID" 
+                      filterable 
+                      allow-create 
+                      default-first-option
+                      :loading="fetchingModels"
+                      @visible-change="handleModelSelectVisible"
+                      @change="() => saveSettings(false)"
+                      class="model-select"
+                    >
+                      <template #prefix>
+                        <Icon icon="lucide:bot" />
+                      </template>
+                      <el-option
+                        v-for="model in availableModels"
+                        :key="model"
+                        :label="model"
+                        :value="model"
+                      />
+                    </el-select>
+                    <el-button @click="fetchModels" :loading="fetchingModels" plain>
+                      <Icon icon="lucide:radar" /> 探测
+                    </el-button>
+                  </div>
+                </el-form-item>
+              </el-col>
+              <el-col :span="24" :md="12">
+                <el-form-item label="模型附加参数 (Extra JSON Body)">
+                  <el-input 
+                    v-model="settings.llm_extra_body" 
+                    type="textarea"
+                    :rows="2"
+                    placeholder='如: {"custom_field": "value"}'
+                    @blur="formatExtraBody"
+                    @change="() => saveSettings(false)"
+                  />
+                </el-form-item>
+              </el-col>
+            </el-row>
+          </el-card>
+
+          <!-- Safety Config Card -->
+          <el-card class="setting-card fade-in-up" shadow="never" style="animation-delay: 0.15s;">
+            <template #header>
+              <div class="card-header">
+                <Icon icon="lucide:shield-alert" class="card-icon" />
+                <div>
+                  <div class="card-title">全局安全放行策略</div>
+                  <div class="card-desc">控制终端与读写能力的审批机制</div>
+                </div>
+              </div>
+            </template>
             
-            <div v-if="testStatus === 'success'" class="status-indicator success">
-              <el-icon><Check /></el-icon>
-              <span>连接成功</span>
-            </div>
-            <div v-if="testStatus === 'error'" class="status-indicator error">
-              <el-icon><Close /></el-icon>
-              <span>连接失败</span>
-            </div>
-          </div>
-        </el-form-item>
+            <el-form-item label="默认审批动作">
+              <el-select v-model="settings.safety_default_action" @change="handleSafetyActionChange" style="width: 100%;">
+                <el-option label="全部允许" value="allow">
+                  <div class="flex-option">
+                    <Icon icon="lucide:unlock" class="text-danger" />
+                    <span class="text-danger">全部允许</span>
+                  </div>
+                </el-option>
+                <el-option label="手动审批" value="confirm">
+                  <div class="flex-option">
+                    <Icon icon="lucide:user-check" class="text-success" />
+                    <span>手动审批</span>
+                  </div>
+                </el-option>
+                <el-option label="直接阻止" value="block">
+                  <div class="flex-option">
+                    <Icon icon="lucide:ban" />
+                    <span>直接阻止</span>
+                  </div>
+                </el-option>
+              </el-select>
+              
+              <transition name="el-zoom-in-top">
+                <div v-if="settings.safety_default_action === 'allow'" class="allow-warning">
+                  <Icon icon="lucide:flame" class="warning-icon" />
+                  <div class="warning-text">
+                    <strong>风险警告：</strong>当前模式下，AI将无需任何审批，可以执行任何请求。绝对禁止在有重要数据和无法回滚的环境中使用！<br/>
+                    如果你不知道自己在做什么，禁止选择此项，请选择手动审批！
+                    如果您是在使用外部 MCP 客户端，则<strong>必须开启此项</strong>以实现全自动！务必使用信任的模型和环境！
+                  </div>
+                </div>
+              </transition>
+            </el-form-item>
+          </el-card>
+
+          <!-- MCP Config Card -->
+          <el-card class="setting-card fade-in-up" shadow="never" style="animation-delay: 0.25s;">
+            <template #header>
+              <div class="card-header">
+                <Icon icon="lucide:network" class="card-icon" />
+                <div>
+                  <div class="card-title">对外暴露协议代理 (MCP)</div>
+                  <div class="card-desc">将系统能力通过 SSE 协议暴露给其他智能体</div>
+                </div>
+              </div>
+            </template>
+
+            <el-alert
+              title="操作规避声明"
+              type="error"
+              show-icon
+              :closable="false"
+              style="margin-bottom: 24px;"
+            >
+              <template #title>AI将无需任何审批，可以执行任何请求。绝对禁止在有重要数据和无法回滚的环境中使用！</template>
+            </el-alert>
+
+            <el-form-item label="网关防御 Token (API Secret)">
+              <el-input 
+                v-model="settings.mcp_api_token" 
+                type="password"
+                show-password
+                placeholder="如果设定，则外部访问必定需要 Bearer 鉴权。"
+                @change="() => saveSettings(false)"
+              >
+                <template #append>
+                  <el-button @click="generateMcpToken">
+                    <Icon icon="lucide:dices" /> 随机生成
+                  </el-button>
+                </template>
+              </el-input>
+            </el-form-item>
+
+            <el-form-item label="配置外部大模型客户端连接 (以 VS Code / Cline 为例)">
+              <div class="mcp-instructions">
+                <div class="instruction-box">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h4>
+                      <Icon icon="lucide:terminal" />
+                      cline_mcp_settings.json 等配置文件
+                    </h4>
+                    <el-button size="small" @click="copyMcpJson" plain round>
+                      <Icon icon="lucide:copy" style="margin-right: 4px;" /> 复制完整 JSON
+                    </el-button>
+                  </div>
+                  <p>在 VS Code 的 Cline 或 Roo Code 等多模型插件中，您可以直接将连接类型设置为 <code>sse</code>（如今大多数前沿客户端已经原生兼容），并桥接本远程网关：</p>
+                  <div class="code-block">{{ mcpJsonExample }}</div>
+                  <p class="instruction-note">
+                    <Icon icon="lucide:info" /> 此为示例配置，具体格式请参考您所使用的客户端的配置规范，但务必确保将 <code>type</code> 设置为 <code>sse</code>，以及使用正确的 Bearer Header（如已启用防御）。
+                  </p>
+                </div>
+              </div>
+            </el-form-item>
+          </el-card>
+        </div>
       </el-form>
-    </el-card>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .settings-page {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--el-bg-color-page);
+}
+
+.header-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 40px;
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  z-index: 10;
+}
+
+.header-titles h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+/* .global-actions 已移除，无全局保存按钮 */
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  animation: fadeIn 0.3s ease;
+}
+.status-indicator.success { color: var(--el-color-success); }
+.status-indicator.error { color: var(--el-color-danger); }
+
+.btn-icon {
+  margin-right: 6px;
+  font-size: 1.1em;
+}
+
+.content-scroll {
+  flex: 1;
   overflow-y: auto;
   padding: 32px 40px;
 }
 
-.page-header {
-  margin-bottom: 20px;
+.settings-form {
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-.page-header h2 {
-  margin: 0;
-  font-size: 20px;
+.cards-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
-.settings-card {
-  max-width: 600px;
+.setting-card {
+  border-radius: 12px;
+  border: 1px solid var(--el-border-color-light);
+  background: var(--el-bg-color);
 }
 
-.form-actions {
+.card-header {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
+.llm-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   font-size: 14px;
-  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  font-weight: 500;
+}
+.status-indicator.success { color: var(--el-color-success); }
+.status-indicator.error { color: var(--el-color-danger); }
+
+.test-btn {
+  margin-left: 8px;
 }
 
-.status-indicator.success {
-  color: var(--el-color-success);
+.card-icon {
+  font-size: 20px;
+  margin-right: 4px;
+  color: var(--el-color-primary);
 }
 
-.status-indicator.error {
-  color: var(--el-color-danger);
+.card-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  line-height: 1.2;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-10px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-.allow-warning {
-  margin-top: 8px;
-  font-size: 13px;
-  color: #cf222e;
-  line-height: 1.5;
-  background: #ffebe9;
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 129, 130, 0.4);
-  animation: fadeIn 0.3s ease-out;
-}
-
-.code-block {
-  background: #f5f7fa;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border: 1px solid #dcdfe6;
-  font-family: var(--font-mono, monospace);
+.card-desc {
   font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  font-weight: normal;
+  margin-top: 4px;
+}
+
+.model-select-wrap {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+}
+
+.model-select {
+  flex-grow: 1;
+}
+
+.flex-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.text-danger { color: var(--el-color-danger) !important; }
+.text-success { color: var(--el-color-success) !important; }
+
+/* 警示区动效与样式 */
+.allow-warning {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: #fff0f0;
+  border: 1px solid #ffcccc;
+}
+.warning-icon {
+  font-size: 20px;
+  color: #c9302c;
+  line-height: 1;
+}
+.warning-text {
+  font-size: 13px;
+  color: #c9302c;
+  line-height: 1.6;
+}
+
+.mcp-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 8px;
+  width: 100%;
+}
+.instruction-box {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 16px;
+}
+.instruction-box h4 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.instruction-box p {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.instruction-note {
+  font-size: 12px !important;
+  color: var(--el-text-color-placeholder) !important;
+  margin-top: 12px !important;
+  margin-bottom: 0 !important;
+}
+.code-block {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 14px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
   overflow-x: auto;
-  margin: 6px 0 16px;
-  color: #303133;
+  white-space: pre-wrap;
+}
+
+/* 入场动画 */
+.fade-in-up {
+  opacity: 0;
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeInUp {
+  0% { opacity: 0; transform: translateY(15px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+:deep(.el-form-item__label) {
+  font-weight: 500;
+  color: var(--el-text-color-regular);
 }
 </style>

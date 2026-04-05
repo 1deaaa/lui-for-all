@@ -141,6 +141,78 @@ async def get_http_execution(
     }
 
 
+@router.get("/http-executions")
+async def list_http_executions(
+    task_run_id: str | None = None,
+    limit: int = Query(50, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_session),
+):
+    """列出 HTTP 执行记录列表"""
+    from sqlalchemy import select
+    from app.models.audit import HttpExecution
+
+    query = select(HttpExecution).order_by(HttpExecution.created_at.desc())
+    if task_run_id:
+        query = query.where(HttpExecution.task_run_id == task_run_id)
+    result = await db.execute(query.offset(offset).limit(limit))
+    executions = list(result.scalars().all())
+
+    return {
+        "executions": [
+            {
+                "id": e.id,
+                "request_id": e.request_id,
+                "session_id": e.session_id,
+                "task_run_id": e.task_run_id,
+                "capability_id": e.capability_id,
+                "method": e.method,
+                "url_redacted": e.url_redacted,
+                "status_code": e.status_code,
+                "duration_ms": e.duration_ms,
+                "error": e.error,
+                "created_at": e.created_at.isoformat(),
+                # 详细内容（展开时用）
+                "headers_redacted": e.headers_redacted,
+                "request_body_redacted": e.request_body_redacted,
+                "response_body_redacted": e.response_body_redacted,
+                "trace_id": e.trace_id,
+            }
+            for e in executions
+        ],
+        "total": len(executions),
+    }
+
+
+@router.get("/approvals")
+async def list_approval_log(
+    status: str | None = None,
+    limit: int = Query(50, le=100),
+    db: AsyncSession = Depends(get_session),
+):
+    """列出审批操作记录（审批日志）"""
+    approvals = await AuditRepository(db).list_approvals(status=status, limit=limit)
+
+    return {
+        "approvals": [
+            {
+                "id": a.id,
+                "task_run_id": a.task_run_id,
+                "title": a.title,
+                "action_summary": a.action_summary,
+                "risk_level": a.risk_level,
+                "status": a.status,
+                "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                "decided_by": a.decided_by,
+                "decision_reason": a.decision_reason,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in approvals
+        ],
+        "total": len(approvals),
+    }
+
+
 @router.get("/policy-verdicts")
 async def list_policy_verdicts(
     task_run_id: str | None = None,

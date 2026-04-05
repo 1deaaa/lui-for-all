@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 from app.api import approvals, audit, projects, sessions, settings as settings_api
+from app.api import llm_status as llm_status_api
 from app.config import settings
 from app.db import init_db
 from app.mcp.server import mcp as mcp_server
@@ -134,6 +135,7 @@ app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
+app.include_router(llm_status_api.router, prefix="/api/llm-status", tags=["llm"])
 
 
 # ── MCP 连接桥 Bearer Token 鉴权中间件 ──
