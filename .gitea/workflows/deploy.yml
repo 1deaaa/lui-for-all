@@ -54,21 +54,51 @@ jobs:
       - name: 构建 Docker 镜像
         run: |
           echo "开始构建镜像..."
-          DOCKER_BUILDKIT=1 docker compose -f "$COMPOSE_FILE" build
+          docker version
+
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+          else
+            echo "未找到 docker compose 或 docker-compose，无法继续部署"
+            exit 1
+          fi
+
+          echo "使用命令: ${COMPOSE_CMD}"
+          DOCKER_BUILDKIT=1 ${COMPOSE_CMD} -f "$COMPOSE_FILE" build
 
       - name: 启动容器
         env:
           LLM_KEY: ${{ secrets.LLM_KEY }}
           LUI_MCP_API_TOKEN: ${{ secrets.LUI_MCP_API_TOKEN }}
         run: |
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+          else
+            echo "未找到 docker compose 或 docker-compose，无法继续部署"
+            exit 1
+          fi
+
           export LLM_KEY="${LLM_KEY:-test-master-key}"
           export LUI_MCP_API_TOKEN="${LUI_MCP_API_TOKEN:-}"
 
           echo "启动容器编排..."
-          docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+          ${COMPOSE_CMD} -f "$COMPOSE_FILE" up -d --remove-orphans
 
       - name: 等待服务健康
         run: |
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+          else
+            echo "未找到 docker compose 或 docker-compose，无法继续部署"
+            exit 1
+          fi
+
           services="sample-fastapi sample-node lui-backend lui-frontend"
           attempt=0
           max_attempt=30
@@ -103,8 +133,8 @@ jobs:
 
           if [ "$all_ok" != true ]; then
             echo "服务未在预期时间内就绪，输出诊断信息"
-            docker compose -f "$COMPOSE_FILE" ps
-            docker compose -f "$COMPOSE_FILE" logs --tail=120
+            ${COMPOSE_CMD} -f "$COMPOSE_FILE" ps
+            ${COMPOSE_CMD} -f "$COMPOSE_FILE" logs --tail=120
             exit 1
           fi
 
