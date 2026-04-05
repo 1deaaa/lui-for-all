@@ -1300,19 +1300,62 @@ watch(
   }
   
   .chat-topbar {
-    padding: 0 12px;
-    gap: 8px;
+    padding: 0 10px;
+    gap: 6px;
   }
 
   .topbar-actions {
-    gap: 6px;
+    gap: 4px;
   }
   
+  /* 移动端：路由按钮与新建对话按钮统一为纯图标方块 */
   .new-chat-btn.custom .btn-text {
     display: none;
   }
   .new-chat-btn.custom {
-    padding: 0 10px;
+    background: transparent;
+    color: #0f0f0f;
+    border: none;
+    padding: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: none;
+    margin-left: 0;
+  }
+  .new-chat-btn.custom:hover {
+    background: #f0f0f0;
+    box-shadow: none;
+    transform: none;
+  }
+  .new-chat-btn.custom:disabled {
+    background: transparent;
+    color: #c0c0c0;
+  }
+
+  .topbar-actions :deep(.custom-analyzer-btn) {
+    background: transparent !important;
+    color: #0f0f0f !important;
+    border: none !important;
+    padding: 0 !important;
+    width: 36px !important;
+    height: 36px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: none !important;
+  }
+  .topbar-actions :deep(.custom-analyzer-btn:hover) {
+    background: #f0f0f0 !important;
+  }
+
+  .chat-project-name {
+    font-size: 14px;
+  }
+  .chat-project-url {
+    display: none;
   }
 }
 </style>
