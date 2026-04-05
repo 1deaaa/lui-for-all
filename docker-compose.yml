@@ -1,0 +1,80 @@
+services:
+  lui-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lui-backend
+    restart: unless-stopped
+    environment:
+      LUI_DEBUG: "false"
+      LUI_DB_PATH: /app/workspace/lui.db
+      LUI_MCP_API_TOKEN: ${LUI_MCP_API_TOKEN:-}
+      LLM_KEY: ${LLM_KEY:-test-master-key}
+    volumes:
+      - lui_workspace:/app/workspace
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      sample-fastapi:
+        condition: service_healthy
+      sample-node:
+        condition: service_healthy
+
+  lui-frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: lui-frontend
+    restart: unless-stopped
+    environment:
+      VITE_BACKEND_PROXY_TARGET: http://lui-backend:8000
+    ports:
+      - "5173:5173"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      lui-backend:
+        condition: service_healthy
+
+  sample-fastapi:
+    build:
+      context: backend_for_test/fastapi_sample
+      dockerfile: Dockerfile
+    container_name: sample-fastapi
+    restart: unless-stopped
+    expose:
+      - "8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  sample-node:
+    build:
+      context: backend_for_test/node_sample
+      dockerfile: Dockerfile
+    container_name: sample-node
+    restart: unless-stopped
+    expose:
+      - "8020"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8020/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  lui_workspace:

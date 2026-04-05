@@ -1,0 +1,14 @@
+{
+  "name": "node-standard-test-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LUI-for-All Node.js 标准测试后端",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

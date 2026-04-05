@@ -1,0 +1,9 @@
+.git
+.vscode
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+**/dist
+workspace/*.db
+workspace/logs
