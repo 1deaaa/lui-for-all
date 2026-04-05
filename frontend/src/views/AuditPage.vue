@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
 
 // ==================== 状态 ====================
@@ -22,51 +22,14 @@ const policyFilter = ref({ keyword: '', status: '' })
 const policyPage = ref(1)
 const policyPageSize = ref(20)
 
-// ==================== 计算属性 ====================
-const httpFiltered = computed(() => {
-  let data = httpExecs.value
-  if (httpFilter.value.keyword) {
-    const kw = httpFilter.value.keyword.toLowerCase()
-    data = data.filter(e => (e.url_redacted || '').toLowerCase().includes(kw))
-  }
-  if (httpFilter.value.method) {
-    data = data.filter(e => e.method === httpFilter.value.method)
-  }
-  return data
-})
-
-const httpTotal = computed(() => httpFiltered.value.length)
-const httpPagedData = computed(() => {
-  const start = (httpPage.value - 1) * httpPageSize.value
-  return httpFiltered.value.slice(start, start + httpPageSize.value)
-})
-
-const policyFiltered = computed(() => {
-  let data = approvals.value
-  if (policyFilter.value.keyword) {
-    const kw = policyFilter.value.keyword.toLowerCase()
-    data = data.filter(a =>
-      (a.title || '').toLowerCase().includes(kw) ||
-      (a.action_summary || '').toLowerCase().includes(kw)
-    )
-  }
-  if (policyFilter.value.status) {
-    data = data.filter(a => a.status === policyFilter.value.status)
-  }
-  return data
-})
-
-const policyTotal = computed(() => policyFiltered.value.length)
-const policyPagedData = computed(() => {
-  const start = (policyPage.value - 1) * policyPageSize.value
-  return policyFiltered.value.slice(start, start + policyPageSize.value)
-})
+const httpTotal = ref(0)
+const policyTotal = ref(0)
 
 // ==================== 数据获取 ====================
 async function fetchTaskRuns() {
   loading.value = true
   try {
-    const res = await axios.get('/api/audit/task-runs?limit=200')
+    const res = await axios.get('/api/audit/task-runs?limit=100')
     taskRuns.value = res.data.task_runs || []
   } catch (e) {
     console.error('获取任务运行列表失败:', e)
@@ -78,9 +41,21 @@ async function fetchTaskRuns() {
 async function fetchHttpExecs() {
   loading.value = true
   try {
-    const res = await axios.get('/api/audit/http-executions?limit=200')
-    httpExecs.value = res.data.executions || []
-    httpPage.value = 1
+    const offset = (httpPage.value - 1) * httpPageSize.value
+    let url = `/api/audit/http-executions?limit=${httpPageSize.value}&offset=${offset}`
+    if (httpFilter.value.keyword) url += `&keyword=${encodeURIComponent(httpFilter.value.keyword)}`
+    
+    // Note: If you want to support method filtering in the backend as well later, you can add it here.
+    // For now we just filter keyword since we added it to backend.
+
+    const res = await axios.get(url)
+    // 如果想要本地支持 method 过滤，可以叠加，或者后端加上 method
+    let data = res.data.executions || []
+    if (httpFilter.value.method) {
+      data = data.filter((e: any) => e.method === httpFilter.value.method)
+    }
+    httpExecs.value = data
+    httpTotal.value = res.data.total || 0
     expandedRowKeys.value = []
   } catch (e) {
     console.error('获取 HTTP 执行记录失败:', e)
@@ -92,15 +67,25 @@ async function fetchHttpExecs() {
 async function fetchApprovals() {
   loading.value = true
   try {
-    const res = await axios.get('/api/audit/approvals?limit=200')
+    const offset = (policyPage.value - 1) * policyPageSize.value
+    let url = `/api/audit/approvals?limit=${policyPageSize.value}&offset=${offset}`
+    if (policyFilter.value.status) url += `&status=${encodeURIComponent(policyFilter.value.status)}`
+    if (policyFilter.value.keyword) url += `&keyword=${encodeURIComponent(policyFilter.value.keyword)}`
+
+    const res = await axios.get(url)
     approvals.value = res.data.approvals || []
-    policyPage.value = 1
+    policyTotal.value = res.data.total || 0
   } catch (e) {
     console.error('获取审批日志失败:', e)
   } finally {
     loading.value = false
   }
 }
+
+
+
+watch([httpPage, httpPageSize], fetchHttpExecs)
+watch([policyPage, policyPageSize], fetchApprovals)
 
 function handleTabChange(tab: string) {
   activeTab.value = tab
@@ -176,13 +161,31 @@ function methodTagType(method: string): string {
   return 'info'
 }
 
-function formatJson(val: any): string {
-  if (!val) return '(空)'
+function safeParse(val: any): Record<string, any> | null {
+  if (!val) return null
+  if (typeof val === 'object') return val
   try {
-    return JSON.stringify(val, null, 2)
+    const p = typeof val === 'string' ? JSON.parse(val) : val
+    if (typeof p === 'object' && !Array.isArray(p) && p !== null) return p
+    return null
   } catch {
-    return String(val)
+    return null
   }
+}
+
+function highlightJson(val: any): string {
+  if (!val) return '<span style="color:#999;font-size:13px">(空)</span>'
+  let parsed = val
+  if (typeof val === 'string') {
+    try { parsed = JSON.parse(val) } catch {}
+  }
+  const str = typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)
+  // @ts-ignore
+  if (window.hljs) {
+    // @ts-ignore
+    return window.hljs.highlight(str, { language: 'json' }).value
+  }
+  return str
 }
 
 function handleExpandChange(_row: any, expandedRows: any[]) {
@@ -191,10 +194,12 @@ function handleExpandChange(_row: any, expandedRows: any[]) {
 
 function onHttpFilterChange() {
   httpPage.value = 1
+  fetchHttpExecs()
 }
 
 function onPolicyFilterChange() {
   policyPage.value = 1
+  fetchApprovals()
 }
 
 onMounted(() => {
@@ -274,7 +279,7 @@ onMounted(() => {
 
         <!-- 内联展开表格 -->
         <el-table
-          :data="httpPagedData"
+          :data="httpExecs"
           row-key="id"
           :expand-row-keys="expandedRowKeys"
           @expand-change="handleExpandChange"
@@ -286,34 +291,77 @@ onMounted(() => {
           <el-table-column type="expand" width="40">
             <template #default="{ row }">
               <div class="expand-detail">
+                <!-- 顶部信息条 -->
                 <div class="detail-header">
-                  <span class="mono">{{ row.method }} {{ row.url_redacted }}</span>
-                  <span class="detail-time">{{ formatTime(row.created_at) }}</span>
+                  <div class="detail-header-left">
+                    <el-tag :type="methodTagType(row.method)" size="small" effect="dark" style="margin-right:10px">{{ row.method }}</el-tag>
+                    <code class="mono url-full">{{ row.url_redacted }}</code>
+                  </div>
+                  <div class="detail-header-right">
+                    <el-tag :type="getHttpStatusType(row.status_code)" size="small">HTTP {{ row.status_code ?? '无状态码' }}</el-tag>
+                    <span class="detail-time" style="margin-left:12px">{{ formatTime(row.created_at) }}</span>
+                    <span v-if="row.duration_ms != null" class="detail-time" style="margin-left:12px">⏱ {{ row.duration_ms }} ms</span>
+                  </div>
                 </div>
+
                 <el-row :gutter="16">
+                  <!-- 左列：请求 -->
                   <el-col :span="24" :md="12">
+                    <!-- Headers 友好表格 -->
                     <div class="detail-section">
-                      <div class="detail-label">请求 Headers</div>
-                      <pre class="json-block">{{ formatJson(row.headers_redacted) }}</pre>
+                      <div class="detail-label">
+                        <Icon icon="lucide:list" style="margin-right:4px"/> 请求 Headers
+                      </div>
+                      <template v-if="safeParse(row.headers_redacted) && Object.keys(safeParse(row.headers_redacted)!).length">
+                        <el-descriptions border size="small" :column="1" class="compact-desc">
+                          <el-descriptions-item v-for="(v, k) in safeParse(row.headers_redacted)" :key="k" :label="String(k)">
+                            <span class="mono" style="word-break:break-all;font-size:12px">{{ v }}</span>
+                          </el-descriptions-item>
+                        </el-descriptions>
+                      </template>
+                      <div v-else-if="row.headers_redacted" class="code-block" v-html="highlightJson(row.headers_redacted)"></div>
+                      <div v-else class="empty-tip">（无 Headers）</div>
                     </div>
-                    <div class="detail-section">
-                      <div class="detail-label">请求 Body</div>
-                      <pre class="json-block">{{ formatJson(row.request_body_redacted) }}</pre>
+
+                    <!-- 请求 Body -->
+                    <div class="detail-section" v-if="row.request_body_redacted != null">
+                      <div class="detail-label">
+                        <Icon icon="lucide:file-json" style="margin-right:4px"/> 请求 Body
+                      </div>
+                      <div class="code-block" v-html="highlightJson(row.request_body_redacted)"></div>
                     </div>
                   </el-col>
+
+                  <!-- 右列：响应 -->
                   <el-col :span="24" :md="12">
                     <div class="detail-section">
                       <div class="detail-label">
-                        响应内容
-                        <el-tag :type="getHttpStatusType(row.status_code)" size="small" style="margin-left:8px">
-                          {{ row.status_code ?? '无响应' }}
-                        </el-tag>
+                        <Icon icon="lucide:download-cloud" style="margin-right:4px"/> 响应内容
                       </div>
-                      <pre class="json-block">{{ formatJson(row.response_body_redacted) }}</pre>
+                      <!-- 浅层对象用键值表格 + 嵌套部分仍然用高亮代码块 -->
+                      <template v-if="safeParse(row.response_body_redacted)">
+                        <el-descriptions border size="small" :column="1" class="compact-desc">
+                          <el-descriptions-item v-for="(v, k) in safeParse(row.response_body_redacted)" :key="k" :label="String(k)">
+                            <template v-if="typeof v === 'object' && v !== null">
+                              <div class="code-block nested-code" v-html="highlightJson(v)"></div>
+                            </template>
+                            <template v-else-if="String(v).length > 100">
+                              <div class="long-val">{{ String(v) }}</div>
+                            </template>
+                            <span v-else class="mono" style="font-size:12px">{{ String(v) }}</span>
+                          </el-descriptions-item>
+                        </el-descriptions>
+                      </template>
+                      <template v-else>
+                        <div class="code-block" v-html="highlightJson(row.response_body_redacted)"></div>
+                      </template>
                     </div>
+
                     <div v-if="row.error" class="detail-section">
-                      <div class="detail-label error-label">错误</div>
-                      <pre class="json-block error-block">{{ row.error }}</pre>
+                      <div class="detail-label error-label">
+                        <Icon icon="lucide:alert-circle" style="margin-right:4px"/> 错误信息
+                      </div>
+                      <div class="error-block">{{ row.error }}</div>
                     </div>
                   </el-col>
                 </el-row>
@@ -394,7 +442,7 @@ onMounted(() => {
           <span class="filter-count">共 {{ policyTotal }} 条</span>
         </div>
 
-        <el-table :data="policyPagedData" style="width: 100%" v-loading="loading" stripe>
+        <el-table :data="approvals" style="width: 100%" v-loading="loading" stripe>
           <el-table-column prop="created_at" label="发起时间" width="165">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
@@ -581,24 +629,98 @@ onMounted(() => {
   color: var(--el-color-danger);
 }
 
-.json-block {
+/* ===== 亮色代码高亮块 ===== */
+.code-block {
   margin: 0;
   padding: 10px 12px;
   border-radius: 6px;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: #f6f8fb;
+  border: 1px solid #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "JetBrains Mono", monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 240px;
+  max-height: 300px;
   overflow-y: auto;
+  color: #24292e;
+}
+
+/* highlight.js 亮色主题的padding修正 */
+.code-block .hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.nested-code {
+  max-height: 160px;
+  font-size: 11px;
+  padding: 6px 10px;
+  margin-top: 4px;
 }
 
 .error-block {
-  background: #2d1414;
-  color: #f97171;
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #cf1322;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detail-header-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-header-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.url-full {
+  color: var(--el-color-primary);
+  word-break: break-all;
+  font-size: 12px;
+}
+
+.empty-tip {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  padding: 6px 0;
+}
+
+.long-val {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  word-break: break-all;
+  line-height: 1.5;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* el-descriptions 紧凑样式 */
+.compact-desc {
+  width: 100%;
+}
+
+:deep(.compact-desc .el-descriptions__label) {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light) !important;
+  min-width: 120px;
+}
+
+:deep(.compact-desc .el-descriptions__content) {
+  font-size: 12px;
 }
 </style>

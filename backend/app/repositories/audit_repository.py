@@ -18,12 +18,23 @@ class AuditRepository:
         result = await self.db.execute(select(Approval).where(Approval.id == approval_id))
         return result.scalar_one_or_none()
 
-    async def list_approvals(self, status: str | None = None, limit: int = 50) -> list[Approval]:
-        query = select(Approval).order_by(Approval.created_at.desc()).limit(limit)
+    async def list_approvals(self, status: str | None = None, keyword: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[Approval], int]:
+        from sqlalchemy import func, or_
+        query = select(Approval).order_by(Approval.created_at.desc())
+        count_query = select(func.count()).select_from(Approval)
         if status:
             query = query.where(Approval.status == status)
-        result = await self.db.execute(query)
-        return list(result.scalars().all())
+            count_query = count_query.where(Approval.status == status)
+        if keyword:
+            search_filter = or_(Approval.title.ilike(f"%{keyword}%"), Approval.action_summary.ilike(f"%{keyword}%"))
+            query = query.where(search_filter)
+            count_query = count_query.where(search_filter)
+            
+        total_result = await self.db.execute(count_query)
+        total = total_result.scalar_one()
+        
+        result = await self.db.execute(query.limit(limit).offset(offset))
+        return list(result.scalars().all()), total
 
     async def get_http_execution(self, request_id: str) -> HttpExecution | None:
         result = await self.db.execute(

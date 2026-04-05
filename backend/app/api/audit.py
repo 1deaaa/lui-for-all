@@ -22,7 +22,7 @@ async def list_task_runs(
     db: AsyncSession = Depends(get_session),
 ):
     """列出任务运行记录"""
-    task_runs = await TaskRepository(db).list_task_runs(
+    task_runs, total = await TaskRepository(db).list_task_runs(
         session_id=session_id,
         status=status,
         limit=limit,
@@ -46,7 +46,7 @@ async def list_task_runs(
             }
             for t in task_runs
         ],
-        "total": len(task_runs),
+        "total": total,
     }
 
 
@@ -144,17 +144,29 @@ async def get_http_execution(
 @router.get("/http-executions")
 async def list_http_executions(
     task_run_id: str | None = None,
+    keyword: str | None = None,
     limit: int = Query(50, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_session),
 ):
     """列出 HTTP 执行记录列表"""
-    from sqlalchemy import select
+    from sqlalchemy import select, func
     from app.models.audit import HttpExecution
 
     query = select(HttpExecution).order_by(HttpExecution.created_at.desc())
+    count_query = select(func.count()).select_from(HttpExecution)
+
     if task_run_id:
         query = query.where(HttpExecution.task_run_id == task_run_id)
+        count_query = count_query.where(HttpExecution.task_run_id == task_run_id)
+        
+    if keyword:
+        query = query.where(HttpExecution.url_redacted.ilike(f"%{keyword}%"))
+        count_query = count_query.where(HttpExecution.url_redacted.ilike(f"%{keyword}%"))
+
+    total_result = await db.execute(count_query)
+    total = total_result.scalar_one()
+
     result = await db.execute(query.offset(offset).limit(limit))
     executions = list(result.scalars().all())
 
@@ -180,18 +192,20 @@ async def list_http_executions(
             }
             for e in executions
         ],
-        "total": len(executions),
+        "total": total,
     }
 
 
 @router.get("/approvals")
 async def list_approval_log(
     status: str | None = None,
+    keyword: str | None = None,
     limit: int = Query(50, le=100),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_session),
 ):
     """列出审批操作记录（审批日志）"""
-    approvals = await AuditRepository(db).list_approvals(status=status, limit=limit)
+    approvals, total = await AuditRepository(db).list_approvals(status=status, keyword=keyword, limit=limit, offset=offset)
 
     return {
         "approvals": [
@@ -209,7 +223,7 @@ async def list_approval_log(
             }
             for a in approvals
         ],
-        "total": len(approvals),
+        "total": total,
     }
 
 

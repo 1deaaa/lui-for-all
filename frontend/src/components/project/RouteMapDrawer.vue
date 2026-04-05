@@ -484,4 +484,13 @@ const permissionOptions = [
 :deep(.el-select .el-input.is-focus .el-input__wrapper) {
   box-shadow: 0 0 0 1px #0f0f0f inset !important;
 }
+
+@media (max-width: 768px) {
+  .custom-analyzer-btn {
+    padding: 0 10px;
+  }
+  .custom-analyzer-btn span {
+    display: none;
+  }
+}
 </style>

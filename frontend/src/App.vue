@@ -3,7 +3,8 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useWindowSize } from '@vueuse/core'
-import { ChatDotRound, Folder, Document, Setting, Menu as MenuIcon } from '@element-plus/icons-vue'
+import { ChatDotRound, Folder, Document, Setting } from '@element-plus/icons-vue'
+import BrandLogo from '@/components/BrandLogo.vue'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -30,26 +31,24 @@ projectStore.fetchProjects()
 </script>
 
 <template>
-  <el-container class="app-container">
-    <!-- 移动端顶部 Navbar -->
-    <div v-if="isMobile" class="mobile-navbar">
-      <div class="logo-mobile">
-        LUI <Icon icon="solar:stars-bold-duotone" class="sparkle-icon" />
+  <el-container class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
+    <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏) -->
+    <div v-if="isMobile && route.path !== '/'" class="mobile-navbar">
+      <div class="logo-mobile" @click="drawerVisible = true" style="cursor: pointer;">
+        <BrandLogo :size="24" />
       </div>
-      <el-button text class="menu-btn" @click="drawerVisible = true">
-        <el-icon :size="20"><MenuIcon /></el-icon>
-      </el-button>
     </div>
 
-    <!-- 移动端 Drawer 导航 -->
     <el-drawer
       v-model="drawerVisible"
       direction="ltr"
-      size="240px"
+      size="180px"
       :with-header="false"
       class="mobile-drawer"
     >
-      <div class="logo drawer-logo">LUI-for-All</div>
+      <div class="logo drawer-logo">
+        <BrandLogo :size="24" style="margin-right:8px" />LUI-for-All
+      </div>
       <el-menu :default-active="activeMenu" router class="drawer-menu" @select="drawerVisible = false">
         <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
           <el-icon><component :is="item.icon" /></el-icon>
@@ -61,9 +60,7 @@ projectStore.fetchProjects()
     <!-- 桌面侧边栏 (极简固定) -->
     <el-aside v-if="!isMobile" width="64px" class="app-aside">
       <div class="logo">
-        <span class="logo-icon">
-          <Icon icon="solar:box-minimalistic-bold" />
-        </span>
+        <BrandLogo :size="30" />
       </div>
       
       <el-menu
@@ -84,7 +81,7 @@ projectStore.fetchProjects()
       <el-main class="app-main">
         <router-view v-slot="{ Component }">
           <transition name="fade-slide" mode="out-in">
-            <component :is="Component" />
+            <component :is="Component" @open-drawer="drawerVisible = true" />
           </transition>
         </router-view>
       </el-main>
@@ -223,10 +220,15 @@ html, body, #app {
 }
 
 .logo-mobile {
+  display: flex;
+  align-items: center;
+}
+.logo-mobile .logo-text {
   font-weight: 800;
   font-size: 1.2rem;
   background: linear-gradient(135deg, var(--color-primary), #00d2ff);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -238,6 +240,9 @@ html, body, #app {
 @media (max-width: 768px) {
   .app-container {
     padding-top: 60px;
+  }
+  .app-container.no-padding-top {
+    padding-top: 0 !important;
   }
 }
 
@@ -261,23 +266,6 @@ html, body, #app {
   color: var(--color-text-primary);
 }
 
-.logo-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  width: 36px;
-  height: 36px;
-  color: #0f0f0f;
-  background: transparent;
-  /* 移除丑陋的黑块，使用透明背景+深色Icon，更显高级 */
-}
-
-.sparkle-icon {
-  vertical-align: middle;
-  margin-left: 4px;
-}
-
 .drawer-logo {
   border-bottom: 1px solid var(--border-color-light);
   font-size: 1.2rem;
@@ -290,7 +278,7 @@ html, body, #app {
   background-color: transparent !important;
 }
 
-.app-menu, .drawer-menu {
+.app-menu {
   flex: 1;
   padding: 16px 0;
   display: flex;
@@ -299,9 +287,18 @@ html, body, #app {
   gap: 16px;
 }
 
-.el-menu-item {
+.drawer-menu {
+  flex: 1;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px; /* 移动端抽屉项间距稍微紧凑 */
+}
+
+/* 针对桌面超窄边栏定制方块按钮 */
+.app-menu .el-menu-item {
   color: var(--color-text-secondary) !important;
-  border-radius: 0 !important; /* 彻底变为方形元素 */
+  border-radius: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
   width: 44px !important;
@@ -312,7 +309,7 @@ html, body, #app {
   transition: color 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
-.el-menu--collapse .el-menu-item .el-tooltip__trigger {
+.app-menu.el-menu--collapse .el-menu-item .el-tooltip__trigger {
   padding: 0 !important;
   display: flex;
   justify-content: center;
@@ -321,24 +318,51 @@ html, body, #app {
   height: 100%;
 }
 
-.el-menu-item:hover {
+.app-menu .el-menu-item:hover {
   background-color: #f0f0f0 !important;
   color: var(--color-text-primary) !important;
 }
 
-.el-menu-item.is-active {
+.app-menu .el-menu-item.is-active {
   background-color: rgba(0, 0, 0, 0.04) !important;
   color: #0f0f0f !important;
   font-weight: 600;
-  box-shadow: inset 3px 0 0 0 #0f0f0f; /* 高级左侧实线指示，响应主题 */
+  box-shadow: inset 3px 0 0 0 #0f0f0f;
 }
 
-.el-menu-item .el-icon {
+.app-menu .el-menu-item .el-icon {
   font-size: 20px !important;
   margin: 0 !important;
 }
 
+/* 针对移动端全宽抽屉正常菜单 */
+.drawer-menu .el-menu-item {
+  height: 48px !important;
+  border-radius: 8px !important;
+  margin: 0 12px !important;
+  padding: 0 12px !important;
+  color: var(--color-text-secondary) !important;
+  transition: all 0.2s;
+}
+
+.drawer-menu .el-menu-item:hover {
+  background-color: #f0f0f0 !important;
+  color: var(--color-text-primary) !important;
+}
+
+.drawer-menu .el-menu-item.is-active {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #0f0f0f !important;
+  font-weight: 600;
+}
+
+.drawer-menu .el-menu-item .el-icon {
+  font-size: 20px !important;
+  margin-right: 12px !important;
+}
+
 /* ================= 全局 Element-Plus 重构 (直角平铺) ================= */
+
 .el-card {
   border-radius: 0 !important;
   border: 1px solid var(--border-color-light) !important;

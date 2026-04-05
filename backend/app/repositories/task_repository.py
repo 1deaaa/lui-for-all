@@ -28,15 +28,24 @@ class TaskRepository:
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[TaskRun]:
+    ) -> tuple[list[TaskRun], int]:
+        from sqlalchemy import func
         query = select(TaskRun).order_by(TaskRun.created_at.desc())
+        count_query = select(func.count()).select_from(TaskRun)
+        
         if session_id:
             query = query.where(TaskRun.session_id == session_id)
+            count_query = count_query.where(TaskRun.session_id == session_id)
         if status:
             query = query.where(TaskRun.status == status)
+            count_query = count_query.where(TaskRun.status == status)
+            
+        total_result = await self.db.execute(count_query)
+        total = total_result.scalar_one()
+
         query = query.offset(offset).limit(limit)
         result = await self.db.execute(query)
-        return list(result.scalars().all())
+        return list(result.scalars().all()), total
 
     async def list_events(self, task_run_id: str) -> list[TaskEvent]:
         result = await self.db.execute(

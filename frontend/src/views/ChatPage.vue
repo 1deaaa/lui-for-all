@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useWindowSize } from '@vueuse/core'
 import { useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
@@ -10,6 +11,9 @@ import { ElMessage } from 'element-plus'
 import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
 import RouteMapAnalyzer from '@/components/project/RouteMapDrawer.vue'
 import { formatHttpStatusTooltip } from '@/utils/httpStatus'
+import BrandLogo from '@/components/BrandLogo.vue'
+
+const emit = defineEmits(['openDrawer'])
 
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
@@ -19,7 +23,15 @@ const inputMessage = ref('')
 const messageContainer = ref<HTMLElement | null>(null)
 const sessionCreating = ref(false)
 const runtimeExpanded = ref(false)
-const isSidebarCollapsed = ref(false)
+const { width: windowWidth } = useWindowSize()
+const isMobile = computed(() => windowWidth.value <= 768)
+
+const isSidebarCollapsed = ref(isMobile.value)
+
+watch(isMobile, (mobile) => {
+  if (mobile) isSidebarCollapsed.value = true
+})
+
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
@@ -49,6 +61,10 @@ async function selectProject(projectId: string) {
   sessionStore.clearSession()
   projectStore.fetchProjectDetails(projectId)
   await sessionStore.fetchHistory(projectId)
+  
+  if (isMobile.value) {
+    isSidebarCollapsed.value = true
+  }
 }
 
 // 切换到历史会话
@@ -57,6 +73,11 @@ async function switchToHistory(session: Session) {
   sessionStore.clearSession()
   sessionStore.currentSession = session
   await sessionStore.loadSession(session.id)
+  
+  if (isMobile.value) {
+    isSidebarCollapsed.value = true
+  }
+  
   await nextTick()
   scrollToBottom()
 }
@@ -105,16 +126,24 @@ async function handleSend() {
   await sessionStore.sendMessage(text)
 }
 
-function scrollToBottom(smooth = true) {
+function scrollToBottom(smooth = false) {
   if (!messageContainer.value) return
-  if (smooth) {
-    messageContainer.value.scrollTo({
-      top: messageContainer.value.scrollHeight,
-      behavior: 'smooth',
-    })
-  } else {
-    messageContainer.value.scrollTop = messageContainer.value.scrollHeight
+  const scroll = () => {
+    if (!messageContainer.value) return
+    if (smooth) {
+      messageContainer.value.scrollTo({
+        top: messageContainer.value.scrollHeight,
+        behavior: 'smooth',
+      })
+    } else {
+      messageContainer.value.scrollTop = messageContainer.value.scrollHeight
+    }
   }
+  // 双保险以应对可能的大元素渲染延迟
+  requestAnimationFrame(() => {
+    scroll()
+    setTimeout(scroll, 50)
+  })
 }
 
 onMounted(async () => {
@@ -213,8 +242,14 @@ watch(
     <!-- 右侧对话区 -->
     <div class="chat-area">
       <!-- 顶栏 -->
-      <div class="chat-topbar">
-        <button class="icon-btn sidebar-toggle-btn" @click="toggleSidebar" title="收起/展开项目列表">
+      <div class="chat-topbar" :class="{ 'is-mobile-topbar': isMobile }">
+        <!-- 移动端时，最左侧显示全局 Logo 呼出抽屉 -->
+        <button v-if="isMobile" class="icon-btn global-drawer-btn" @click="emit('openDrawer')" title="全局菜单">
+          <BrandLogo :size="24" />
+        </button>
+
+        <!-- 原有的项目侧边栏 Toggle 按钮 -->
+        <button class="icon-btn sidebar-toggle-btn" @click="toggleSidebar" title="收起/展开项目列表" :style="isMobile ? 'margin-left: 8px;' : ''">
           <Icon :icon="isSidebarCollapsed ? 'solar:hamburger-menu-linear' : 'solar:sidebar-minimalistic-linear'" />
         </button>
         <template v-if="selectedProject">
@@ -232,7 +267,7 @@ watch(
           >
             <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
             <Icon v-else icon="solar:chat-round-line-bold-duotone" class="btn-icon" />
-            <span>新建对话</span>
+            <span class="btn-text">新建对话</span>
           </button>
         </div>
       </div>
@@ -276,8 +311,8 @@ watch(
           >
             <div class="message-avatar" :class="msg.role === 'assistant' ? 'ai-avatar' : ''">
               <Icon v-if="msg.role === 'user'" icon="solar:user-bold-duotone" />
-              <!-- AI 头像：使用 magic-stars 图标更具辨识度 -->
-              <Icon v-else icon="solar:magic-stick-3-bold-duotone" />
+              <!-- AI 头像：使用统一几何品牌 Logo -->
+              <BrandLogo v-else :size="24" />
             </div>
             <div class="message-bubble">
               <div v-if="msg.thought" class="message-thought">
@@ -823,7 +858,7 @@ watch(
   to { transform: rotate(360deg); }
 }
 
-.icon-btn.sidebar-toggle-btn {
+.icon-btn.sidebar-toggle-btn, .icon-btn.global-drawer-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -837,10 +872,10 @@ watch(
   transition: background 0.15s, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   margin-right: 4px;
 }
-.icon-btn.sidebar-toggle-btn:hover {
+.icon-btn.sidebar-toggle-btn:hover, .icon-btn.global-drawer-btn:hover {
   background: #f0f0f0;
 }
-.icon-btn.sidebar-toggle-btn:active {
+.icon-btn.sidebar-toggle-btn:active, .icon-btn.global-drawer-btn:active {
   transform: scale(0.92);
 }
 
@@ -933,11 +968,12 @@ watch(
   color: #ffffff;
 }
 
-/* AI 头像：清爽的深色底+魔法星图标 */
+/* AI 头像：搭配几何极简 Logo 的素雅纯白背景与投影 */
 .ai-avatar {
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-  color: #a78bfa;
-  border: 1px solid #2d2d4e;
+  background: #ffffff;
+  color: #171717;
+  border: 1px solid #e5e5e5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.04);
 }
 
 .message-bubble {
@@ -1233,5 +1269,50 @@ watch(
 .input-hint {
   font-size: 12px;
   color: #a3a3a3;
+}
+
+/* ============ 移动端响应式布局适配 ============ */
+@media (max-width: 768px) {
+  .project-panel {
+    position: absolute;
+    left: 0;
+    top: 64px; /* 顶栏高度 */
+    height: calc(100% - 64px);
+    z-index: 20;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.08); /* 给覆盖在上面的面板加上阴影 */
+  }
+
+  .message-item {
+    gap: 8px; /* 消息项内部元素间距缩小 */
+    padding: 16px 0;
+  }
+
+  .message-list {
+    padding: 0 16px 16px;
+  }
+
+  .input-area {
+    padding: 12px 16px 16px;
+  }
+
+  .chat-padding-mobile {
+    margin-left: 0 !important;
+  }
+  
+  .chat-topbar {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .topbar-actions {
+    gap: 6px;
+  }
+  
+  .new-chat-btn.custom .btn-text {
+    display: none;
+  }
+  .new-chat-btn.custom {
+    padding: 0 10px;
+  }
 }
 </style>

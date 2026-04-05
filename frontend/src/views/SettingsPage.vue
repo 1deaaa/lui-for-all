@@ -213,6 +213,15 @@ async function copyMcpJson() {
   }
 }
 
+function highlightJson(code: string) {
+  // @ts-ignore
+  if (window.hljs) {
+    // @ts-ignore
+    return window.hljs.highlight(code, { language: 'json' }).value
+  }
+  return code
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -433,7 +442,7 @@ onMounted(loadSettings)
                     </el-button>
                   </div>
                   <p>在 VS Code 的 Cline 或 Roo Code 等多模型插件中，您可以直接将连接类型设置为 <code>sse</code>（如今大多数前沿客户端已经原生兼容），并桥接本远程网关：</p>
-                  <div class="code-block">{{ mcpJsonExample }}</div>
+                  <div class="code-block" v-html="highlightJson(mcpJsonExample)"></div>
                   <p class="instruction-note">
                     <Icon icon="lucide:info" /> 此为示例配置，具体格式请参考您所使用的客户端的配置规范，但务必确保将 <code>type</code> 设置为 <code>sse</code>，以及使用正确的 Bearer Header（如已启用防御）。
                   </p>
@@ -637,8 +646,8 @@ onMounted(loadSettings)
   margin-bottom: 0 !important;
 }
 .code-block {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: #f8f9fa;
+  color: #24292e;
   padding: 14px;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
@@ -646,6 +655,7 @@ onMounted(loadSettings)
   line-height: 1.5;
   overflow-x: auto;
   white-space: pre-wrap;
+  border: 1px solid var(--el-border-color-lighter);
 }
 
 /* 入场动画 */
