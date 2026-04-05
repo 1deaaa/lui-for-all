@@ -65,7 +65,8 @@ class Message(Base):
 
     __tablename__ = "messages"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+
     session_id: Mapped[str] = mapped_column(
         String(36),
         nullable=False,

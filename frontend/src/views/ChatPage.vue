@@ -5,6 +5,7 @@ import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 import type { Session } from '@/vite-env.d'
 import BlockRenderer from '@/components/BlockRenderer.vue'
+import ConfirmPanel from '@/components/blocks/ConfirmPanel.vue'
 import { ElMessage } from 'element-plus'
 import MarkdownRenderer from '@/components/llm-markdown-render/MarkdownRenderer.vue'
 import RouteMapAnalyzer from '@/components/project/RouteMapDrawer.vue'
@@ -28,26 +29,24 @@ function toggleThought(msgId: string) {
   thoughtExpanded.value[msgId] = !thoughtExpanded.value[msgId]
 }
 
-// 当前选中的项目（优先 store 里的，没有就取第一个已完成的）
+// 当前选中的项目
 const selectedProject = computed(() =>
   projectStore.currentProject ||
   projectStore.projects.find((p) => p.discovery_status === 'completed') ||
   null
 )
 
-// 已完成发现的项目列表（才能聊天）
+// 已完成发现的项目列表
 const readyProjects = computed(() =>
   projectStore.projects.filter((p) => p.discovery_status === 'completed')
 )
 
-// 快速切换项目：选中 -> 拉取历史 -> 清理当前会话
+// 快速切换项目
 async function selectProject(projectId: string) {
   const found = projectStore.projects.find((p) => p.id === projectId)
   if (!found) return
   projectStore.currentProject = found
   sessionStore.clearSession()
-  
-  // 并行后台拉取详情信息及历史会话，不阻塞主线程动画
   projectStore.fetchProjectDetails(projectId)
   await sessionStore.fetchHistory(projectId)
 }
@@ -58,6 +57,8 @@ async function switchToHistory(session: Session) {
   sessionStore.clearSession()
   sessionStore.currentSession = session
   await sessionStore.loadSession(session.id)
+  await nextTick()
+  scrollToBottom()
 }
 
 // 删除历史会话
@@ -66,7 +67,7 @@ async function handleDeleteSession(session: Session, e: MouseEvent) {
   await sessionStore.deleteSession(session.id)
 }
 
-// 创建对话 session (只在真正需要发送消息时调用)
+// 创建对话 session
 async function startSession(projectId: string) {
   if (sessionCreating.value) return
   sessionCreating.value = true
@@ -80,7 +81,7 @@ async function startSession(projectId: string) {
   }
 }
 
-// 新建对话（仅清理本地状态，等发送消息时真正创建）
+// 新建对话
 function handleNewChat() {
   sessionStore.clearSession()
 }
@@ -90,7 +91,6 @@ async function handleSend() {
   const text = inputMessage.value.trim()
   if (!text) return
 
-  // 没有 session 时自动创建
   if (!sessionStore.currentSession) {
     const id = selectedProject.value?.id
     if (!id) {
@@ -103,17 +103,27 @@ async function handleSend() {
 
   inputMessage.value = ''
   await sessionStore.sendMessage(text)
-  await nextTick()
-  scrollToBottom()
 }
 
-function scrollToBottom() {
-  if (messageContainer.value) {
+function scrollToBottom(smooth = true) {
+  if (!messageContainer.value) return
+  if (smooth) {
+    messageContainer.value.scrollTo({
+      top: messageContainer.value.scrollHeight,
+      behavior: 'smooth',
+    })
+  } else {
     messageContainer.value.scrollTop = messageContainer.value.scrollHeight
   }
 }
 
 onMounted(async () => {
+  // 向 store 注入滚动函数
+  sessionStore.registerScrollFn(async () => {
+    await nextTick()
+    scrollToBottom()
+  })
+
   await projectStore.fetchProjects()
   const projectId = typeof route.query.project === 'string' ? route.query.project : null
   if (projectId) {
@@ -130,16 +140,14 @@ watch(
     }
   }
 )
-// 监听 messages 变化，流式输出时自动滚动到底部
+
+// 流式输出时自动滚动（平滑）
 watch(
-  () => sessionStore.messages.map(m => m.content + (m.thought || '')),
+  () => sessionStore.messages.length,
   async () => {
-    if (sessionStore.isStreaming) {
-      await nextTick()
-      scrollToBottom()
-    }
-  },
-  { deep: false }
+    await nextTick()
+    scrollToBottom()
+  }
 )
 </script>
 
@@ -216,9 +224,7 @@ watch(
         <span v-else class="chat-hint-topbar">← 请在左侧选择一个项目</span>
         
         <div class="topbar-actions" v-if="selectedProject">
-          <!-- 路由图谱/分析报告 -->
           <RouteMapAnalyzer />
-
           <button
             :disabled="sessionStore.isStreaming || sessionCreating"
             @click="handleNewChat"
@@ -251,67 +257,81 @@ watch(
           </template>
         </div>
 
-        <div
-          v-for="msg in sessionStore.messages"
-          :key="msg.id"
-          :class="['message-item', msg.role]"
-        >
-          <div class="message-avatar">
-            <Icon v-if="msg.role === 'user'" icon="solar:user-bold-duotone" />
-            <Icon v-else icon="solar:smart-home-robot-bold-duotone" />
+        <!-- 消息列表（含嵌入式审批面板） -->
+        <template v-for="msg in sessionStore.messages" :key="msg.id">
+          <!-- ===== 审批面板（confirmation消息类型）===== -->
+          <div v-if="msg.role === 'confirmation' && msg.approvalBlock" class="message-item confirmation-row">
+            <div class="message-avatar ai-avatar">
+              <Icon icon="solar:shield-warning-bold-duotone" />
+            </div>
+            <div class="confirmation-bubble">
+              <ConfirmPanel :block="msg.approvalBlock" />
+            </div>
           </div>
-          <div class="message-bubble">
-            <div v-if="msg.thought" class="message-thought">
-              <div class="thought-header" @click="toggleThought(msg.id)">
-                <el-icon v-if="sessionStore.isStreaming && !msg.content" class="is-loading"><Loading /></el-icon>
-                <el-icon v-else><Monitor /></el-icon>
-                <span>AI 思考过程</span>
-                <el-icon class="thought-toggle" :class="{ expanded: thoughtExpanded[msg.id] }"><ArrowDown /></el-icon>
-              </div>
-              <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
-                <div class="thought-content">
-                  <MarkdownRenderer :content="msg.thought" />
+
+          <!-- ===== 普通消息（user / assistant）===== -->
+          <div
+            v-else-if="msg.role !== 'system'"
+            :class="['message-item', msg.role]"
+          >
+            <div class="message-avatar" :class="msg.role === 'assistant' ? 'ai-avatar' : ''">
+              <Icon v-if="msg.role === 'user'" icon="solar:user-bold-duotone" />
+              <!-- AI 头像：使用 magic-stars 图标更具辨识度 -->
+              <Icon v-else icon="solar:magic-stick-3-bold-duotone" />
+            </div>
+            <div class="message-bubble">
+              <div v-if="msg.thought" class="message-thought">
+                <div class="thought-header" @click="toggleThought(msg.id)">
+                  <el-icon v-if="sessionStore.isStreaming && !msg.content" class="is-loading"><Loading /></el-icon>
+                  <el-icon v-else><Monitor /></el-icon>
+                  <span>AI 思考过程</span>
+                  <el-icon class="thought-toggle" :class="{ expanded: thoughtExpanded[msg.id] }"><ArrowDown /></el-icon>
+                </div>
+                <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
+                  <div class="thought-content">
+                    <MarkdownRenderer :content="msg.thought" />
+                  </div>
                 </div>
               </div>
-            </div>
-            <!-- HTTP 执行标签（仅 assistant 消息且有 http_calls 时显示）-->
-            <div
-              v-if="msg.role === 'assistant' && msg.metadata?.http_calls?.length"
-              class="msg-http-calls"
-            >
-              <el-tooltip
-                v-for="(call, ci) in msg.metadata.http_calls"
-                :key="ci"
-                :show-after="120"
-                :hide-after="0"
-                placement="top"
-                effect="dark"
-                trigger="hover"
-                popper-class="http-status-tooltip"
-                :content="formatHttpStatusTooltip(call.status_code)"
+              <!-- HTTP 执行标签 -->
+              <div
+                v-if="msg.role === 'assistant' && msg.metadata?.http_calls?.length"
+                class="msg-http-calls"
               >
-                <span
-                  class="http-badge"
-                  :class="{
-                    'http-badge--ok': call.status_code >= 200 && call.status_code < 300,
-                    'http-badge--redirect': call.status_code >= 300 && call.status_code < 400,
-                    'http-badge--client-err': call.status_code >= 400 && call.status_code < 500,
-                    'http-badge--server-err': call.status_code >= 500,
-                    'http-badge--unknown': !call.status_code || call.status_code === 0,
-                  }"
-                >{{ call.method }} {{ call.url }} <span class="http-badge-code">{{ call.status_code }}</span></span>
-              </el-tooltip>
-            </div>
-            <div v-if="msg.content" class="message-text">
-              <MarkdownRenderer :content="msg.content" />
+                <el-tooltip
+                  v-for="(call, ci) in msg.metadata.http_calls"
+                  :key="ci"
+                  :show-after="120"
+                  :hide-after="0"
+                  placement="top"
+                  effect="dark"
+                  trigger="hover"
+                  popper-class="http-status-tooltip"
+                  :content="formatHttpStatusTooltip(call.status_code)"
+                >
+                  <span
+                    class="http-badge"
+                    :class="{
+                      'http-badge--ok': call.status_code >= 200 && call.status_code < 300,
+                      'http-badge--redirect': call.status_code >= 300 && call.status_code < 400,
+                      'http-badge--client-err': call.status_code >= 400 && call.status_code < 500,
+                      'http-badge--server-err': call.status_code >= 500,
+                      'http-badge--unknown': !call.status_code || call.status_code === 0,
+                    }"
+                  >{{ call.method }} {{ call.url }} <span class="http-badge-code">{{ call.status_code }}</span></span>
+                </el-tooltip>
+              </div>
+              <div v-if="msg.content" class="message-text">
+                <MarkdownRenderer :content="msg.content" />
+              </div>
             </div>
           </div>
-        </div>
+        </template>
 
-        <!-- UI Blocks -->
-        <div class="ui-blocks" v-if="sessionStore.uiBlocks.length > 0">
+        <!-- UI Blocks（非审批型块） -->
+        <div class="ui-blocks" v-if="sessionStore.uiBlocks.filter(b => b.block_type !== 'confirm_panel').length > 0">
           <BlockRenderer
-            v-for="(block, index) in sessionStore.uiBlocks"
+            v-for="(block, index) in sessionStore.uiBlocks.filter(b => b.block_type !== 'confirm_panel')"
             :key="index"
             :block="block"
           />
@@ -355,7 +375,6 @@ watch(
             :key="event.id"
             class="runtime-event-item"
           >
-            <!-- HTTP 执行结果标签 -->
             <template v-if="event.type === 'tool_completed' && event.status_code !== undefined && event.status_code !== null">
               <el-tooltip
                 :show-after="120"
@@ -532,13 +551,13 @@ watch(
 }
 .history-list-leave-active {
   position: absolute;
-  width: calc(100% - 16px); /* 减去水平 margin，确保宽度与非 absolute 一致 */
+  width: calc(100% - 16px);
 }
 .history-list-move {
   transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
 }
 
-/* ============ 运行时进度条（输入框上方折叠式） ============ */
+/* ============ 运行时进度条 ============ */
 .runtime-bar {
   flex-shrink: 0;
   border-top: 1px solid var(--border-color-light, #e5e5e5);
@@ -846,13 +865,11 @@ watch(
   flex: 1;
   overflow-y: auto;
   padding: 0 24px 24px;
-  scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
-  align-items: center; /* 居中内容流 */
+  align-items: center;
 }
 
-/* 内部限制宽度以达成优雅阅读 */
 .message-list > * {
   width: 100%;
   max-width: 1120px;
@@ -888,7 +905,16 @@ watch(
 }
 
 .message-item.user {
-  flex-direction: row-reverse; /* 用户气泡靠右 */
+  flex-direction: row-reverse;
+}
+
+/* 审批面板行 */
+.confirmation-row {
+  padding: 12px 0;
+}
+.confirmation-bubble {
+  flex: 1;
+  max-width: 680px;
 }
 
 .message-avatar {
@@ -899,7 +925,7 @@ watch(
   align-items: center;
   justify-content: center;
   font-size: 20px;
-  border-radius: 0; /* 绝对直角 */
+  border-radius: 0;
 }
 
 .message-item.user .message-avatar {
@@ -907,10 +933,11 @@ watch(
   color: #ffffff;
 }
 
-.message-item.assistant .message-avatar {
-  background: #ffffff;
-  border: 1px solid #e5e5e5;
-  color: #0f0f0f;
+/* AI 头像：清爽的深色底+魔法星图标 */
+.ai-avatar {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #a78bfa;
+  border: 1px solid #2d2d4e;
 }
 
 .message-bubble {
@@ -1000,7 +1027,7 @@ watch(
 .message-text :deep(th), .message-text :deep(td) { border: 1px solid #e5e5e5; padding: 10px 14px; text-align: left; }
 .message-text :deep(th) { background: #f9f9f9; font-weight: 600; }
 
-/* 思考过程样式 (Mental Model Block) */
+/* 思考过程样式 */
 .message-thought {
   margin-bottom: 16px;
   background: #fafafa;
@@ -1033,7 +1060,6 @@ watch(
   transform: rotate(180deg);
 }
 
-/* 默认折叠（仅显示标题），展开后全显 */
 .thought-body {
   display: grid;
   grid-template-rows: 0fr;
@@ -1073,14 +1099,12 @@ watch(
   font-size: 13px !important;
 }
 
-/* 针对内部代码块等颜色降级 */
 .thought-content :deep(code) {
   color: #6b6b6b !important;
   font-size: 12px !important;
   background-color: rgba(15, 23, 42, 0.04) !important;
 }
 
-/* 内联 HTTP 执行记录 chip */
 .inline-events {
   display: flex;
   flex-wrap: wrap;
@@ -1128,7 +1152,7 @@ watch(
   margin-top: 16px;
 }
 
-/* 高级打字机式闪烁光标 / 脉冲 Loading */
+/* Loading */
 .loading-row {
   display: flex;
   align-items: center;
@@ -1159,7 +1183,7 @@ watch(
 .loading-text { font-size: 14px; color: #737373; }
 .error-row { padding: 16px 0; width: 100%; }
 
-/* ============ 底部浮岛输入区 ============ */
+/* ============ 底部输入区 ============ */
 .input-area {
   padding: 16px 24px 24px;
   background: #ffffff;
@@ -1171,7 +1195,7 @@ watch(
 
 .input-wrapper {
   width: 100%;
-  max-width: 1120px; /* 匹配主阅读流宽度 */
+  max-width: 1120px;
   border-radius: 0;
   border: 1px solid var(--border-color-light, #e5e5e5);
   background: #ffffff;

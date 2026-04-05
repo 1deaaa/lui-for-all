@@ -53,14 +53,44 @@ export interface HttpCallRecord {
   duration_ms?: number
 }
 
+export interface ApprovalBlock {
+  block_type: 'confirm_panel'
+  batch_id?: string
+  items?: Array<{
+    write_id: string
+    route_id: string
+    method: string
+    path: string
+    parameters: any
+    reasoning: string
+    safety_level: string
+  }>
+  approval_id?: string
+  title?: string
+  description?: string
+  risk_level?: string
+  route_id?: string
+  parameters?: any
+  /** 已决策状态：undefined=待决策, 'approved'=已批准, 'rejected'=已拒绝 */
+  resolved_action?: 'approved' | 'rejected'
+}
+
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  /** user=用户消息, assistant=AI回复, confirmation=审批面板（嵌入消息流） */
+  role: 'user' | 'assistant' | 'system' | 'confirmation'
   content: string
   thought?: string
   task_run_id?: string
   created_at: string
-  metadata?: { http_calls?: HttpCallRecord[] }
+  metadata?: {
+    http_calls?: HttpCallRecord[]
+    thought?: string
+    /** 审批面板数据（持久化字段） */
+    approval_block?: ApprovalBlock
+  }
+  /** 审批面板数据（仅confirmation消息使用） */
+  approvalBlock?: ApprovalBlock
 }
 
 export interface TaskRun {

@@ -3,34 +3,14 @@ import { ref, computed } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { ElMessage } from 'element-plus'
 import { Check, Close, Warning, List } from '@element-plus/icons-vue'
-
-interface ApprovalItem {
-  write_id: string
-  route_id: string
-  method: string
-  path: string
-  parameters: any
-  reasoning: string
-  safety_level: string
-}
+import type { ApprovalBlock } from '@/vite-env.d'
 
 const props = defineProps<{
-  block: {
-    block_type: 'confirm_panel'
-    batch_id?: string
-    items?: ApprovalItem[]
-    // 向后兼容旧字段
-    approval_id?: string
-    title?: string
-    description?: string
-    risk_level?: string
-  }
+  block: ApprovalBlock
 }>()
 
 const sessionStore = useSessionStore()
 const loading = ref(false)
-const resolved = ref(false)
-const actionResult = ref<'approved' | 'rejected' | null>(null)
 
 // 统一处理 items 逻辑
 const items = computed(() => {
@@ -55,9 +35,12 @@ const riskLevel = computed(() => {
   return items.value.some(i => i.safety_level === 'critical') ? 'critical' : 'warning'
 })
 
+// 已决策状态直接来自 block（由 store 控制）
+const resolved = computed(() => !!props.block.resolved_action)
+const actionResult = computed(() => props.block.resolved_action ?? null)
+
 async function handleAction(action: 'approve' | 'reject') {
   if (loading.value || resolved.value) return
-
   loading.value = true
   try {
     const taskRunId = sessionStore.currentTaskRun?.id
@@ -65,16 +48,18 @@ async function handleAction(action: 'approve' | 'reject') {
 
     const approvedIds = action === 'approve' ? items.value.map(i => i.write_id) : []
 
+    // 先在 store 中标记为已决策（保证 UI 即时反映，位置固定）
+    sessionStore.markApprovalResolved(props.block.batch_id, props.block.approval_id, action === 'approve' ? 'approved' : 'rejected')
+
+    // 恢复图执行（开启新的事件流）
     sessionStore.startEventStream(taskRunId, {
       resumeBatchId: props.block.batch_id,
-      resumeWriteId: props.block.approval_id, // 兼容旧版
+      resumeWriteId: props.block.approval_id,
       resumeAction: action,
-      approvedIds: approvedIds
+      approvedIds,
     })
 
-    resolved.value = true
-    actionResult.value = action === 'approve' ? 'approved' : 'rejected'
-    ElMessage.success(action === 'approve' ? '已批准操作' : '已拒绝操作')
+    ElMessage.success(action === 'approve' ? '已批准操作，AI 继续执行中...' : '已拒绝操作')
   } catch (e: any) {
     ElMessage.error('操作失败: ' + (e.message || '未知错误'))
   } finally {
@@ -123,7 +108,7 @@ async function handleAction(action: 'approve' | 'reject') {
         </el-button>
       </template>
       <template v-else>
-        <span class="status-text" :class="actionResult">
+        <span class="status-text" :class="actionResult!">
           {{ actionResult === 'approved' ? '✓ 已批准' : '✕ 已拒绝' }}
         </span>
       </template>

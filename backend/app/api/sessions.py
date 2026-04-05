@@ -5,7 +5,7 @@
 
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,12 @@ async def stream_events(
                     if messages and messages[-1].role == "user" and messages[-1].content == task_run.user_message:
                         messages = messages[:-1]
                     for m in messages:
-                        chat_history_dicts.append({"role": m.role, "content": m.content})
+                        # 过滤审批面板占位消息（不传给 AI 上下文）
+                        if m.role == "system" and isinstance(m.metadata_, dict) and "approval_block" in m.metadata_:
+                            continue
+                        # 只将 user/assistant 消息加入聊天历史
+                        if m.role in ("user", "assistant"):
+                            chat_history_dicts.append({"role": m.role, "content": m.content})
 
                     capabilities = await project_repository.list_capabilities(task_run.project_id)
                     project = await project_repository.get_by_id(task_run.project_id)
@@ -424,6 +429,76 @@ async def stream_events(
                                 safety_level=payload.get("safety_level", "soft_write"),
                             )
                         )
+                        # 将待审批项目持久化到数据库（Approval 表），供策略判定日志查询
+                        _approval_items = payload.get("items", [])
+                        _batch_id = payload.get("batch_id", "")
+                        if _approval_items:
+                            from app.models.audit import Approval
+                            from app.repositories.audit_repository import AuditRepository
+                            try:
+                                async with async_session() as _appr_db:
+                                    _appr_repo = AuditRepository(_appr_db)
+                                    for _item in _approval_items:
+                                        _wid = _item.get("write_id", "")
+                                        if not _wid:
+                                            continue
+                                        # 幂等插入：仅当记录不存在时创建
+                                        _existing = await _appr_repo.get_approval(_wid)
+                                        if not _existing:
+                                            _method = _item.get("method", "WRITE")
+                                            _path = _item.get("path", _item.get("route_id", ""))
+                                            _params = _item.get("parameters", {})
+                                            _reason = _item.get("reasoning") or "需要人工审批的写入操作"
+                                            _safety = _item.get("safety_level", "soft_write")
+                                            _appr_db.add(Approval(
+                                                id=_wid,
+                                                task_run_id=task_run_id or "",
+                                                session_id=session_id,
+                                                title=f"{_method} {_path}",
+                                                description=_reason,
+                                                action_summary=f"{_method} {_path}  参数: {str(_params)[:200]}",
+                                                risk_level=_safety,
+                                                status="pending",
+                                                timeout_seconds=300,
+                                                expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=300),
+                                            ))
+                                    await _appr_db.commit()
+                            except Exception as _appr_err:
+                                logger.warning(f"[approval] 写入 Approval 记录失败: {_appr_err}")
+                        # 将审批面板数据写入会话消息历史（system消息），供 loadSession 重建UI
+                        # 使用 batch_id 作为幂等键防止 resume 时重复写入
+                        if _approval_items and _batch_id:
+                            try:
+                                async with async_session() as _msg_db:
+                                    _msg_session_repo = SessionRepository(_msg_db)
+                                    _msg_id = f"approval-{_batch_id}"
+                                    # 检查是否已存在（幂等）
+                                    _existing_msgs = await _msg_session_repo.list_messages(session_id, limit=200)
+                                    _already_exists = any(m.id == _msg_id for m in _existing_msgs)
+                                    if not _already_exists:
+                                        import json as _json
+                                        _approval_block = {
+                                            "block_type": "confirm_panel",
+                                            "batch_id": _batch_id,
+                                            "items": _approval_items,
+                                            "title": f"审批: {_approval_items[0].get('method','')} {_approval_items[0].get('path','')}",
+                                            "risk_level": max(
+                                                (_i.get("safety_level", "soft_write") for _i in _approval_items),
+                                                key=lambda s: {"critical": 3, "hard_write": 2, "soft_write": 1}.get(s, 0)
+                                            ),
+                                        }
+                                        _sys_msg = Message(
+                                            id=_msg_id,
+                                            session_id=session_id,
+                                            role="system",
+                                            content="[审批面板]",
+                                            task_run_id=task_run_id,
+                                            metadata_={"approval_block": _approval_block},
+                                        )
+                                        await _msg_session_repo.add_message(_sys_msg)
+                                        await _msg_db.commit()
+                            except Exception as _sys_msg_err:
+                                logger.warning(f"[approval] 写入审批面板消息失败: {_sys_msg_err}")
                     elif event_type == "agentic_iteration":
                         from app.schemas.event import AgenticIterationEvent
                         yield format_sse_event(
@@ -801,6 +876,18 @@ async def _resume_graph_with_approval(
         config,
         {"approved": approved, "write_id": write_id},
     )
+
+    # 更新 Approval 记录状态（落库，供策略判定日志展示）
+    from app.repositories.audit_repository import AuditRepository
+    try:
+        _approval_record = await AuditRepository(db).get_approval(write_id)
+        if _approval_record and _approval_record.status == "pending":
+            _approval_record.status = "approved" if approved else "rejected"
+            _approval_record.decided_at = datetime.now(UTC).replace(tzinfo=None)
+            _approval_record.decided_by = "user"
+            await db.commit()
+    except Exception as _upd_err:
+        logger.warning(f"[approval] 更新 Approval 状态失败 write_id={write_id}: {_upd_err}")
 
     return {
         "status": "success",

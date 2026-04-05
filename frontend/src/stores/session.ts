@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import axios from 'axios'
 import type {
+  ApprovalBlock,
   Message,
   RuntimeEventItem,
   Session,
@@ -29,9 +30,20 @@ export const useSessionStore = defineStore('session', () => {
   const streamingThoughtId = ref<string | null>(null)   // 推理消息 ID
   const currentTaskRunId = ref<string | null>(null)
   // 当前任务流式期间收集的 HTTP 调用记录
-  const pendingHttpCalls = ref<NonNullable<import('@/vite-env.d').Message['metadata']>['http_calls']>( [])
+  const pendingHttpCalls = ref<NonNullable<import('@/vite-env.d').Message['metadata']>['http_calls']>([])
+  // 滚动回调（由 ChatPage 注入）
+  const _scrollToBottomFn = ref<(() => void) | null>(null)
 
   const messageCount = computed(() => messages.value.length)
+
+  /** 注册滚动到底部函数（由 ChatPage 在 onMounted 时注入） */
+  function registerScrollFn(fn: () => void) {
+    _scrollToBottomFn.value = fn
+  }
+
+  function _scrollToBottom() {
+    _scrollToBottomFn.value?.()
+  }
 
   async function createSession(projectId: string) {
     loading.value = true
@@ -73,6 +85,9 @@ export const useSessionStore = defineStore('session', () => {
       created_at: new Date().toISOString(),
     }
     messages.value.push(userMessage)
+
+    // 立即滚动到底部（显示用户消息）
+    _scrollToBottom()
 
     loading.value = true
     error.value = null
@@ -149,25 +164,19 @@ export const useSessionStore = defineStore('session', () => {
     progressMessage.value = resumeOpts ? 'AI 正在执行已批准操作...' : 'AI 已接收请求，正在启动执行链路'
     runtimeEvents.value = []
     if (!resumeOpts) {
-      // 全新任务：清空所有状态
+      // 全新任务：清空临时状态（uiBlocks不清，审批记录已嵌入messages）
       pendingHttpCalls.value = []
       uiBlocks.value = []
       streamingMessageId.value = null
       streamingThoughtId.value = null
-    } else {
-      // resume 模式：保留审批面板（uiBlocks）和已有流式消息索引
-      // 不重置 streamingMessageId，让恢复后的正文 token 继续追加到已有消息中
-      // 不清除审批面板，以保证就地批准标记不消失
     }
+    // resume 模式：保留审批面板和已有流式消息索引
     currentTaskRunId.value = taskRunId
 
     const register = (eventName: string) => {
       eventSource.value?.addEventListener(eventName, (rawEvent) => {
         const event = rawEvent as MessageEvent
-        // Native SSE connection error gives no .data
         if (event.data === undefined || event.data === null) return
-        
-        // If the backend literally sent `data: undefined` for some reason
         if (event.data === 'undefined') {
           console.warn(`[Diagnostics] Received exact string 'undefined' for event ${eventName}. rawEvent:`, rawEvent)
           return
@@ -218,8 +227,10 @@ export const useSessionStore = defineStore('session', () => {
 
       console.error('SSE 连接错误:', e)
 
-      // 检查是否是因为审批中断导致的正常关闭（兜底，有 confirm_panel 时不报错）
-      const isExpectedPause = uiBlocks.value.some(b => b.block_type === 'confirm_panel')
+      // 检查是否是因为审批中断导致的正常关闭
+      const isExpectedPause = messages.value.some(m =>
+        m.role === 'confirmation' && !m.approvalBlock?.resolved_action
+      )
 
       if (!isExpectedPause && !error.value) {
         error.value = 'SSE 连接中断，请检查后端服务'
@@ -230,6 +241,23 @@ export const useSessionStore = defineStore('session', () => {
         eventSource.value = null
       }
       isStreaming.value = false
+    }
+  }
+
+  /** 在 messages 中找到对应 confirmation 消息并标记为已决策 */
+  function markApprovalResolved(batchId: string | undefined, approvalId: string | undefined, action: 'approved' | 'rejected') {
+    const idx = messages.value.findIndex(m =>
+      m.role === 'confirmation' && (
+        (batchId && m.approvalBlock?.batch_id === batchId) ||
+        (approvalId && m.approvalBlock?.approval_id === approvalId)
+      )
+    )
+    if (idx !== -1) {
+      const old = messages.value[idx]
+      messages.value.splice(idx, 1, {
+        ...old,
+        approvalBlock: { ...old.approvalBlock!, resolved_action: action }
+      })
     }
   }
 
@@ -244,7 +272,6 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'token_emitted':
-        // 正文内容，使用独立的 streamingMessageId
         if (!streamingMessageId.value) {
           const newId = `assistant-${Date.now()}`
           messages.value.push({
@@ -256,17 +283,16 @@ export const useSessionStore = defineStore('session', () => {
           })
           streamingMessageId.value = newId
         } else {
-          // 用 findIndex + splice 替换触发 Vue 响应式
           const idx = messages.value.findIndex((m) => m.id === streamingMessageId.value)
           if (idx !== -1) {
             const old = messages.value[idx]
             messages.value.splice(idx, 1, { ...old, content: old.content + (event.token || '') })
           }
         }
+        _scrollToBottom()
         break
 
       case 'thought_emitted':
-        // 推理内容，使用独立的 streamingThoughtId
         if (!streamingThoughtId.value) {
           const newId = `assistant-thought-${Date.now()}`
           messages.value.push({
@@ -279,13 +305,13 @@ export const useSessionStore = defineStore('session', () => {
           })
           streamingThoughtId.value = newId
         } else {
-          // 用 findIndex + splice 替换触发 Vue 响应式
           const idx = messages.value.findIndex((m) => m.id === streamingThoughtId.value)
           if (idx !== -1) {
             const old = messages.value[idx]
             messages.value.splice(idx, 1, { ...old, thought: (old.thought || '') + (event.token || '') })
           }
         }
+        _scrollToBottom()
         break
 
       case 'task_progress':
@@ -324,7 +350,6 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'tool_completed': {
-        // 从 route_id 拆出 HTTP method（格式可能是 "GET /api/xxx" 或 "GET:/api/xxx" 或仅有路径）
         const routeId: string = event.route_id || ''
         let httpMethod = ''
         let httpPath = routeId
@@ -339,7 +364,6 @@ export const useSessionStore = defineStore('session', () => {
           httpPath = parts.slice(1).join(':')
         }
         const sc: number | undefined = event.status_code
-        // 收集到临时列表，task_completed 时写入消息 metadata
         if (sc) {
           pendingHttpCalls.value = [
             ...(pendingHttpCalls.value || []),
@@ -365,14 +389,12 @@ export const useSessionStore = defineStore('session', () => {
         pendingHttpCalls.value = []
         if (event.summary) {
           if (streamingMessageId.value) {
-            // 已有流式正文消息：写入 http_calls metadata
             const idx = messages.value.findIndex(m => m.id === streamingMessageId.value)
             if (idx !== -1 && httpCallsSnapshot) {
               const old = messages.value[idx]
               messages.value.splice(idx, 1, { ...old, metadata: { http_calls: httpCallsSnapshot } })
             }
           } else if (!streamingThoughtId.value) {
-            // 没有任何流式输出时，才 push、为常规非流式路径准备
             messages.value.push({
               id: `assistant-${Date.now()}`,
               role: 'assistant',
@@ -392,6 +414,8 @@ export const useSessionStore = defineStore('session', () => {
         streamingMessageId.value = null
         streamingThoughtId.value = null
         closeEventStream()
+        // 任务完成后滚动到最底部
+        _scrollToBottom()
         break
       }
 
@@ -401,8 +425,9 @@ export const useSessionStore = defineStore('session', () => {
         }
         break
 
-      case 'write_approval_required':
-        uiBlocks.value.push({
+      case 'write_approval_required': {
+        // 将审批面板嵌入消息流，固定在当前位置
+        const approvalBlock: ApprovalBlock = {
           block_type: 'confirm_panel',
           batch_id: (event as any).batch_id,
           items: (event as any).items,
@@ -410,11 +435,25 @@ export const useSessionStore = defineStore('session', () => {
           title: `需要审核写入操作: ${(event as any).method || ''} ${(event as any).path || ''}`,
           description: (event as any).reasoning || '此操作涉及数据修改，请人工审核。',
           risk_level: (event as any).safety_level === 'critical' ? 'critical' : 'warning',
-          timeout_seconds: 300,
           route_id: (event as any).route_id,
-          parameters: (event as any).parameters
-        })
+          parameters: (event as any).parameters,
+        }
+        const msgId = `confirmation-${(event as any).batch_id || Date.now()}`
+        // 幂等：避免 resume 时重复插入同一个审批面板
+        const already = messages.value.find(m => m.id === msgId)
+        if (!already) {
+          messages.value.push({
+            id: msgId,
+            role: 'confirmation',
+            content: '',
+            task_run_id: event.task_run_id,
+            created_at: new Date().toISOString(),
+            approvalBlock,
+          })
+          _scrollToBottom()
+        }
         break
+      }
 
       case 'agentic_iteration':
         pushRuntimeEvent({
@@ -428,19 +467,26 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'approval_required':
-        uiBlocks.value.push({
-          block_type: 'confirm_panel',
-          approval_id: (event as any).approval_id,
-          title: (event as any).title || '操作需要确认',
-          description: (event as any).description || '此操作涉及敏感权限，请核实后批准。',
-          risk_level: (event as any).risk_level || 'warning',
-          timeout_seconds: (event as any).timeout_seconds || 300
+        // 旧版审批面板（兼容）
+        messages.value.push({
+          id: `confirmation-legacy-${Date.now()}`,
+          role: 'confirmation',
+          content: '',
+          task_run_id: event.task_run_id,
+          created_at: new Date().toISOString(),
+          approvalBlock: {
+            block_type: 'confirm_panel',
+            approval_id: (event as any).approval_id,
+            title: (event as any).title || '操作需要确认',
+            description: (event as any).description || '此操作涉及敏感权限，请核实后批准。',
+            risk_level: (event as any).risk_level || 'warning',
+          }
         })
+        _scrollToBottom()
         break
 
       case 'error':
         if ((event as any).error_code === 'APPROVAL_REQUIRED') {
-            // 已通过 ui_block 处理，此处不再设为全局错误
             break
         }
         error.value = event.error_message || '发生未知错误'
@@ -453,11 +499,11 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'approval_pending':
         // 图因 interrupt 暂停，SSE 将由后端关闭
-        // 前端停止 streaming 状态，但 uiBlocks（审批面板）保留
         isStreaming.value = false
         progressPercent.value = 0
         progressMessage.value = '等待审批中...'
         closeEventStream()
+        _scrollToBottom()
         break
 
       default:
@@ -491,7 +537,6 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function fetchHistory(projectId: string) {
-    // 1. 先读本地缓存，立即展示
     const cached = _loadHistoryCache(projectId)
     if (cached.length > 0) {
       historyList.value = cached
@@ -499,12 +544,10 @@ export const useSessionStore = defineStore('session', () => {
       historyLoading.value = true
     }
 
-    // 2. 后台向服务器同步，差异比对后更新
     try {
       const response = await axios.get('/api/sessions/', { params: { project_id: projectId, limit: 50 } })
       const serverList: Session[] = response.data.sessions || []
 
-      // 差异比对：id 集合或 title/updated_at 有变化才更新
       const changed =
         serverList.length !== historyList.value.length ||
         serverList.some((s, i) => {
@@ -529,10 +572,26 @@ export const useSessionStore = defineStore('session', () => {
     isStreaming.value = false
     try {
       const response = await axios.get(`/api/sessions/${sessionId}/messages`)
-      messages.value = (response.data.messages || []).map((m: any) => ({
-        ...m,
-        thought: m.metadata?.thought,
-      }))
+      messages.value = (response.data.messages || []).flatMap((m: any) => {
+        const result: Message[] = []
+        // 从 metadata 恢复审批面板（持久化的 confirmation 消息）
+        if (m.role === 'system' && m.metadata?.approval_block) {
+          result.push({
+            id: m.id,
+            role: 'confirmation',
+            content: '',
+            task_run_id: m.task_run_id,
+            created_at: m.created_at,
+            approvalBlock: m.metadata.approval_block as ApprovalBlock,
+          })
+        } else {
+          result.push({
+            ...m,
+            thought: m.metadata?.thought,
+          })
+        }
+        return result
+      })
       uiBlocks.value = []
       runtimeEvents.value = []
       runtimeEventsByTaskRun.value = {}
@@ -545,7 +604,6 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function deleteSession(sessionId: string) {
-    // 乐观删除 UI
     const projectId = historyList.value.find(s => s.id === sessionId)?.project_id
       || currentSession.value?.project_id
     historyList.value = historyList.value.filter(s => s.id !== sessionId)
@@ -556,7 +614,6 @@ export const useSessionStore = defineStore('session', () => {
       clearSession()
     }
 
-    // 后端异步执行删除，不阻塞用户的后续操作与本地 UI 更新
     axios.delete(`/api/sessions/${sessionId}`).catch(e => {
       console.error('异步删除会话失败:', e)
     })
@@ -616,5 +673,7 @@ export const useSessionStore = defineStore('session', () => {
     clearSession,
     startEventStream,
     closeEventStream,
+    markApprovalResolved,
+    registerScrollFn,
   }
 })
