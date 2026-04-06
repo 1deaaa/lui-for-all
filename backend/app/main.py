@@ -5,9 +5,12 @@ LUI-for-all FastAPI 主入口
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -192,6 +195,48 @@ async def health_check():
         "name": settings.app_name,
         "version": "0.1.0",
     }
+
+
+# ── 前端静态文件托管（Docker 构建产物）──
+FRONTEND_DIST_DIR = Path(__file__).resolve().parents[1] / "frontend_dist"
+FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
+_FRONTEND_RESERVED_ROOT_SEGMENTS = {
+    "api",
+    "docs",
+    "redoc",
+    "openapi.json",
+    "health",
+    "mcp",
+}
+
+
+def _is_reserved_frontend_path(full_path: str) -> bool:
+    root_segment = full_path.split("/", 1)[0]
+    return root_segment in _FRONTEND_RESERVED_ROOT_SEGMENTS
+
+
+if FRONTEND_INDEX_FILE.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+
+    logger.info(f"✅ 已启用前端静态托管: {FRONTEND_DIST_DIR}")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_frontend_index():
+        return FileResponse(str(FRONTEND_INDEX_FILE))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend_app(full_path: str):
+        if _is_reserved_frontend_path(full_path):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        target = FRONTEND_DIST_DIR / full_path
+        if target.is_file():
+            return FileResponse(str(target))
+        return FileResponse(str(FRONTEND_INDEX_FILE))
+else:
+    logger.warning(f"⚠️ 未找到前端构建产物，跳过静态托管: {FRONTEND_DIST_DIR}")
 
 
 # 注册 FastAPI 自动埋点 (必须在 app 创建后)
