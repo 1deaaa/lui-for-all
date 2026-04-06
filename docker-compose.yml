@@ -13,9 +13,9 @@ services:
     volumes:
       - lui_workspace:/app/workspace
     ports:
-      - "8000:8000"
+      - "6689:6689"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6689/health').read()"]
       interval: 15s
       timeout: 5s
       retries: 5

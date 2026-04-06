@@ -96,6 +96,10 @@ const permissionOptions = [
   { value: 'operator', label: '操作员 (Operator)' },
   { value: 'admin', label: '管理员 (Admin)' }
 ]
+
+function getRowClassName({ row }: { row: { route_id: string } }): string {
+  return getAssignedCapability(row.route_id) ? 'identified-row' : 'ignored-row'
+}
 </script>
 
 <template>
@@ -165,7 +169,7 @@ const permissionOptions = [
             style="width: 100%" 
             height="100%"
             class="custom-table"
-            :row-class-name="({ row }) => getAssignedCapability(row.route_id) ? 'identified-row' : 'ignored-row'"
+            :row-class-name="getRowClassName"
           >
         <el-table-column type="expand">
           <template #default="{ row }">

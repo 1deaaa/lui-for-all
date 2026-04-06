@@ -38,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import mermaid from 'mermaid'
 
 const props = defineProps({
@@ -52,7 +52,7 @@ const props = defineProps({
 const loading = ref<boolean>(!!props.config?.trim())
 const error = ref<boolean>(false)
 const mermaidContainer = ref<HTMLDivElement>()
-let renderTimer: number | null = null
+let renderTimer: ReturnType<typeof setTimeout> | null = null
 const wrapperStyle = ref<Record<string, string>>({ display: 'block', width: '100%', maxWidth: '100%', position: 'relative', background: '#fff' })
 const containerStyle = ref<Record<string, string>>({})
 const genRenderId = () =>
@@ -147,7 +147,7 @@ const renderChart = async () => {
     mermaidContainer.value.innerHTML = ''
 
     // 渲染mermaid图表
-    const { svg, bindFunctions } = await mermaid.render(genRenderId(), code)
+    const { svg } = await mermaid.render(genRenderId(), code)
 
     // 将生成的SVG插入到容器中
     mermaidContainer.value.innerHTML = svg

@@ -151,7 +151,7 @@ jobs:
       - name: 最小可用验证
         run: |
           echo "仅验证主后端与两个测试后端已正常启动（容器内互访）..."
-          docker exec lui-backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/openapi.json').read(); urllib.request.urlopen('http://sample-node:8020/health').read(); urllib.request.urlopen('http://sample-node:8020/openapi.json').read(); print('backend + samples are reachable')"
+          docker exec lui-backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6689/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/openapi.json').read(); urllib.request.urlopen('http://sample-node:8020/health').read(); urllib.request.urlopen('http://sample-node:8020/openapi.json').read(); print('backend + samples are reachable')"
 
       - name: 清理悬空镜像
         run: docker image prune -f || true
