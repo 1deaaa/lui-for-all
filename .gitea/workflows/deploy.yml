@@ -86,7 +86,17 @@ jobs:
           export LUI_MCP_API_TOKEN="${LUI_MCP_API_TOKEN:-}"
 
           echo "启动容器编排..."
+          set +e
           ${COMPOSE_CMD} -f "$COMPOSE_FILE" up -d --remove-orphans
+          up_status=$?
+          set -e
+
+          if [ "$up_status" -ne 0 ]; then
+            echo "容器启动失败，输出诊断信息..."
+            ${COMPOSE_CMD} -f "$COMPOSE_FILE" ps || true
+            ${COMPOSE_CMD} -f "$COMPOSE_FILE" logs --tail=200 || true
+            exit "$up_status"
+          fi
 
       - name: 等待服务健康
         run: |

@@ -19,7 +19,6 @@ from app.api import approvals, audit, projects, sessions, settings as settings_a
 from app.api import llm_status as llm_status_api
 from app.config import settings
 from app.db import init_db
-from app.mcp.server import mcp as mcp_server
 
 # 配置应用自身的日志（uvicorn 的 HTTP 访问日志由 run.py 中的 log_config 管理）
 logging.basicConfig(
@@ -78,7 +77,14 @@ def init_telemetry():
 
 # ── MCP 子应用（Streamable HTTP 传输）──
 # path="/" 表示 MCP 端点相对于挂载点 /mcp 即为 /mcp/
-_mcp_http_app = mcp_server.http_app(path="/")
+try:
+    from app.mcp.server import mcp as mcp_server
+    _mcp_http_app = mcp_server.http_app(path="/")
+    _mcp_import_error = None
+except Exception as e:
+    _mcp_http_app = None
+    _mcp_import_error = e
+    logger.warning(f"⚠️ MCP 子应用加载失败，将禁用 /mcp 端点: {e}")
 
 
 @asynccontextmanager
@@ -103,8 +109,13 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ agent-matchbox 初始化失败: {e}")
 
     # 启动 MCP 会话管理器（FastMCP Streamable HTTP 需要）
-    async with _mcp_http_app.lifespan(_mcp_http_app):
-        logger.info("✅ MCP 连接桥启动完成 → /mcp")
+    if _mcp_http_app is not None:
+        async with _mcp_http_app.lifespan(_mcp_http_app):
+            logger.info("✅ MCP 连接桥启动完成 → /mcp")
+            yield
+    else:
+        if _mcp_import_error is not None:
+            logger.warning(f"⚠️ MCP 功能已禁用: {_mcp_import_error}")
         yield
 
     logger.info("🛑 LUI-for-All 关闭中...")
@@ -163,11 +174,14 @@ class MCPBearerAuthMiddleware(BaseHTTPMiddleware):
                 )
         return await call_next(request)
 
-app.add_middleware(MCPBearerAuthMiddleware)
-logger.info("🔒 MCP 强制鉴权已启用（无 token 则阻断）")
+if _mcp_http_app is not None:
+    app.add_middleware(MCPBearerAuthMiddleware)
+    logger.info("🔒 MCP 强制鉴权已启用（无 token 则阻断）")
 
-# 挂载 MCP 子应用
-app.mount("/mcp", _mcp_http_app)
+    # 挂载 MCP 子应用
+    app.mount("/mcp", _mcp_http_app)
+else:
+    logger.warning("⚠️ MCP 子应用未挂载，/mcp 端点不可用")
 
 
 @app.get("/health")
