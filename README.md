@@ -188,7 +188,7 @@ pnpm install
 ```bash
 # 终端 1：启动后端
 cd backend
-conda run -n lui uvicorn app.main:app --reload --port 8000
+conda run -n lui uvicorn app.main:app --reload --port 6689
 
 # 终端 2：启动前端
 cd frontend

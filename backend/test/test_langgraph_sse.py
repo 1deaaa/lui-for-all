@@ -12,7 +12,7 @@ async def test():
     async with httpx.AsyncClient(timeout=120.0) as client:
         # 创建 session
         resp = await client.post(
-            'http://localhost:8000/api/sessions/',
+            'http://localhost:6689/api/sessions/',
             json={'project_id': 'a10c0bd3-1716-4d5e-83ae-6fe7f5ccf206'}
         )
         session = resp.json()
@@ -21,7 +21,7 @@ async def test():
         
         # 发送消息
         resp = await client.post(
-            f'http://localhost:8000/api/sessions/{session_id}/messages',
+            f'http://localhost:6689/api/sessions/{session_id}/messages',
             json={'content': '查看公告历史'}
         )
         msg = resp.json()

@@ -8,7 +8,7 @@ async def test_sse():
     async with httpx.AsyncClient(timeout=120.0) as client:
         # 创建 session
         resp = await client.post(
-            'http://localhost:8000/api/sessions/',
+            'http://localhost:6689/api/sessions/',
             json={"project_id": "a10c0bd3-1716-4d5e-83ae-6fe7f5ccf206"}
         )
         session = resp.json()
@@ -17,7 +17,7 @@ async def test_sse():
         
         # 发送消息
         resp = await client.post(
-            f'http://localhost:8000/api/sessions/{session_id}/messages',
+            f'http://localhost:6689/api/sessions/{session_id}/messages',
             json={"content": "查看公告历史"}
         )
         msg = resp.json()
@@ -25,7 +25,7 @@ async def test_sse():
         print(f"TaskRun: {task_run_id}")
         
         # 连接 SSE 流
-        url = f'http://localhost:8000/api/sessions/{session_id}/events/stream?task_run_id={task_run_id}'
+        url = f'http://localhost:6689/api/sessions/{session_id}/events/stream?task_run_id={task_run_id}'
         print(f"URL: {url}")
         
         async with client.stream('GET', url) as response:

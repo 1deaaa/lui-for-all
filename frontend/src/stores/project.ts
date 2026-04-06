@@ -3,6 +3,19 @@ import { ref, computed } from 'vue'
 import axios from 'axios'
 import type { Project } from '@/vite-env.d'
 
+interface ImportProjectPayload {
+  name: string
+  base_url: string
+  source_path: string
+  openapi_url?: string
+  description?: string
+  username?: string
+  password?: string
+  login_route_id?: string
+  body_field_username?: string
+  body_field_password?: string
+}
+
 export const useProjectStore = defineStore('project', () => {
   // 状态
   const projects = ref<Project[]>([])
@@ -121,12 +134,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   // 导入新项目
-  async function importProject(data: {
-    name: string
-    base_url: string
-    openapi_url?: string
-    description?: string
-  }) {
+  async function importProject(data: ImportProjectPayload) {
     loading.value = true
     error.value = null
     try {

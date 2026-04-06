@@ -6,12 +6,14 @@
 import asyncio
 import os
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import PROJECT_ROOT
 from app.db import async_session, get_session
 from app.models.audit import Approval, HttpExecution, ModelCall, PolicyVerdictRecord
 from app.models.project import CapabilityRecord, Project, RouteMapRecord
@@ -88,6 +90,83 @@ class DiscoveryStatusResponse(BaseModel):
     error: str | None = None
 
 
+class ProjectImportPreset(BaseModel):
+    """项目导入预置项（用于前端一键填充）"""
+
+    id: str
+    name: str
+    description: str
+    base_url: str
+    openapi_url: str
+    source_path: str
+    login_route_id: str
+    body_field_username: str = "username"
+    body_field_password: str = "password"
+    available: bool = True
+
+
+def _resolve_source_path(candidates: list[Path]) -> tuple[str, bool]:
+    """从候选路径中选择第一个存在且为目录的路径。"""
+    seen: set[str] = set()
+    normalized: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            normalized.append(candidate)
+
+    for candidate in normalized:
+        if candidate.exists() and candidate.is_dir():
+            return str(candidate), True
+
+    return str(normalized[0]), False
+
+
+def _build_sample_import_presets() -> list[ProjectImportPreset]:
+    """构建示例项目导入预置，自动探测当前运行环境下可用路径。"""
+    repo_sample_root = PROJECT_ROOT / "backend_for_test"
+
+    fastapi_source_path, fastapi_available = _resolve_source_path(
+        [
+            repo_sample_root / "fastapi_sample",
+            Path("/app/backend_for_test/fastapi_sample"),
+        ]
+    )
+    node_source_path, node_available = _resolve_source_path(
+        [
+            repo_sample_root / "node_sample",
+            Path("/app/backend_for_test/node_sample"),
+        ]
+    )
+
+    return [
+        ProjectImportPreset(
+            id="sample-fastapi",
+            name="FastAPI 示例（Docker）",
+            description="自动填充容器内 FastAPI 示例地址与源码目录。",
+            base_url="http://sample-fastapi:8010",
+            openapi_url="http://sample-fastapi:8010/openapi.json",
+            source_path=fastapi_source_path,
+            login_route_id="POST:/api/auth/login",
+            body_field_username="username",
+            body_field_password="password",
+            available=fastapi_available,
+        ),
+        ProjectImportPreset(
+            id="sample-node",
+            name="Node 示例（Docker）",
+            description="自动填充容器内 Node 示例地址与源码目录。",
+            base_url="http://sample-node:8020",
+            openapi_url="http://sample-node:8020/openapi.json",
+            source_path=node_source_path,
+            login_route_id="POST:/api/auth/login",
+            body_field_username="username",
+            body_field_password="password",
+            available=node_available,
+        ),
+    ]
+
+
 def _extract_progress(project: Project) -> tuple[int, str | None]:
     metadata = project.metadata_ or {}
     return int(metadata.get("discovery_progress", 0)), metadata.get("discovery_message")
@@ -147,6 +226,13 @@ async def _run_discovery_job(project_id: str):
             project.discovery_status = "failed"
             project.discovery_error = str(e)
             await db.commit()
+
+
+@router.get("/import-presets")
+async def get_import_presets():
+    """返回用于前端快速导入示例项目的预置项。"""
+    presets = _build_sample_import_presets()
+    return {"presets": [preset.model_dump() for preset in presets]}
 
 
 @router.post("/import", response_model=ProjectImportResponse)

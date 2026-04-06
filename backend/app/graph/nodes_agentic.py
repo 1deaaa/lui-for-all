@@ -184,7 +184,7 @@ async def _execute_http(
             path = path.replace(f'{{{key}}}', str(remaining.pop(key)))
     parameters = remaining
 
-    base_url = state.get("project_base_url", "http://localhost:8000").rstrip("/")
+    base_url = state.get("project_base_url", "http://localhost:6689").rstrip("/")
     auth = AuthSessionService()
     if bearer_token:
         auth._token = bearer_token

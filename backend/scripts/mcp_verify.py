@@ -5,7 +5,7 @@ MCP 连接桥验证脚本
 import json
 import httpx
 
-BASE = "http://localhost:8000/mcp/"
+BASE = "http://localhost:6689/mcp/"
 HEADERS_BASE = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream",

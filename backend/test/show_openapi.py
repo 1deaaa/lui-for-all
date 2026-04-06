@@ -2,7 +2,7 @@
 import httpx
 import json
 
-resp = httpx.get('http://localhost:6687/openapi.json', timeout=10)
+resp = httpx.get('http://localhost:8010/openapi.json', timeout=10)
 data = resp.json()
 
 print('=== OpenAPI 文件结构 ===')

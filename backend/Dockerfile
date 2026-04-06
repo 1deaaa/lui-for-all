@@ -31,6 +31,7 @@ RUN --mount=type=cache,id=lui-pip-cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
 COPY backend/ ./
+COPY backend_for_test /app/backend_for_test
 COPY --from=frontend-builder /app/frontend/dist ./frontend_dist
 
 RUN mkdir -p /app/workspace

@@ -3,7 +3,7 @@ import asyncio
 import httpx
 
 async def test_sse():
-    url = 'http://localhost:8000/api/sessions/39770a2e-dcd5-4ba7-a60f-9276b186ace1/events/stream?task_run_id=f85d833b-b5ee-4c5e-bb71-8f0606ce987b'
+    url = 'http://localhost:6689/api/sessions/39770a2e-dcd5-4ba7-a60f-9276b186ace1/events/stream?task_run_id=f85d833b-b5ee-4c5e-bb71-8f0606ce987b'
     
     print(f"Connecting to SSE stream...")
     async with httpx.AsyncClient(timeout=120.0) as client:

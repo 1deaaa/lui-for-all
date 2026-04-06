@@ -20,7 +20,7 @@
             "cwd": "${workspaceFolder}/frontend"
         },
         {
-            "name": "🧪 TestBackend",
+            "name": "🧪 TestBackend FastAPI",
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
@@ -29,13 +29,20 @@
                 "--host",
                 "0.0.0.0",
                 "--port",
-                "6687",
+                "8010",
                 "--reload"
             ],
-            "cwd": "${workspaceFolder}/proj_for_test",
+            "cwd": "${workspaceFolder}/backend_for_test/fastapi_sample",
             "python": "${command:python.interpreterPath}",
             "jinja": true,
             "justMyCode": false
+        },
+        {
+            "name": "🧪 TestBackend Node",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "npm run dev",
+            "cwd": "${workspaceFolder}/backend_for_test/node_sample"
         }
     ],
     "compounds": [
@@ -49,7 +56,8 @@
         {
             "name": "🌟 全栈测试",
             "configurations": [
-                "🧪 TestBackend",
+                "🧪 TestBackend FastAPI",
+                "🧪 TestBackend Node",
                 "🌐 Frontend",
                 "🐍 Backend"
             ]

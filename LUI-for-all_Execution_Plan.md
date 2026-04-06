@@ -149,7 +149,7 @@ talk-to-interface/
 │
 ├── frontend/                             # ===== Vue 前端 =====
 │   ├── package.json                      # 锁定所有组件库的版本
-│   ├── vite.config.ts                    # 启动项、Proxy 到 :8000
+│   ├── vite.config.ts                    # 启动项、Proxy 到 :6689
 │   └── src/
 │       ├── main.ts                       
 │       ├── App.vue                       # Layout: 项目侧栏 + 主对聊流 + UI展示挂载区 + 审计Drawer

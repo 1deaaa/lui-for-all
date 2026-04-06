@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
@@ -13,18 +13,82 @@ const editingDescId = ref<string | null>(null)
 const editingDescValue = ref('')
 const descSaving = ref(false)
 
+interface ImportFormState {
+  name: string
+  base_url: string
+  openapi_url: string
+  description: string
+  source_path: string
+  username: string
+  password: string
+  login_route_id: string
+  body_field_username: string
+  body_field_password: string
+}
+
+interface ImportPreset {
+  id: string
+  name: string
+  description: string
+  base_url: string
+  openapi_url: string
+  source_path: string
+  login_route_id: string
+  body_field_username: string
+  body_field_password: string
+  available: boolean
+}
+
+function createDefaultImportForm(): ImportFormState {
+  return {
+    name: '',
+    base_url: 'http://localhost:',
+    openapi_url: '',
+    description: '',
+    source_path: '',
+    username: '',
+    password: '',
+    login_route_id: '',
+    body_field_username: 'username',
+    body_field_password: 'password',
+  }
+}
+
+const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
+  {
+    id: 'sample-fastapi',
+    name: 'FastAPI 示例（Docker）',
+    description: '自动填充容器内 FastAPI 示例地址与源码目录。',
+    base_url: 'http://sample-fastapi:8010',
+    openapi_url: 'http://sample-fastapi:8010/openapi.json',
+    source_path: '/app/backend_for_test/fastapi_sample',
+    login_route_id: 'POST:/api/auth/login',
+    body_field_username: 'username',
+    body_field_password: 'password',
+    available: true,
+  },
+  {
+    id: 'sample-node',
+    name: 'Node 示例（Docker）',
+    description: '自动填充容器内 Node 示例地址与源码目录。',
+    base_url: 'http://sample-node:8020',
+    openapi_url: 'http://sample-node:8020/openapi.json',
+    source_path: '/app/backend_for_test/node_sample',
+    login_route_id: 'POST:/api/auth/login',
+    body_field_username: 'username',
+    body_field_password: 'password',
+    available: true,
+  },
+]
+
 // 导入表单
-const importForm = ref({
-  name: '',
-  base_url: 'http://localhost:',
-  openapi_url: '',
-  description: '',
-  source_path: '',
-  username: '',
-  password: '',
-  login_route_id: '',
-  body_field_username: 'username',
-  body_field_password: 'password',
+const importForm = ref<ImportFormState>(createDefaultImportForm())
+
+const importPresets = ref<ImportPreset[]>([])
+const presetLoading = ref(false)
+const selectedPresetId = ref('')
+const selectedPreset = computed(() => {
+  return importPresets.value.find((preset) => preset.id === selectedPresetId.value) || null
 })
 
 const importDialogVisible = ref(false)
@@ -40,22 +104,68 @@ const loginVerifying = ref(false)
 
 // 打开导入对话框
 function openImportDialog() {
-  importForm.value = {
-    name: '',
-    base_url: 'http://localhost:',
-    openapi_url: '',
-    description: '',
-    source_path: '',
-    username: '',
-    password: '',
-    login_route_id: '',
-    body_field_username: 'username',
-    body_field_password: 'password',
-  }
+  importForm.value = createDefaultImportForm()
   connectionStatus.value = 'untested'
   routeOptions.value = []
   loginVerified.value = null
+  selectedPresetId.value = ''
   importDialogVisible.value = true
+  void fetchImportPresets()
+}
+
+function applyImportPresetById(presetId: string) {
+  const preset = importPresets.value.find((item) => item.id === presetId)
+  if (!preset) return
+  if (!preset.available) {
+    ElMessage.warning('该预置在当前环境不可用，请检查示例目录是否存在')
+    return
+  }
+
+  selectedPresetId.value = preset.id
+  importForm.value = {
+    ...importForm.value,
+    name: preset.name,
+    base_url: preset.base_url,
+    openapi_url: preset.openapi_url,
+    source_path: preset.source_path,
+    login_route_id: preset.login_route_id,
+    body_field_username: preset.body_field_username,
+    body_field_password: preset.body_field_password,
+  }
+
+  routeOptions.value = [
+    {
+      route_id: preset.login_route_id,
+      label: 'POST /api/auth/login  · 示例登录接口',
+    },
+  ]
+  loginVerified.value = null
+  connectionStatus.value = 'untested'
+  ElMessage.success(`已填充预置：${preset.name}`)
+}
+
+async function fetchImportPresets() {
+  presetLoading.value = true
+  try {
+    const response = await fetch('/api/projects/import-presets')
+    const data = (await response.json()) as { presets?: ImportPreset[]; detail?: string }
+    if (!response.ok) {
+      throw new Error(data.detail || '获取预置失败')
+    }
+
+    importPresets.value = Array.isArray(data.presets) ? data.presets : []
+    if (!selectedPresetId.value) return
+
+    const stillExists = importPresets.value.some((preset) => preset.id === selectedPresetId.value)
+    if (!stillExists) {
+      selectedPresetId.value = ''
+    }
+  } catch {
+    importPresets.value = FALLBACK_IMPORT_PRESETS
+    ElMessage.warning('未能从后端读取预置，已使用默认示例配置')
+  } finally {
+    presetLoading.value = false
+  }
 }
 
 // 测试连通性
@@ -485,11 +595,34 @@ function getStatusText(status: string): string {
       width="500px"
     >
       <el-form :model="importForm" label-width="100px">
+        <el-form-item label="示例预置">
+          <div class="preset-actions">
+            <el-button
+              v-for="preset in importPresets"
+              :key="preset.id"
+              size="small"
+              :type="selectedPresetId === preset.id ? 'primary' : 'default'"
+              :plain="selectedPresetId !== preset.id"
+              :disabled="!preset.available"
+              @click="applyImportPresetById(preset.id)"
+            >
+              {{ preset.name }}
+            </el-button>
+            <el-button size="small" text :loading="presetLoading" @click="fetchImportPresets">刷新</el-button>
+          </div>
+          <div class="preset-help">
+            点击预置可自动填充 API 地址、OpenAPI 地址与源码目录。
+          </div>
+          <div v-if="selectedPreset" class="preset-selected">
+            <div>{{ selectedPreset.description }}</div>
+            <div class="preset-source">源码目录：{{ selectedPreset.source_path }}</div>
+          </div>
+        </el-form-item>
         <el-form-item label="项目名称" required>
           <el-input v-model="importForm.name" placeholder="请输入项目名称" />
         </el-form-item>
         <el-form-item label="API 地址" required>
-          <el-input v-model="importForm.base_url" placeholder="http://localhost:8000" />
+          <el-input v-model="importForm.base_url" placeholder="http://localhost:6689" />
         </el-form-item>
         <el-form-item label="OpenAPI 地址">
           <el-input v-model="importForm.openapi_url" placeholder="/openapi.json" />
@@ -684,6 +817,39 @@ function getStatusText(status: string): string {
 .url-text {
   font-family: var(--font-mono);
   font-size: 12px;
+  word-break: break-all;
+}
+
+.preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.preset-help {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #737373);
+  line-height: 1.5;
+}
+
+.preset-selected {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px dashed #d4d4d8;
+  background: #fafafa;
+  font-size: 12px;
+  color: var(--color-text-primary, #0f0f0f);
+  line-height: 1.5;
+}
+
+.preset-source {
+  margin-top: 4px;
+  font-family: var(--font-mono);
   word-break: break-all;
 }
 

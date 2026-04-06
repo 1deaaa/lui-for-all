@@ -3,7 +3,7 @@ import httpx
 import json
 import sys
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://127.0.0.1:6689"
 PROJECT_ID = "a76fae98-5b7a-414f-b161-fc4c13a1a809"
 
 async def test_streaming(query: str):
