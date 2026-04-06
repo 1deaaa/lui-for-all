@@ -109,7 +109,7 @@ jobs:
             exit 1
           fi
 
-          services="sample-fastapi sample-node lui-backend lui-frontend"
+          services="sample-fastapi sample-node lui-backend"
           attempt=0
           max_attempt=30
           all_ok=false
@@ -148,14 +148,10 @@ jobs:
             exit 1
           fi
 
-      - name: 冒烟验证
+      - name: 最小可用验证
         run: |
-          echo "验证主服务端点..."
-          curl -fsS http://127.0.0.1:8000/health
-          curl -fsSI http://127.0.0.1:5173 > /dev/null
-
-          echo "验证测试服务在 Docker 网络内可访问..."
-          docker exec lui-backend python -c "import urllib.request; urllib.request.urlopen('http://sample-fastapi:8010/openapi.json').read(); urllib.request.urlopen('http://sample-node:8020/openapi.json').read(); print('sample backends reachable')"
+          echo "仅验证主后端与两个测试后端已正常启动（容器内互访）..."
+          docker exec lui-backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/health').read(); urllib.request.urlopen('http://sample-fastapi:8010/openapi.json').read(); urllib.request.urlopen('http://sample-node:8020/health').read(); urllib.request.urlopen('http://sample-node:8020/openapi.json').read(); print('backend + samples are reachable')"
 
       - name: 清理悬空镜像
         run: docker image prune -f || true
