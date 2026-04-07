@@ -8,6 +8,9 @@ MCP 连接桥 - FastMCP Server
 
 暴露的 MCP Tools：
   - list_projects        列出所有已导入项目
+    - get_project_capabilities  查看项目能力清单（含参数提示）
+    - get_project_routes    查看项目路由目录（来自最新 route_map）
+    - get_task_run_result   查询任务执行结果与产物
   - chat                 发送自然语言消息，流式执行 LangGraph 并返回结果
   - get_session_history  获取会话对话历史
 
@@ -18,6 +21,7 @@ MCP 连接桥 - FastMCP Server
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -42,6 +46,99 @@ mcp = FastMCP(
         "注意：写入类操作（create/update/delete）需要在目标系统配置了相应权限后才能执行。"
     ),
 )
+
+
+def _resolve_response_language(locale: str | None) -> tuple[str, str]:
+    """将 locale 标准化为内部 locale 与提示词语言名。"""
+    normalized = (locale or "").strip().lower().replace("_", "-")
+
+    if normalized.startswith("en"):
+        return "en-US", "English"
+    if normalized.startswith("ja"):
+        return "ja-JP", "日本語"
+    return "zh-CN", "简体中文"
+
+
+def _build_parameter_hints_from_route(route: dict[str, Any]) -> dict[str, Any]:
+    """从 route_map 路由记录提取参数提示（含 request_body_fields）。"""
+    hints: dict[str, Any] = {}
+    all_params = (route.get("parameters") or []) + (route.get("request_body_fields") or [])
+
+    for param in all_params:
+        if not isinstance(param, dict):
+            continue
+        name = param.get("name")
+        if not name:
+            continue
+
+        location = str(param.get("location") or "query")
+        key = name if name not in hints else f"{name}@{location}"
+        hints[key] = {
+            "name": name,
+            "location": location,
+            "type": param.get("type_hint", "str"),
+            "required": bool(param.get("required", False)),
+            "description": param.get("description"),
+            "default": param.get("default"),
+            "example": param.get("example"),
+        }
+
+    return hints
+
+
+def _merge_parameter_hints(
+    capability_hints: dict[str, Any] | None,
+    backed_by_routes: list[dict[str, Any]] | None,
+    route_hints_by_route_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """将 capability 已有 hints 与 route_map hints 合并，优先保留已有字段并补齐缺失项。"""
+    merged = dict(capability_hints or {})
+    if not backed_by_routes:
+        return merged
+
+    existing_names: set[str] = set()
+    for key, value in merged.items():
+        if isinstance(value, dict) and value.get("name"):
+            existing_names.add(str(value.get("name")))
+        else:
+            existing_names.add(str(key).split("@", 1)[0])
+
+    for route in backed_by_routes:
+        if not isinstance(route, dict):
+            continue
+        route_id = route.get("route_id")
+        if not route_id:
+            continue
+
+        route_hints = route_hints_by_route_id.get(str(route_id), {})
+        for hint_key, hint_val in route_hints.items():
+            hint_name = (
+                str(hint_val.get("name"))
+                if isinstance(hint_val, dict) and hint_val.get("name")
+                else str(hint_key).split("@", 1)[0]
+            )
+            if hint_name in existing_names:
+                continue
+            merged[hint_key] = hint_val
+            existing_names.add(hint_name)
+
+    return merged
+
+
+def _build_route_hints_by_route_id(routes: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """为 route_id 建立参数提示索引。"""
+    route_hints_by_route_id: dict[str, dict[str, Any]] = {}
+    if not routes:
+        return route_hints_by_route_id
+
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        route_id = route.get("route_id")
+        if not route_id:
+            continue
+        route_hints_by_route_id[str(route_id)] = _build_parameter_hints_from_route(route)
+    return route_hints_by_route_id
 
 
 # ─────────────────────────────────────────
@@ -73,9 +170,194 @@ async def list_projects() -> list[dict]:
                     "name": p.name,
                     "description": p.description or "",
                     "base_url": p.base_url,
+                    "discovery_status": p.discovery_status,
                     "capability_count": len(caps),
                 }
             )
+        return result
+
+
+@mcp.tool(
+    name="get_project_capabilities",
+    description=(
+        "获取指定项目的能力清单，包含安全等级、路由绑定与参数提示。"
+        "用于在调用 chat 前做精细化规划。"
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": False},
+)
+async def get_project_capabilities(
+    project_id: Annotated[str, Field(description="目标项目 ID")],
+    limit: Annotated[int, Field(description="最多返回条数", ge=1, le=500)] = 200,
+    include_parameter_hints: Annotated[
+        bool,
+        Field(description="是否返回 parameter_hints（建议开启）"),
+    ] = True,
+) -> dict[str, Any]:
+    """返回项目能力目录，便于外部 AI 预先了解可调用范围。"""
+    from app.db import async_session
+    from app.repositories.project_repository import ProjectRepository
+
+    async with async_session() as db:
+        repo = ProjectRepository(db)
+        project = await repo.get_by_id(project_id)
+        if not project:
+            raise ValueError(f"项目不存在：{project_id}")
+
+        caps = await repo.list_capabilities(project_id)
+        route_map = await repo.get_latest_route_map(project_id)
+        route_hints_by_route_id = _build_route_hints_by_route_id(
+            route_map.routes if route_map else None,
+        )
+
+        items: list[dict[str, Any]] = []
+        for c in caps[:limit]:
+            item: dict[str, Any] = {
+                "capability_id": c.capability_id,
+                "name": c.name,
+                "description": c.description,
+                "domain": c.domain,
+                "safety_level": c.safety_level,
+                "permission_level": c.permission_level,
+                "requires_confirmation": c.requires_confirmation,
+                "backed_by_routes": c.backed_by_routes,
+                "best_modalities": c.best_modalities,
+            }
+            if include_parameter_hints:
+                item["parameter_hints"] = _merge_parameter_hints(
+                    c.parameter_hints,
+                    c.backed_by_routes,
+                    route_hints_by_route_id,
+                )
+            items.append(item)
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "count": len(items),
+            "capabilities": items,
+        }
+
+
+@mcp.tool(
+    name="get_project_routes",
+    description="读取指定项目最新路由地图，支持按 method 与关键词过滤。",
+    annotations={"readOnlyHint": True, "openWorldHint": False},
+)
+async def get_project_routes(
+    project_id: Annotated[str, Field(description="目标项目 ID")],
+    method: Annotated[
+        str | None,
+        Field(description="可选，按 HTTP 方法过滤，如 GET/POST"),
+    ] = None,
+    keyword: Annotated[
+        str | None,
+        Field(description="可选，按 path/summary/route_id 模糊匹配"),
+    ] = None,
+    limit: Annotated[int, Field(description="最多返回条数", ge=1, le=1000)] = 300,
+) -> dict[str, Any]:
+    """返回项目路由目录，便于外部 AI 做精细路由选择。"""
+    from app.db import async_session
+    from app.repositories.project_repository import ProjectRepository
+
+    async with async_session() as db:
+        repo = ProjectRepository(db)
+        project = await repo.get_by_id(project_id)
+        if not project:
+            raise ValueError(f"项目不存在：{project_id}")
+
+        route_map = await repo.get_latest_route_map(project_id)
+        if not route_map:
+            return {
+                "project_id": project_id,
+                "project_name": project.name,
+                "route_map_version": None,
+                "count": 0,
+                "routes": [],
+            }
+
+        keyword_lc = (keyword or "").strip().lower()
+        method_uc = (method or "").strip().upper()
+
+        routes: list[dict[str, Any]] = []
+        for route in route_map.routes or []:
+            if not isinstance(route, dict):
+                continue
+
+            r_method = str(route.get("method") or "").upper()
+            r_path = str(route.get("path") or "")
+            r_route_id = str(route.get("route_id") or "")
+            r_summary = str(route.get("summary") or "")
+
+            if method_uc and r_method != method_uc:
+                continue
+
+            if keyword_lc:
+                haystack = f"{r_route_id} {r_path} {r_summary}".lower()
+                if keyword_lc not in haystack:
+                    continue
+
+            routes.append(
+                {
+                    "route_id": r_route_id,
+                    "method": r_method,
+                    "path": r_path,
+                    "summary": r_summary,
+                    "parameters": route.get("parameters") or [],
+                    "request_body_fields": route.get("request_body_fields") or [],
+                }
+            )
+
+            if len(routes) >= limit:
+                break
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "route_map_version": route_map.version,
+            "count": len(routes),
+            "routes": routes,
+        }
+
+
+@mcp.tool(
+    name="get_task_run_result",
+    description="按 task_run_id 查询任务执行结果、状态与关键产物。",
+    annotations={"readOnlyHint": True, "openWorldHint": False},
+)
+async def get_task_run_result(
+    task_run_id: Annotated[str, Field(description="任务 ID（由 chat 工具返回）")],
+    include_artifacts: Annotated[
+        bool,
+        Field(description="是否返回 execution_artifacts"),
+    ] = True,
+    artifact_limit: Annotated[int, Field(description="产物返回上限", ge=1, le=500)] = 100,
+) -> dict[str, Any]:
+    """查询任务执行详情，便于外部系统做二次编排或审计。"""
+    from app.db import async_session
+    from app.repositories.task_repository import TaskRepository
+
+    async with async_session() as db:
+        task = await TaskRepository(db).get_by_id(task_run_id)
+        if not task:
+            raise ValueError(f"任务不存在：{task_run_id}")
+
+        result: dict[str, Any] = {
+            "task_run_id": task.id,
+            "session_id": task.session_id,
+            "project_id": task.project_id,
+            "status": task.status,
+            "user_message": task.user_message,
+            "summary_text": task.summary_text,
+            "error": task.error,
+            "trace_id": task.trace_id,
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            "ui_blocks_count": len(task.ui_blocks or []),
+        }
+
+        if include_artifacts:
+            result["execution_artifacts"] = (task.execution_artifacts or [])[:artifact_limit]
         return result
 
 
@@ -139,6 +421,10 @@ async def chat(
         str | None,
         Field(description="可选，已有会话 ID，用于保持多轮对话上下文"),
     ] = None,
+    locale: Annotated[
+        str | None,
+        Field(description="可选，响应语言（zh-CN/en-US/ja-JP）"),
+    ] = None,
 ) -> dict:
     """向项目发送自然语言消息，执行 LangGraph Agentic Loop，返回 AI 汇总结果"""
     from app.db import async_session as db_session
@@ -157,9 +443,11 @@ async def chat(
             "警告：只有在您确信接入的 AI Agent 是安全、受控的情况下才可以执行此操作！"
         )
 
+    response_locale, response_language = _resolve_response_language(locale)
+
     await ctx.report_progress(0, 100)
     short_msg = message[:60] + ("..." if len(message) > 60 else "")
-    await ctx.log("info", f"📨 收到任务：{short_msg}")
+    await ctx.info(f"📨 收到任务：{short_msg}")
 
     # ── 1. 验证项目、创建或复用会话 ──
     thread_id: str
@@ -223,11 +511,15 @@ async def chat(
         chat_history = [
             {"role": m.role, "content": m.content}
             for m in all_msgs
-            if m.id != user_message_id
+            if m.id != user_message_id and m.role in ("user", "assistant")
         ]
 
         # 加载项目能力图谱
         caps = await project_repo.list_capabilities(project_id)
+        route_map = await project_repo.get_latest_route_map(project_id)
+        route_hints_by_route_id = _build_route_hints_by_route_id(
+            route_map.routes if route_map else None,
+        )
         available_capabilities: list[dict] = [
             {
                 "capability_id": c.capability_id,
@@ -241,7 +533,11 @@ async def chat(
                 "data_sensitivity": c.data_sensitivity,
                 "best_modalities": c.best_modalities,
                 "requires_confirmation": c.requires_confirmation,
-                "parameter_hints": c.parameter_hints,
+                "parameter_hints": _merge_parameter_hints(
+                    c.parameter_hints,
+                    c.backed_by_routes,
+                    route_hints_by_route_id,
+                ),
             }
             for c in caps
         ]
@@ -259,16 +555,15 @@ async def chat(
         await db.commit()
 
     await ctx.report_progress(10, 100)
-    await ctx.log(
-        "info",
-        f"📋 项目「{proj_name}」已加载，共 {len(available_capabilities)} 个能力，开始执行…",
-    )
+    await ctx.info(f"📋 项目「{proj_name}」已加载，共 {len(available_capabilities)} 个能力，开始执行…")
 
     # ── 2. 构建 LangGraph 初始状态 ──
     initial_state: dict[str, Any] = {
         "session_id": session_id,
         "project_id": project_id,
         "trace_id": trace_id,
+        "response_locale": response_locale,
+        "response_language": response_language,
         "project_base_url": proj_base_url,
         "project_username": proj_username,
         "project_password": proj_password,
@@ -318,7 +613,7 @@ async def chat(
                     msg_txt = payload.get("message", "")
                     await ctx.report_progress(max(pct, 10), 100)
                     if msg_txt:
-                        await ctx.log("info", msg_txt)
+                        await ctx.info(msg_txt)
 
                 elif ev == "agentic_iteration":
                     iteration = payload.get("iteration", 0)
@@ -326,17 +621,17 @@ async def chat(
                     log_msg = f"🔄 第 {iteration} 轮推理"
                     if think:
                         log_msg += f"：{think[:80]}"
-                    await ctx.log("info", log_msg)
+                    await ctx.info(log_msg)
 
                 elif ev == "tool_started":
                     route = payload.get("route_id", "")
                     title = payload.get("title", "")
-                    await ctx.log("info", f"→ 调用接口：{route}  {title}")
+                    await ctx.info(f"→ 调用接口：{route}  {title}")
 
                 elif ev == "tool_completed":
                     route = payload.get("route_id", "")
                     sc = payload.get("status_code")
-                    await ctx.log("info", f"← 完成：{route}（HTTP {sc}）")
+                    await ctx.info(f"← 完成：{route}（HTTP {sc}）")
                     tool_calls_log.append({"route_id": route, "status_code": sc})
 
                 elif ev == "write_approval_required":
@@ -347,10 +642,7 @@ async def chat(
                         rid = item.get("route_id", "")
                         reason = item.get("reasoning", "")
                         skipped_writes.append({"route_id": rid, "reasoning": reason})
-                        await ctx.log(
-                            "warning",
-                            f"⚠️ 写入操作需人工审批（MCP 模式已跳过）：{rid}  {reason}",
-                        )
+                        await ctx.warning(f"⚠️ 写入操作需人工审批（MCP 模式已跳过）：{rid}  {reason}")
 
             elif stream_type == "updates":
                 for node_name, node_update in payload.items():
@@ -372,7 +664,7 @@ async def chat(
 
     # ── 4. 若图因 interrupt 暂停，自动以拒绝方式恢复（MCP 安全策略）──
     if graph_interrupted:
-        await ctx.log("info", "⚙️ 写入操作审批跳过，以拒绝模式恢复图执行…")
+        await ctx.info("⚙️ 写入操作审批跳过，以拒绝模式恢复图执行…")
         try:
             from langgraph.types import Command
 
@@ -411,10 +703,19 @@ async def chat(
 
         task_run = await task_repo.get_by_id(task_run_id)
         if task_run:
+            artifacts = final_state.get("execution_artifacts") or []
+            task_run.execution_artifacts = [
+                artifact.model_dump() if hasattr(artifact, "model_dump") else artifact
+                for artifact in artifacts
+            ]
+            task_run.ui_blocks = final_state.get("ui_blocks") or []
+            task_run.normalized_intent = final_state.get("normalized_intent")
             task_run.summary_text = summary
             task_run.status = "failed" if error else "completed"
             if error:
                 task_run.error = error
+            else:
+                task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
 
         if summary and not error:
             assistant_msg = Message(
@@ -429,7 +730,7 @@ async def chat(
         await db.commit()
 
     await ctx.report_progress(100, 100)
-    await ctx.log("info", "✅ 任务完成")
+    await ctx.info("✅ 任务完成")
 
     if error:
         raise RuntimeError(f"任务执行遇到错误：{error}")
