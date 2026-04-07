@@ -149,6 +149,7 @@ def _build_route_hints_by_route_id(routes: list[dict[str, Any]] | None) -> dict[
     name="list_projects",
     description=(
         "列出所有已导入到 LUI-for-All 的项目，包含项目 ID、名称、描述和能力数量。"
+        "这些项目由LUI-for-All内置的管理 AI 托管，旨在绕过复杂的 GUI，实现高效管理项目。"
         "在调用 chat 工具前，应先调用此工具获取有效的 project_id。"
     ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
@@ -180,7 +181,7 @@ async def list_projects() -> list[dict]:
 @mcp.tool(
     name="get_project_capabilities",
     description=(
-        "获取指定项目的能力清单，包含安全等级、路由绑定与参数提示。"
+        "获取指定项目的管理AI的能力清单，包含可调用的路由安全等级、路由绑定与参数提示。"
         "用于在调用 chat 前做精细化规划。"
     ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
@@ -400,7 +401,7 @@ async def get_session_history(
 @mcp.tool(
     name="chat",
     description=(
-        "向指定项目发送自然语言消息。系统将自动：\n"
+        "向指定项目发送自然语言消息，项目内的管理 AI 将和你交互：：\n"
         "1. 理解你的意图\n"
         "2. 从项目能力图谱中选择合适的 API 接口\n"
         "3. 执行一个或多个 HTTP 调用（多轮 ReAct 循环）\n"
