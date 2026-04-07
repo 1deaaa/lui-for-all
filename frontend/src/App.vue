@@ -1,13 +1,29 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useWindowSize } from '@vueuse/core'
 import { ChatDotRound, Folder, Document, Setting } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import en from 'element-plus/es/locale/lang/en'
+import ja from 'element-plus/es/locale/lang/ja'
 import BrandLogo from '@/components/BrandLogo.vue'
+import { type AppLocale } from '@/i18n'
+import { updateDocumentTitle } from '@/router'
 
 const route = useRoute()
 const projectStore = useProjectStore()
+const { t, locale } = useI18n()
+const currentLocale = computed(() => locale.value as AppLocale)
+
+const elementPlusLocaleMap: Record<AppLocale, typeof zhCn> = {
+  'zh-CN': zhCn,
+  'en-US': en,
+  'ja-JP': ja,
+}
+
+const elementPlusLocale = computed(() => elementPlusLocaleMap[currentLocale.value] || zhCn)
 
 // 响应式窗口
 const { width } = useWindowSize()
@@ -20,73 +36,85 @@ const drawerVisible = ref(false)
 const activeMenu = computed(() => route.path)
 
 // 供 Menu 使用的核心导航结构
-const menuItems = [
-  { index: '/', icon: ChatDotRound, title: '对话' },
-  { index: '/projects', icon: Folder, title: '项目' },
-  { index: '/audit', icon: Document, title: '审计' },
-  { index: '/settings', icon: Setting, title: '设置' }
-]
+const menuItems = computed(() => [
+  { index: '/', icon: ChatDotRound, title: t('routes.chat') },
+  { index: '/projects', icon: Folder, title: t('routes.projects') },
+  { index: '/audit', icon: Document, title: t('routes.audit') },
+  { index: '/settings', icon: Setting, title: t('routes.settings') },
+])
+
+watch(
+  [() => route.fullPath, () => locale.value],
+  () => {
+    updateDocumentTitle(route.meta.titleKey as string | undefined)
+  },
+  { immediate: true },
+)
 
 projectStore.fetchProjects()
 </script>
 
 <template>
-  <el-container class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
-    <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏) -->
-    <div v-if="isMobile && route.path !== '/'" class="mobile-navbar">
-      <div class="logo-mobile" @click="drawerVisible = true" style="cursor: pointer;">
-        <BrandLogo :size="24" />
+  <el-config-provider :locale="elementPlusLocale">
+    <el-container class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
+      <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏) -->
+      <div v-if="isMobile && route.path !== '/'" class="mobile-navbar">
+        <div class="logo-mobile" @click="drawerVisible = true" style="cursor: pointer;">
+          <BrandLogo :size="24" />
+        </div>
       </div>
-    </div>
 
-    <el-drawer
-      v-model="drawerVisible"
-      direction="ltr"
-      size="180px"
-      :with-header="false"
-      class="mobile-drawer"
-    >
-      <div class="logo drawer-logo">
-        <BrandLogo :size="24" style="margin-right:8px" />LUI-for-All
-      </div>
-      <el-menu :default-active="activeMenu" router class="drawer-menu" @select="drawerVisible = false">
-        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <template #title>{{ item.title }}</template>
-        </el-menu-item>
-      </el-menu>
-    </el-drawer>
-
-    <!-- 桌面侧边栏 (极简固定) -->
-    <el-aside v-if="!isMobile" width="64px" class="app-aside">
-      <div class="logo">
-        <BrandLogo :size="30" />
-      </div>
-      
-      <el-menu
-        :default-active="activeMenu"
-        :collapse="true"
-        router
-        class="app-menu flat-menu"
+      <el-drawer
+        v-model="drawerVisible"
+        direction="ltr"
+        size="180px"
+        :with-header="false"
+        class="mobile-drawer"
       >
-        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
-          <el-icon><component :is="item.icon" /></el-icon>
-          <template #title>{{ item.title }}</template>
-        </el-menu-item>
-      </el-menu>
-    </el-aside>
-    
-    <!-- 主内容区 -->
-    <el-container class="main-container">
-      <el-main class="app-main">
-        <router-view v-slot="{ Component }">
-          <transition name="fade-slide" mode="out-in">
-            <component :is="Component" @open-drawer="drawerVisible = true" />
-          </transition>
-        </router-view>
-      </el-main>
+        <div class="drawer-content">
+          <div class="logo drawer-logo">
+            <BrandLogo :size="24" style="margin-right:8px" />{{ t('app.name') }}
+          </div>
+          <el-menu :default-active="activeMenu" router class="drawer-menu" @select="drawerVisible = false">
+            <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
+              <el-icon><component :is="item.icon" /></el-icon>
+              <template #title>{{ item.title }}</template>
+            </el-menu-item>
+          </el-menu>
+        </div>
+      </el-drawer>
+
+      <!-- 桌面侧边栏 (极简固定) -->
+      <el-aside v-if="!isMobile" width="64px" class="app-aside">
+        <div class="logo">
+          <BrandLogo :size="30" />
+        </div>
+
+        <el-menu
+          :default-active="activeMenu"
+          :collapse="true"
+          router
+          class="app-menu flat-menu"
+        >
+          <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <template #title>{{ item.title }}</template>
+          </el-menu-item>
+        </el-menu>
+      </el-aside>
+
+      <!-- 主内容区 -->
+      <el-container class="main-container">
+        <el-main class="app-main">
+          <router-view v-slot="{ Component }">
+            <transition name="fade-slide" mode="out-in">
+              <component :is="Component" @open-drawer="drawerVisible = true" />
+            </transition>
+          </router-view>
+        </el-main>
+      </el-container>
     </el-container>
-  </el-container>
+  </el-config-provider>
 </template>
 
 <style>
@@ -223,6 +251,7 @@ html, body, #app {
   display: flex;
   align-items: center;
 }
+
 .logo-mobile .logo-text {
   font-weight: 800;
   font-size: 1.2rem;
@@ -270,6 +299,12 @@ html, body, #app {
   border-bottom: 1px solid var(--border-color-light);
   font-size: 1.2rem;
   font-weight: bold;
+}
+
+.drawer-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ================= 组件复写: 平面直角菜单 ================= */

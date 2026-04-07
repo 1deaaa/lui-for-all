@@ -2,12 +2,14 @@
 import { ref, computed, watch } from 'vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-import { Check, Close } from '@element-plus/icons-vue'
+import { Check, Close, Search } from '@element-plus/icons-vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 
 import { useProjectStore } from '@/stores/project'
 
 const projectStore = useProjectStore()
+const { t } = useI18n()
 
 const projectId = computed(() => projectStore.currentProject?.id || '')
 const routeMap = computed(() => projectStore.currentRouteMap)
@@ -81,21 +83,25 @@ async function handlePermissionChange(cap: any, newPermission: string) {
     await axios.patch(`/api/projects/${projectId.value}/capabilities/${cap.capability_id}`, {
       permission_level: newPermission
     })
-    ElMessage.success('权限更新成功')
+    ElMessage.success(t('routeMap.messages.permissionUpdated'))
     cap.permission_level = newPermission
   } catch (err: any) {
-    ElMessage.error('更新失败: ' + (err?.response?.data?.detail || err.message))
+    ElMessage.error(
+      t('routeMap.messages.updateFailed', {
+        reason: err?.response?.data?.detail || err.message || t('common.unknown'),
+      }),
+    )
   } finally {
     updatingMap.value[cap.capability_id] = false
   }
 }
 
-const permissionOptions = [
-  { value: 'none', label: '无权限控制' },
-  { value: 'authenticated', label: '需登录 (Authenticated)' },
-  { value: 'operator', label: '操作员 (Operator)' },
-  { value: 'admin', label: '管理员 (Admin)' }
-]
+const permissionOptions = computed(() => [
+  { value: 'none', label: t('routeMap.permissions.none') },
+  { value: 'authenticated', label: t('routeMap.permissions.authenticated') },
+  { value: 'operator', label: t('routeMap.permissions.operator') },
+  { value: 'admin', label: t('routeMap.permissions.admin') },
+])
 
 function getRowClassName({ row }: { row: { route_id: string } }): string {
   return getAssignedCapability(row.route_id) ? 'identified-row' : 'ignored-row'
@@ -111,11 +117,11 @@ function getRowClassName({ row }: { row: { route_id: string } }): string {
       class="analyzer-trigger-btn custom-analyzer-btn"
       :disabled="isLoading || !isReady"
       @click="openDrawer"
-      :title="isLoading ? '正在预加载项目全量接口数据...' : (isReady ? '查看当前项目全量接口映射图谱' : '项目正准备中...无接口数据')"
+      :title="isLoading ? t('routeMap.trigger.titleLoading') : (isReady ? t('routeMap.trigger.titleReady') : t('routeMap.trigger.titleNoData'))"
     >
       <Icon v-if="isLoading" icon="solar:spinner-bold-duotone" class="btn-icon is-loading" />
       <Icon v-else icon="solar:route-bold-duotone" class="btn-icon" />
-      <span>{{ isLoading ? '预加载中' : '查看路由图谱' }}</span>
+      <span>{{ isLoading ? t('routeMap.trigger.loading') : t('routeMap.trigger.open') }}</span>
     </el-button>
 
     <el-drawer
@@ -129,7 +135,7 @@ function getRowClassName({ row }: { row: { route_id: string } }): string {
         <div class="search-bar">
           <el-input 
             v-model="searchKeyword" 
-            placeholder="搜索：输入 URL 路径、方法类型或业务摘要..."
+            :placeholder="t('routeMap.searchPlaceholder')"
             clearable
             class="top-search-input"
           >
@@ -144,21 +150,21 @@ function getRowClassName({ row }: { row: { route_id: string } }): string {
             <Icon icon="solar:route-bold-duotone" class="stat-icon" />
             <div class="stat-info">
               <span class="stat-num">{{ routeMap?.routes?.length || 0 }}</span>
-              <span class="stat-label">总路由数</span>
+              <span class="stat-label">{{ t('routeMap.stats.totalRoutes') }}</span>
             </div>
           </div>
           <div class="stat-box success-box">
             <Icon icon="solar:brain-bold-duotone" class="stat-icon" />
             <div class="stat-info">
               <span class="stat-num">{{ identifiedRouteMap.size }}</span>
-              <span class="stat-label">AI 已识别调度</span>
+              <span class="stat-label">{{ t('routeMap.stats.identified') }}</span>
             </div>
           </div>
           <div class="stat-box unknown-box">
             <Icon icon="solar:ghost-bold-duotone" class="stat-icon" />
             <div class="stat-info">
               <span class="stat-num">{{ (routeMap?.routes?.length || 0) - identifiedRouteMap.size }}</span>
-              <span class="stat-label">未识别/被忽略</span>
+              <span class="stat-label">{{ t('routeMap.stats.ignored') }}</span>
             </div>
           </div>
         </div>
@@ -175,44 +181,44 @@ function getRowClassName({ row }: { row: { route_id: string } }): string {
           <template #default="{ row }">
             <div class="expanded-params-container">
               <div v-if="row.parameters?.length > 0" class="param-section">
-                <div class="param-title">URL / Query 参数:</div>
+                <div class="param-title">{{ t('routeMap.params.urlQuery') }}</div>
                 <div v-for="p in row.parameters" :key="p.name" class="param-item">
                   <span class="param-name">{{ p.name }}</span>
                   <el-tag size="small" type="info" class="param-type">{{ p.type_hint }}</el-tag>
-                  <span v-if="p.required" class="param-req">必填</span>
-                  <span class="param-desc">{{ p.description || p.example || '无描述' }}</span>
+                  <span v-if="p.required" class="param-req">{{ t('routeMap.params.required') }}</span>
+                  <span class="param-desc">{{ p.description || p.example || t('routeMap.params.noDescription') }}</span>
                 </div>
               </div>
               <div v-if="row.request_body_fields?.length > 0" class="param-section">
-                <div class="param-title">Body 请求架构 ({{ row.request_body_ref }}):</div>
+                <div class="param-title">{{ t('routeMap.params.bodySchema', { ref: row.request_body_ref }) }}</div>
                 <div v-for="p in row.request_body_fields" :key="p.name" class="param-item">
                   <span class="param-name">{{ p.name }}</span>
                   <el-tag size="small" type="info" class="param-type">{{ p.type_hint }}</el-tag>
-                  <span v-if="p.required" class="param-req">必填</span>
-                  <span class="param-desc">{{ p.description || p.example || '无描述' }}</span>
+                  <span v-if="p.required" class="param-req">{{ t('routeMap.params.required') }}</span>
+                  <span class="param-desc">{{ p.description || p.example || t('routeMap.params.noDescription') }}</span>
                 </div>
               </div>
               <div v-if="!row.parameters?.length && !row.request_body_fields?.length" class="param-empty">
-                此路由目前无需任何显式参数
+                {{ t('routeMap.params.noExplicitParams') }}
               </div>
             </div>
           </template>
         </el-table-column>
         
-        <el-table-column label="AI 识别状态" width="160">
+        <el-table-column :label="t('routeMap.columns.aiStatus')" width="160">
           <template #default="{ row }">
             <div class="status-cell" v-if="getAssignedCapability(row.route_id)">
               <el-icon class="status-icon success" size="18"><Check /></el-icon>
-              <span class="status-text success">AI已接管</span>
+              <span class="status-text success">{{ t('routeMap.status.identified') }}</span>
             </div>
             <div class="status-cell" v-else>
               <el-icon class="status-icon ignore" size="18"><Close /></el-icon>
-              <span class="status-text ignore">AI未发现</span>
+              <span class="status-text ignore">{{ t('routeMap.status.ignored') }}</span>
             </div>
           </template>
         </el-table-column>
         
-        <el-table-column label="操作权限 (仅纳管项可配)" width="200">
+        <el-table-column :label="t('routeMap.columns.permission')" width="200">
           <template #default="{ row }">
             <template v-if="getAssignedCapability(row.route_id)">
               <div class="select-wrapper">
@@ -232,21 +238,21 @@ function getRowClassName({ row }: { row: { route_id: string } }): string {
                 </el-select>
               </div>
             </template>
-            <span v-else class="ignore-hint">- 忽略项无权限 -</span>
+            <span v-else class="ignore-hint">{{ t('routeMap.permissions.ignoredHint') }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column prop="method" label="方 法" width="100">
+        <el-table-column prop="method" :label="t('routeMap.columns.method')" width="100">
           <template #default="{ row }">
             <el-tag size="small" :type="getMethodType(row.method)" class="method-tag">{{ row.method }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="path" label="路径 (Path)" min-width="260" show-overflow-tooltip>
+        <el-table-column prop="path" :label="t('routeMap.columns.path')" min-width="260" show-overflow-tooltip>
           <template #default="{ row }">
             <code class="path-text">{{ row.path }}</code>
           </template>
         </el-table-column>
-        <el-table-column prop="summary" label="业务摘要" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="summary" :label="t('routeMap.columns.summary')" min-width="200" show-overflow-tooltip />
           </el-table>
         </div>
 

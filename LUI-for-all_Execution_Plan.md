@@ -1,5 +1,9 @@
 # 项目完整执行计划 (MVP版)
 
+> 文档语言：**简体中文** | [English](LUI-for-all_Execution_Plan.en-US.md) | [日本語](LUI-for-all_Execution_Plan.ja-JP.md)
+>
+> README： [简体中文](README.md) | [English](README.en-US.md) | [日本語](README.ja-JP.md)
+
 ## 一、 项目愿景与核心需求
 
 目标是将现有的前后端项目，从以 GUI 为主的交互方式，提供一套独立的以 LUI（自然语言用户界面）为主的交互方式。

@@ -171,6 +171,7 @@ def _build_messages(state: GraphState) -> list[dict]:
     system_prompt = AGENTIC_LOOP_SYSTEM_PROMPT.format(
         project_description=state.get("project_description") or "未知",
         capability_list=_build_capability_list(caps),
+        response_language=state.get("response_language") or "简体中文",
     )
 
     messages: list[dict] = [{"role": "system", "content": system_prompt}]

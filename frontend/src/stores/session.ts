@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import axios from 'axios'
+import { getLocale, translate } from '@/i18n'
 import type {
   ApprovalBlock,
   Message,
@@ -12,6 +13,8 @@ import type {
 } from '@/vite-env.d'
 
 export const useSessionStore = defineStore('session', () => {
+  const t = translate
+
   const currentSession = ref<Session | null>(null)
   const historyList = ref<Session[]>([])
   const historyLoading = ref(false)
@@ -64,7 +67,7 @@ export const useSessionStore = defineStore('session', () => {
       runtimeEvents.value = []
       return currentSession.value
     } catch (e: any) {
-      error.value = e.message || '创建会话失败'
+      error.value = e.message || t('sessionStore.createSessionFailed')
       console.error('创建会话失败:', e)
       throw e
     } finally {
@@ -74,7 +77,7 @@ export const useSessionStore = defineStore('session', () => {
 
   async function sendMessage(content: string) {
     if (!currentSession.value) {
-      error.value = '没有活动会话'
+      error.value = t('sessionStore.noActiveSession')
       return
     }
 
@@ -120,7 +123,7 @@ export const useSessionStore = defineStore('session', () => {
       startEventStream(response.data.task_run_id)
       return response.data
     } catch (e: any) {
-      error.value = e.message || '发送消息失败'
+      error.value = e.message || t('sessionStore.sendMessageFailed')
       console.error('发送消息失败:', e)
       throw e
     } finally {
@@ -147,21 +150,28 @@ export const useSessionStore = defineStore('session', () => {
       eventSource.value.close()
     }
 
-    let url = `/api/sessions/${currentSession.value?.id}/events/stream?task_run_id=${taskRunId}`
+    const params = new URLSearchParams({
+      task_run_id: taskRunId,
+      locale: getLocale(),
+    })
+
     if (resumeOpts) {
-      url += `&resume_write_id=${resumeOpts.resumeWriteId || ''}&resume_action=${resumeOpts.resumeAction}`
+      params.set('resume_write_id', resumeOpts.resumeWriteId || '')
+      params.set('resume_action', resumeOpts.resumeAction)
       if (resumeOpts.resumeBatchId) {
-        url += `&resume_batch_id=${resumeOpts.resumeBatchId}`
+        params.set('resume_batch_id', resumeOpts.resumeBatchId)
       }
       if (resumeOpts.approvedIds) {
-        url += `&resume_approved_ids=${resumeOpts.approvedIds.join(',')}`
+        params.set('resume_approved_ids', resumeOpts.approvedIds.join(','))
       }
     }
+
+    const url = `/api/sessions/${currentSession.value?.id}/events/stream?${params.toString()}`
     
     eventSource.value = new EventSource(url)
     isStreaming.value = true
     progressPercent.value = 0
-    progressMessage.value = resumeOpts ? 'AI 正在执行已批准操作...' : 'AI 已接收请求，正在启动执行链路'
+    progressMessage.value = resumeOpts ? t('sessionStore.approvedActionRunning') : t('sessionStore.requestAccepted')
     runtimeEvents.value = []
     if (!resumeOpts) {
       // 全新任务：清空临时状态（uiBlocks不清，审批记录已嵌入messages）
@@ -233,7 +243,7 @@ export const useSessionStore = defineStore('session', () => {
       )
 
       if (!isExpectedPause && !error.value) {
-        error.value = 'SSE 连接中断，请检查后端服务'
+        error.value = t('sessionStore.sseDisconnected')
       }
 
       if (eventSource.value) {
@@ -267,7 +277,7 @@ export const useSessionStore = defineStore('session', () => {
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'running' }
           : currentTaskRun.value
-        progressMessage.value = '任务开始执行'
+        progressMessage.value = t('sessionStore.taskStarted')
         streamingMessageId.value = null
         break
 
@@ -316,11 +326,11 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'task_progress':
         progressPercent.value = Math.min(100, Math.max(0, Math.round((event.progress || 0) * 100)))
-        progressMessage.value = event.message || 'AI 处理中'
+        progressMessage.value = event.message || t('sessionStore.progressDefault')
         pushRuntimeEvent({
           id: `progress-${Date.now()}-${Math.random()}`,
           type: 'progress',
-          title: event.node_name || '执行进度更新',
+          title: event.node_name || t('sessionStore.eventTitleUnknown'),
           detail: event.message,
           status: 'running',
           created_at: new Date().toISOString(),
@@ -331,8 +341,8 @@ export const useSessionStore = defineStore('session', () => {
         pushRuntimeEvent({
           id: `node-${Date.now()}-${Math.random()}`,
           type: 'node_completed',
-          title: `节点完成：${event.node_name}`,
-          detail: `当前整体进度 ${Math.round((event.progress || 0) * 100)}%`,
+          title: t('sessionStore.progressNodeDone', { node: event.node_name || '-' }),
+          detail: t('sessionStore.progressOverall', { progress: Math.round((event.progress || 0) * 100) }),
           status: 'completed',
           created_at: new Date().toISOString(),
         })
@@ -342,7 +352,7 @@ export const useSessionStore = defineStore('session', () => {
         pushRuntimeEvent({
           id: `tool-start-${Date.now()}-${Math.random()}`,
           type: 'tool_started',
-          title: event.title || '开始调用工具',
+          title: event.title || t('sessionStore.toolStarted'),
           detail: event.detail,
           status: 'running',
           created_at: new Date().toISOString(),
@@ -373,7 +383,7 @@ export const useSessionStore = defineStore('session', () => {
         pushRuntimeEvent({
           id: `tool-done-${Date.now()}-${Math.random()}`,
           type: 'tool_completed',
-          title: event.title || '工具调用完成',
+          title: event.title || t('sessionStore.toolCompleted'),
           detail: event.detail,
           status: sc && sc >= 400 ? 'failed' : 'completed',
           status_code: sc,
@@ -409,7 +419,7 @@ export const useSessionStore = defineStore('session', () => {
           ? { ...currentTaskRun.value, status: 'completed', summary_text: event.summary }
           : currentTaskRun.value
         progressPercent.value = 100
-        progressMessage.value = '任务已完成'
+        progressMessage.value = t('sessionStore.taskCompleted')
         isStreaming.value = false
         streamingMessageId.value = null
         streamingThoughtId.value = null
@@ -432,8 +442,13 @@ export const useSessionStore = defineStore('session', () => {
           batch_id: (event as any).batch_id,
           items: (event as any).items,
           approval_id: (event as any).write_id,
-          title: `需要审核写入操作: ${(event as any).method || ''} ${(event as any).path || ''}`,
-          description: (event as any).reasoning || '此操作涉及数据修改，请人工审核。',
+          title:
+            (event as any).title ||
+            t('confirmPanel.messages.defaultTitle', {
+              method: (event as any).method || '',
+              path: (event as any).path || '',
+            }),
+          description: (event as any).reasoning || t('confirmPanel.messages.defaultDescription'),
           risk_level: (event as any).safety_level === 'critical' ? 'critical' : 'warning',
           route_id: (event as any).route_id,
           parameters: (event as any).parameters,
@@ -459,8 +474,8 @@ export const useSessionStore = defineStore('session', () => {
         pushRuntimeEvent({
           id: `iteration-${Date.now()}-${Math.random()}`,
           type: 'progress',
-          title: `开始第 ${(event as any).iteration} 轮迭代`,
-          detail: 'AI 正在自主规划与执行下一步行动...',
+          title: t('sessionStore.iterationStarted', { iteration: (event as any).iteration }),
+          detail: t('sessionStore.iterationDetail'),
           status: 'running',
           created_at: new Date().toISOString()
         })
@@ -477,8 +492,8 @@ export const useSessionStore = defineStore('session', () => {
           approvalBlock: {
             block_type: 'confirm_panel',
             approval_id: (event as any).approval_id,
-            title: (event as any).title || '操作需要确认',
-            description: (event as any).description || '此操作涉及敏感权限，请核实后批准。',
+            title: (event as any).title || t('sessionStore.approvalTitle'),
+            description: (event as any).description || t('sessionStore.approvalDescription'),
             risk_level: (event as any).risk_level || 'warning',
           }
         })
@@ -489,7 +504,7 @@ export const useSessionStore = defineStore('session', () => {
         if ((event as any).error_code === 'APPROVAL_REQUIRED') {
             break
         }
-        error.value = event.error_message || '发生未知错误'
+        error.value = event.error_message || t('sessionStore.taskError')
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'failed', error: error.value || undefined }
           : currentTaskRun.value
@@ -501,7 +516,7 @@ export const useSessionStore = defineStore('session', () => {
         // 图因 interrupt 暂停，SSE 将由后端关闭
         isStreaming.value = false
         progressPercent.value = 0
-        progressMessage.value = '等待审批中...'
+        progressMessage.value = t('sessionStore.waitingApproval')
         closeEventStream()
         _scrollToBottom()
         break
@@ -597,7 +612,7 @@ export const useSessionStore = defineStore('session', () => {
       runtimeEventsByTaskRun.value = {}
       currentTaskRunId.value = null
     } catch (e: any) {
-      error.value = e.message || '加载会话失败'
+      error.value = e.message || t('sessionStore.loadingSessionFailed')
     } finally {
       loading.value = false
     }
@@ -628,7 +643,7 @@ export const useSessionStore = defineStore('session', () => {
         thought: m.metadata?.thought,
       }))
     } catch (e: any) {
-      error.value = e.message || '获取消息失败'
+      error.value = e.message || t('sessionStore.fetchMessagesFailed')
       console.error('获取消息失败:', e)
     } finally {
       loading.value = false

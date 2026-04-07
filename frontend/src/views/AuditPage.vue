@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
+import { useI18n } from 'vue-i18n'
 
 // ==================== 状态 ====================
 const activeTab = ref('tasks')
 const loading = ref(false)
+const { t } = useI18n()
 
 // 任务运行
 const taskRuns = ref<any[]>([])
@@ -113,6 +115,18 @@ function getTaskStatusType(status: string): string {
   return 'info'
 }
 
+function taskStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    completed: t('audit.taskStatus.completed'),
+    running: t('audit.taskStatus.running'),
+    waiting_approval: t('audit.taskStatus.waitingApproval'),
+    waiting_params: t('audit.taskStatus.waitingParams'),
+    failed: t('audit.taskStatus.failed'),
+    cancelled: t('audit.taskStatus.cancelled'),
+  }
+  return map[status] || status || t('audit.taskStatus.unknown')
+}
+
 function getHttpStatusType(code: number | null): string {
   if (!code) return 'info'
   if (code >= 200 && code < 300) return 'success'
@@ -137,18 +151,21 @@ function getRiskTagType(risk: string): string {
 
 function riskLabel(risk: string): string {
   const map: Record<string, string> = {
-    critical: '极高风险',
-    hard_write: '高风险',
-    soft_write: '中风险',
-    readonly_sensitive: '敏感只读',
-    readonly_safe: '安全只读',
+    critical: t('audit.riskLevel.critical'),
+    hard_write: t('audit.riskLevel.hardWrite'),
+    soft_write: t('audit.riskLevel.softWrite'),
+    readonly_sensitive: t('audit.riskLevel.readonlySensitive'),
+    readonly_safe: t('audit.riskLevel.readonlySafe'),
   }
   return map[risk] || risk
 }
 
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
-    approved: '已批准', rejected: '已拒绝', pending: '待审批', timeout: '已超时'
+    approved: t('audit.approvalStatus.approved'),
+    rejected: t('audit.approvalStatus.rejected'),
+    pending: t('audit.approvalStatus.pending'),
+    timeout: t('audit.approvalStatus.timeout'),
   }
   return map[status] || status
 }
@@ -174,7 +191,7 @@ function safeParse(val: any): Record<string, any> | null {
 }
 
 function highlightJson(val: any): string {
-  if (!val) return '<span style="color:#999;font-size:13px">(空)</span>'
+  if (!val) return `<span style="color:#999;font-size:13px">${t('audit.details.emptyHeaders')}</span>`
   let parsed = val
   if (typeof val === 'string') {
     try { parsed = JSON.parse(val) } catch {}
@@ -211,50 +228,50 @@ onMounted(() => {
   <div class="audit-page">
     <div class="page-header">
       <div>
-        <h2>审计日志</h2>
-        <p class="subtitle">查看任务运行、HTTP 调用与审批操作的完整记录</p>
+        <h2>{{ t('audit.pageTitle') }}</h2>
+        <p class="subtitle">{{ t('audit.subtitle') }}</p>
       </div>
       <el-button @click="refreshCurrent" :loading="loading" round>
-        <el-icon><Refresh /></el-icon> 刷新
+        <el-icon><Refresh /></el-icon> {{ t('common.refresh') }}
       </el-button>
     </div>
 
     <el-tabs v-model="activeTab" @tab-change="handleTabChange" class="audit-tabs">
 
       <!-- ========== 任务运行 ========== -->
-      <el-tab-pane label="任务运行" name="tasks">
+      <el-tab-pane :label="t('audit.tabs.tasks')" name="tasks">
         <el-table :data="taskRuns" style="width: 100%" v-loading="loading" stripe>
-          <el-table-column prop="id" label="任务ID" width="260">
+          <el-table-column prop="id" :label="t('audit.columns.taskId')" width="260">
             <template #default="{ row }">
               <el-text truncated class="mono">{{ row.id }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column prop="status" label="状态" width="120">
+          <el-table-column prop="status" :label="t('audit.columns.status')" width="120">
             <template #default="{ row }">
-              <el-tag :type="getTaskStatusType(row.status)" size="small">{{ row.status }}</el-tag>
+              <el-tag :type="getTaskStatusType(row.status)" size="small">{{ taskStatusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="user_message" label="用户消息" min-width="200">
+          <el-table-column prop="user_message" :label="t('audit.columns.userMessage')" min-width="200">
             <template #default="{ row }">
               <el-text truncated>{{ row.user_message }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" width="180">
+          <el-table-column prop="created_at" :label="t('audit.columns.createdAt')" width="180">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
         </el-table>
         <div v-if="!loading && taskRuns.length === 0" class="empty-hint">
-          <el-empty description="暂无任务运行记录" />
+          <el-empty :description="t('audit.empty.tasks')" />
         </div>
       </el-tab-pane>
 
       <!-- ========== HTTP 执行 ========== -->
-      <el-tab-pane label="HTTP 执行" name="http">
+      <el-tab-pane :label="t('audit.tabs.http')" name="http">
         <!-- 筛选栏 -->
         <div class="filter-bar">
           <el-input
             v-model="httpFilter.keyword"
-            placeholder="搜索请求 URL..."
+            :placeholder="t('audit.filter.httpUrl')"
             clearable
             @input="onHttpFilterChange"
             class="filter-input"
@@ -263,7 +280,7 @@ onMounted(() => {
           </el-input>
           <el-select
             v-model="httpFilter.method"
-            placeholder="请求方法"
+            :placeholder="t('audit.filter.method')"
             clearable
             @change="onHttpFilterChange"
             class="filter-select"
@@ -274,7 +291,7 @@ onMounted(() => {
             <el-option label="PATCH" value="PATCH" />
             <el-option label="DELETE" value="DELETE" />
           </el-select>
-          <span class="filter-count">共 {{ httpTotal }} 条</span>
+          <span class="filter-count">{{ t('audit.filter.count', { count: httpTotal }) }}</span>
         </div>
 
         <!-- 内联展开表格 -->
@@ -298,7 +315,7 @@ onMounted(() => {
                     <code class="mono url-full">{{ row.url_redacted }}</code>
                   </div>
                   <div class="detail-header-right">
-                    <el-tag :type="getHttpStatusType(row.status_code)" size="small">HTTP {{ row.status_code ?? '无状态码' }}</el-tag>
+                    <el-tag :type="getHttpStatusType(row.status_code)" size="small">HTTP {{ row.status_code ?? t('audit.details.noStatusCode') }}</el-tag>
                     <span class="detail-time" style="margin-left:12px">{{ formatTime(row.created_at) }}</span>
                     <span v-if="row.duration_ms != null" class="detail-time" style="margin-left:12px">⏱ {{ row.duration_ms }} ms</span>
                   </div>
@@ -310,7 +327,7 @@ onMounted(() => {
                     <!-- Headers 友好表格 -->
                     <div class="detail-section">
                       <div class="detail-label">
-                        <Icon icon="lucide:list" style="margin-right:4px"/> 请求 Headers
+                        <Icon icon="lucide:list" style="margin-right:4px"/> {{ t('audit.details.requestHeaders') }}
                       </div>
                       <template v-if="safeParse(row.headers_redacted) && Object.keys(safeParse(row.headers_redacted)!).length">
                         <el-descriptions border size="small" :column="1" class="compact-desc">
@@ -320,13 +337,13 @@ onMounted(() => {
                         </el-descriptions>
                       </template>
                       <div v-else-if="row.headers_redacted" class="code-block" v-html="highlightJson(row.headers_redacted)"></div>
-                      <div v-else class="empty-tip">（无 Headers）</div>
+                      <div v-else class="empty-tip">{{ t('audit.details.emptyHeaders') }}</div>
                     </div>
 
                     <!-- 请求 Body -->
                     <div class="detail-section" v-if="row.request_body_redacted != null">
                       <div class="detail-label">
-                        <Icon icon="lucide:file-json" style="margin-right:4px"/> 请求 Body
+                        <Icon icon="lucide:file-json" style="margin-right:4px"/> {{ t('audit.details.requestBody') }}
                       </div>
                       <div class="code-block" v-html="highlightJson(row.request_body_redacted)"></div>
                     </div>
@@ -336,7 +353,7 @@ onMounted(() => {
                   <el-col :span="24" :md="12">
                     <div class="detail-section">
                       <div class="detail-label">
-                        <Icon icon="lucide:download-cloud" style="margin-right:4px"/> 响应内容
+                        <Icon icon="lucide:download-cloud" style="margin-right:4px"/> {{ t('audit.details.responseBody') }}
                       </div>
                       <!-- 浅层对象用键值表格 + 嵌套部分仍然用高亮代码块 -->
                       <template v-if="safeParse(row.response_body_redacted)">
@@ -359,7 +376,7 @@ onMounted(() => {
 
                     <div v-if="row.error" class="detail-section">
                       <div class="detail-label error-label">
-                        <Icon icon="lucide:alert-circle" style="margin-right:4px"/> 错误信息
+                        <Icon icon="lucide:alert-circle" style="margin-right:4px"/> {{ t('audit.details.error') }}
                       </div>
                       <div class="error-block">{{ row.error }}</div>
                     </div>
@@ -369,27 +386,27 @@ onMounted(() => {
             </template>
           </el-table-column>
 
-          <el-table-column prop="created_at" label="时间" width="165">
+          <el-table-column prop="created_at" :label="t('audit.columns.time')" width="165">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column prop="method" label="方法" width="80">
+          <el-table-column prop="method" :label="t('audit.columns.method')" width="80">
             <template #default="{ row }">
               <el-tag :type="methodTagType(row.method)" size="small" effect="plain">{{ row.method }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="url_redacted" label="请求 URL" min-width="240">
+          <el-table-column prop="url_redacted" :label="t('audit.columns.requestUrl')" min-width="240">
             <template #default="{ row }">
               <el-text truncated class="mono url-text">{{ row.url_redacted }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column prop="status_code" label="状态码" width="90">
+          <el-table-column prop="status_code" :label="t('audit.columns.statusCode')" width="90">
             <template #default="{ row }">
               <el-tag :type="getHttpStatusType(row.status_code)" size="small">
                 {{ row.status_code ?? '-' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="duration_ms" label="耗时" width="90">
+          <el-table-column prop="duration_ms" :label="t('audit.columns.duration')" width="90">
             <template #default="{ row }">
               <span class="duration">{{ row.duration_ms != null ? row.duration_ms + ' ms' : '-' }}</span>
             </template>
@@ -410,17 +427,17 @@ onMounted(() => {
         </div>
 
         <div v-if="!loading && httpExecs.length === 0" class="empty-hint">
-          <el-empty description="暂无 HTTP 执行记录" />
+          <el-empty :description="t('audit.empty.http')" />
         </div>
       </el-tab-pane>
 
       <!-- ========== 策略判定（人类批准日志）========== -->
-      <el-tab-pane label="策略判定" name="policy">
+      <el-tab-pane :label="t('audit.tabs.policy')" name="policy">
         <!-- 筛选栏 -->
         <div class="filter-bar">
           <el-input
             v-model="policyFilter.keyword"
-            placeholder="搜索标题或操作摘要..."
+            :placeholder="t('audit.filter.policyKeyword')"
             clearable
             @input="onPolicyFilterChange"
             class="filter-input"
@@ -429,52 +446,52 @@ onMounted(() => {
           </el-input>
           <el-select
             v-model="policyFilter.status"
-            placeholder="审批状态"
+            :placeholder="t('audit.filter.approvalStatus')"
             clearable
             @change="onPolicyFilterChange"
             class="filter-select"
           >
-            <el-option label="待审批" value="pending" />
-            <el-option label="已批准" value="approved" />
-            <el-option label="已拒绝" value="rejected" />
-            <el-option label="已超时" value="timeout" />
+            <el-option :label="t('audit.approvalStatus.pending')" value="pending" />
+            <el-option :label="t('audit.approvalStatus.approved')" value="approved" />
+            <el-option :label="t('audit.approvalStatus.rejected')" value="rejected" />
+            <el-option :label="t('audit.approvalStatus.timeout')" value="timeout" />
           </el-select>
-          <span class="filter-count">共 {{ policyTotal }} 条</span>
+          <span class="filter-count">{{ t('audit.filter.count', { count: policyTotal }) }}</span>
         </div>
 
         <el-table :data="approvals" style="width: 100%" v-loading="loading" stripe>
-          <el-table-column prop="created_at" label="发起时间" width="165">
+          <el-table-column prop="created_at" :label="t('audit.columns.initiatedAt')" width="165">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column prop="title" label="审批标题" min-width="180">
+          <el-table-column prop="title" :label="t('audit.columns.approvalTitle')" min-width="180">
             <template #default="{ row }">
               <el-text truncated class="mono">{{ row.title || '-' }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column prop="action_summary" label="操作摘要" min-width="200">
+          <el-table-column prop="action_summary" :label="t('audit.columns.actionSummary')" min-width="200">
             <template #default="{ row }">
               <el-text truncated>{{ row.action_summary || '-' }}</el-text>
             </template>
           </el-table-column>
-          <el-table-column prop="risk_level" label="风险等级" width="110">
+          <el-table-column prop="risk_level" :label="t('audit.columns.riskLevel')" width="110">
             <template #default="{ row }">
               <el-tag :type="getRiskTagType(row.risk_level)" size="small">{{ riskLabel(row.risk_level) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="status" label="审批结果" width="100">
+          <el-table-column prop="status" :label="t('audit.columns.approvalResult')" width="100">
             <template #default="{ row }">
               <el-tag :type="getApprovalStatusType(row.status)" size="small">
                 {{ statusLabel(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="decided_at" label="决策时间" width="165">
+          <el-table-column prop="decided_at" :label="t('audit.columns.decidedAt')" width="165">
             <template #default="{ row }">{{ formatTime(row.decided_at) }}</template>
           </el-table-column>
-          <el-table-column prop="decided_by" label="操作人" width="90">
+          <el-table-column prop="decided_by" :label="t('audit.columns.decidedBy')" width="90">
             <template #default="{ row }">{{ row.decided_by || '-' }}</template>
           </el-table-column>
-          <el-table-column prop="decision_reason" label="备注" min-width="130">
+          <el-table-column prop="decision_reason" :label="t('audit.columns.note')" min-width="130">
             <template #default="{ row }">
               <el-text truncated>{{ row.decision_reason || '-' }}</el-text>
             </template>
@@ -495,7 +512,7 @@ onMounted(() => {
         </div>
 
         <div v-if="!loading && approvals.length === 0" class="empty-hint">
-          <el-empty description="暂无审批操作记录" />
+          <el-empty :description="t('audit.empty.approvals')" />
         </div>
       </el-tab-pane>
 

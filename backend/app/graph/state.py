@@ -25,6 +25,8 @@ class GraphState(TypedDict):
     session_id: str
     project_id: str
     trace_id: str
+    response_locale: str  # 会话语言代码，例如 zh-CN / en-US / ja-JP
+    response_language: str  # 提示词可读语言名，例如 简体中文 / English / 日本語
     project_base_url: str
     project_username: str | None
     project_password: str | None

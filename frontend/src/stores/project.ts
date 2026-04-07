@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
 import type { Project } from '@/vite-env.d'
+import { translate } from '@/i18n'
 
 interface ImportProjectPayload {
   name: string
@@ -17,6 +18,8 @@ interface ImportProjectPayload {
 }
 
 export const useProjectStore = defineStore('project', () => {
+  const t = translate
+
   // 状态
   const projects = ref<Project[]>([])
   const currentProject = ref<Project | null>(null)
@@ -40,7 +43,7 @@ export const useProjectStore = defineStore('project', () => {
       const response = await axios.get('/api/projects/')
       projects.value = response.data.projects || []
     } catch (e: any) {
-      error.value = e.message || '获取项目列表失败'
+      error.value = e.message || t('projectStore.fetchListFailed')
       console.error('获取项目列表失败:', e)
     } finally {
       loading.value = false
@@ -62,7 +65,7 @@ export const useProjectStore = defineStore('project', () => {
       const response = await axios.get(`/api/projects/${id}/status`)
       const p: Project = {
         id,
-        name: response.data.name || '\u672a知项目',
+        name: response.data.name || t('common.unknownProject'),
         discovery_status: response.data.status,
         base_url: response.data.base_url || '',
         created_at: new Date().toISOString(),
@@ -70,7 +73,7 @@ export const useProjectStore = defineStore('project', () => {
       currentProject.value = p
       return p
     } catch (e: any) {
-      error.value = e.message || '获取项目失败'
+      error.value = e.message || t('projectStore.fetchProjectFailed')
       console.error('获取项目失败:', e)
     } finally {
       loading.value = false
@@ -149,7 +152,7 @@ export const useProjectStore = defineStore('project', () => {
       projects.value.unshift(newProject)
       return newProject
     } catch (e: any) {
-      error.value = e.message || '导入项目失败'
+      error.value = e.message || t('projectStore.importFailed')
       console.error('导入项目失败:', e)
       throw e
     } finally {
@@ -166,7 +169,7 @@ export const useProjectStore = defineStore('project', () => {
       if (project) {
         project.discovery_status = 'in_progress'
         project.discovery_progress = response.data.progress ?? 0
-        project.discovery_message = response.data.message ?? '项目建图已启动'
+        project.discovery_message = response.data.message ?? t('projectStore.discoveryStartedMessage')
       }
     } catch (e: any) {
       console.error('触发发现失败:', e)
@@ -184,7 +187,7 @@ export const useProjectStore = defineStore('project', () => {
         currentProject.value = null
       }
     } catch (e: any) {
-      error.value = e.message || '删除项目失败'
+      error.value = e.message || t('projectStore.deleteFailed')
       console.error('删除项目失败:', e)
       throw e
     } finally {

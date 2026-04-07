@@ -2,6 +2,8 @@
 import { onMounted, ref, computed } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
+import { getLocale, setLocale, SUPPORTED_LOCALES, type AppLocale } from '@/i18n'
 
 const settings = ref({
   // 安全与扩展配置
@@ -14,6 +16,7 @@ const settings = ref({
   llm_model_id: '',
   llm_extra_body: ''
 })
+const { t } = useI18n()
 
 const saving = ref(false)
 const testing = ref(false)
@@ -21,6 +24,27 @@ const loading = ref(false)
 const fetchingModels = ref(false)
 const testStatus = ref<'success' | 'error' | null>(null)
 const availableModels = ref<string[]>([])
+const currentLocale = ref<AppLocale>(getLocale())
+
+const localeLabelKeyMap: Record<AppLocale, string> = {
+  'zh-CN': 'language.options.zhCN',
+  'en-US': 'language.options.enUS',
+  'ja-JP': 'language.options.jaJP',
+}
+
+const localeOptions = computed(() =>
+  SUPPORTED_LOCALES.map((code) => ({
+    value: code,
+    label: t(localeLabelKeyMap[code]),
+  })),
+)
+
+function handleLocaleChange(nextLocale: string | number | boolean) {
+  const locale = nextLocale as AppLocale
+  setLocale(locale)
+  currentLocale.value = locale
+  ElMessage.success(t('settings.messages.languageUpdated', { label: t(localeLabelKeyMap[locale]) }))
+}
 
 async function loadSettings() {
   loading.value = true
@@ -40,7 +64,7 @@ async function loadSettings() {
     }
     
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || '读取设置失败')
+    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -67,10 +91,10 @@ async function saveSettings(silent = false) {
       })
     ])
     if (!silent) {
-      ElMessage.success('设置已保存并生效')
+      ElMessage.success(t('settings.messages.saved'))
     }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || '保存设置失败')
+    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -97,7 +121,7 @@ function formatExtraBody() {
     const parsed = JSON.parse(body)
     settings.value.llm_extra_body = JSON.stringify(parsed, null, 2)
   } catch (e) {
-    ElMessage.warning('附加参数 (Extra Body) 似乎不是标准的 JSON 格式，请检查')
+    ElMessage.warning(t('settings.messages.formatJsonWarning'))
     settings.value.llm_extra_body = body
   }
 }
@@ -115,10 +139,10 @@ async function testConnection() {
       llm_model_id: settings.value.llm_model_id,
       llm_extra_body: settings.value.llm_extra_body
     })
-    ElMessage.success(`测试成功！模型回复：\n${response.data.reply}`)
+    ElMessage.success(t('settings.messages.testSuccess', { reply: response.data.reply }))
     testStatus.value = 'success'
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || '测试连接失败')
+    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.testFailed'))
     testStatus.value = 'error'
   } finally {
     testing.value = false
@@ -128,7 +152,7 @@ async function testConnection() {
 // 获取模型列表
 async function fetchModels() {
   if (!settings.value.llm_api_base) {
-    ElMessage.warning('请先填写 API 端点')
+    ElMessage.warning(t('settings.messages.apiBaseRequired'))
     return
   }
   formatApiBase()
@@ -142,12 +166,12 @@ async function fetchModels() {
     })
     availableModels.value = response.data.models || []
     if (availableModels.value.length === 0) {
-      ElMessage.warning('获取到的模型列表为空')
+      ElMessage.warning(t('settings.messages.modelsEmpty'))
     } else {
-      ElMessage.success(`成功探测了 ${availableModels.value.length} 个模型`)
+      ElMessage.success(t('settings.messages.modelsProbed', { count: availableModels.value.length }))
     }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || '探测模型失败')
+    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.probeFailed'))
   } finally {
     fetchingModels.value = false
   }
@@ -163,26 +187,27 @@ function handleModelSelectVisible(visible: boolean) {
 async function generateMcpToken() {
   settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
   await saveSettings(true)
-  ElMessage.success('已生成随机 Token 并已保存')
+  ElMessage.success(t('settings.messages.tokenGenerated'))
 }
 
 async function handleSafetyActionChange(val: string) {
   if (val === 'allow') {
     try {
       await ElMessageBox.confirm(
-        '您正在开启全局默认允许（跳过审批）。所有工具调用将等同于人类默认批准，包括写文件和执行毁灭性指令等。确定开启吗？',
-        '高危操作确认',
-        { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' }
+        t('settings.dialogs.allowConfirmMessage'),
+        t('settings.dialogs.allowConfirmTitle'),
+        { type: 'warning', confirmButtonText: t('settings.dialogs.allowConfirmButton'), cancelButtonText: t('common.cancel') }
       )
       await ElMessageBox.confirm(
-        '请再次确认：如果您开启此选项以开放给 MCP 客户端调用，系统的一切安全门槛都将被彻底移除以实现全自动。如果接入的外部 AI 具有破坏性，系统将直接放行！您确实要继续吗？',
-        '最后严重警告',
-        { type: 'error', confirmButtonText: '我确定并承担风险', cancelButtonText: '放弃' }
+        t('settings.dialogs.finalConfirmMessage'),
+        t('settings.dialogs.finalConfirmTitle'),
+        { type: 'error', confirmButtonText: t('settings.dialogs.finalConfirmButton'), cancelButtonText: t('settings.dialogs.finalCancelButton') }
       )
     } catch {
       settings.value.safety_default_action = 'confirm'
     }
   }
+  await saveSettings(false)
 }
 
 function resolveMcpGatewayOrigin(): string {
@@ -197,7 +222,7 @@ function resolveMcpGatewayOrigin(): string {
 const mcpGatewayOrigin = computed(() => resolveMcpGatewayOrigin())
 const mcpGatewayUrl = computed(() => `${mcpGatewayOrigin.value}/mcp/`)
 const mcpJsonExample = computed(() => {
-  const token = settings.value.mcp_api_token || '在这里填入您的Token'
+  const token = settings.value.mcp_api_token || t('settings.mcp.tokenFillHint')
   const url = mcpGatewayUrl.value
   
   // 提供标准的 Streamable HTTP 连接 JSON
@@ -217,9 +242,9 @@ const mcpJsonExample = computed(() => {
 async function copyMcpJson() {
   try {
     await navigator.clipboard.writeText(mcpJsonExample.value)
-    ElMessage.success('JSON 已复制到剪贴板！')
+    ElMessage.success(t('settings.messages.jsonCopied'))
   } catch (e) {
-    ElMessage.error('复制失败，请手动选取复制。')
+    ElMessage.error(t('settings.messages.copyFailed'))
   }
 }
 
@@ -239,14 +264,43 @@ onMounted(loadSettings)
   <div class="settings-page">
     <div class="header-section">
       <div class="header-titles">
-        <h2>系统与核心配置</h2>
-        <p class="subtitle">管理主干模型策略与服务端点暴露，所有更改即时生效</p>
+        <h2>{{ t('settings.pageTitle') }}</h2>
+        <p class="subtitle">{{ t('settings.subtitle') }}</p>
       </div>
     </div>
 
     <div class="content-scroll" v-loading="loading">
       <el-form :model="settings" label-position="top" class="settings-form">
         <div class="cards-grid">
+
+          <!-- Language Config Card -->
+          <el-card class="setting-card language-card fade-in-up" shadow="never" style="animation-delay: 0s;">
+            <template #header>
+              <div class="card-header">
+                <Icon icon="lucide:languages" class="card-icon" />
+                <div>
+                  <div class="card-title">{{ t('settings.language.cardTitle') }}</div>
+                  <div class="card-desc">{{ t('settings.language.cardDesc') }}</div>
+                </div>
+              </div>
+            </template>
+
+            <el-form-item :label="t('settings.language.sectionLabel')">
+              <el-radio-group v-model="currentLocale" class="language-radio-group" size="large" @change="handleLocaleChange">
+                <el-radio-button
+                  v-for="option in localeOptions"
+                  :key="option.value"
+                  :label="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </el-radio-button>
+              </el-radio-group>
+              <div class="language-hint">
+                {{ t('settings.language.hint') }}
+              </div>
+            </el-form-item>
+          </el-card>
           
           <!-- LLM Config Card -->
           <el-card class="setting-card fade-in-up llm-card" shadow="never" style="animation-delay: 0.05s;">
@@ -254,23 +308,23 @@ onMounted(loadSettings)
               <div class="card-header">
                 <Icon icon="lucide:cpu" class="card-icon" />
                 <div style="flex: 1;">
-                  <div class="card-title">主模型配置</div>
-                  <div class="card-desc">配置核心智能体所依赖的模型接口与凭据</div>
+                  <div class="card-title">{{ t('settings.llm.cardTitle') }}</div>
+                  <div class="card-desc">{{ t('settings.llm.cardDesc') }}</div>
                 </div>
                 
                 <div class="llm-actions">
                   <transition name="el-fade-in">
                     <div v-if="testStatus === 'success'" class="status-indicator success">
-                      <Icon icon="lucide:check-circle-2" /> <span>连通</span>
+                      <Icon icon="lucide:check-circle-2" /> <span>{{ t('settings.llm.statusConnected') }}</span>
                     </div>
                   </transition>
                   <transition name="el-fade-in">
                     <div v-if="testStatus === 'error'" class="status-indicator error">
-                      <Icon icon="lucide:x-circle" /> <span>失败</span>
+                      <Icon icon="lucide:x-circle" /> <span>{{ t('settings.llm.statusFailed') }}</span>
                     </div>
                   </transition>
                   <el-button @click="testConnection" :loading="testing" plain round size="default" class="test-btn">
-                    <Icon icon="lucide:zap" class="btn-icon" /> 测试连接
+                    <Icon icon="lucide:zap" class="btn-icon" /> {{ t('settings.llm.testConnection') }}
                   </el-button>
                 </div>
               </div>
@@ -278,10 +332,10 @@ onMounted(loadSettings)
             
             <el-row :gutter="24">
               <el-col :span="24" :md="12">
-                <el-form-item label="API 服务端点 (Base URL)">
+                <el-form-item :label="t('settings.llm.apiBaseLabel')">
                   <el-input 
                     v-model="settings.llm_api_base" 
-                    placeholder="如: https://api.openai.com/v1" 
+                    :placeholder="t('settings.llm.apiBasePlaceholder')" 
                     @blur="formatApiBase"
                     @change="() => saveSettings(false)"
                   >
@@ -292,12 +346,12 @@ onMounted(loadSettings)
                 </el-form-item>
               </el-col>
               <el-col :span="24" :md="12">
-                <el-form-item label="API 秘钥 (API Key)">
+                <el-form-item :label="t('settings.llm.apiKeyLabel')">
                   <el-input 
                     v-model="settings.llm_api_key" 
                     type="password" 
                     show-password 
-                    placeholder="系统管理密钥不会在前端明文显示" 
+                    :placeholder="t('settings.llm.apiKeyPlaceholder')" 
                     @change="() => saveSettings(false)"
                   >
                     <template #prefix>
@@ -310,11 +364,11 @@ onMounted(loadSettings)
 
             <el-row :gutter="24">
               <el-col :span="24" :md="12">
-                <el-form-item label="主分配模型 (Model ID)">
+                <el-form-item :label="t('settings.llm.modelIdLabel')">
                   <div class="model-select-wrap">
                     <el-select 
                       v-model="settings.llm_model_id" 
-                      placeholder="选择或输入模型 ID" 
+                      :placeholder="t('settings.llm.modelIdPlaceholder')" 
                       filterable 
                       allow-create 
                       default-first-option
@@ -334,18 +388,18 @@ onMounted(loadSettings)
                       />
                     </el-select>
                     <el-button @click="fetchModels" :loading="fetchingModels" plain>
-                      <Icon icon="lucide:radar" /> 探测
+                      <Icon icon="lucide:radar" /> {{ t('settings.llm.probeModels') }}
                     </el-button>
                   </div>
                 </el-form-item>
               </el-col>
               <el-col :span="24" :md="12">
-                <el-form-item label="模型附加参数 (Extra JSON Body)">
+                <el-form-item :label="t('settings.llm.extraBodyLabel')">
                   <el-input 
                     v-model="settings.llm_extra_body" 
                     type="textarea"
                     :rows="2"
-                    placeholder='如: {"custom_field": "value"}'
+                    :placeholder="t('settings.llm.extraBodyPlaceholder')"
                     @blur="formatExtraBody"
                     @change="() => saveSettings(false)"
                   />
@@ -360,30 +414,30 @@ onMounted(loadSettings)
               <div class="card-header">
                 <Icon icon="lucide:shield-alert" class="card-icon" />
                 <div>
-                  <div class="card-title">全局安全放行策略</div>
-                  <div class="card-desc">控制终端与读写能力的审批机制</div>
+                  <div class="card-title">{{ t('settings.safety.cardTitle') }}</div>
+                  <div class="card-desc">{{ t('settings.safety.cardDesc') }}</div>
                 </div>
               </div>
             </template>
             
-            <el-form-item label="默认审批动作">
+            <el-form-item :label="t('settings.safety.defaultAction')">
               <el-select v-model="settings.safety_default_action" @change="handleSafetyActionChange" style="width: 100%;">
-                <el-option label="全部允许" value="allow">
+                <el-option :label="t('settings.safety.allow')" value="allow">
                   <div class="flex-option">
                     <Icon icon="lucide:unlock" class="text-danger" />
-                    <span class="text-danger">全部允许</span>
+                    <span class="text-danger">{{ t('settings.safety.allow') }}</span>
                   </div>
                 </el-option>
-                <el-option label="手动审批" value="confirm">
+                <el-option :label="t('settings.safety.confirm')" value="confirm">
                   <div class="flex-option">
                     <Icon icon="lucide:user-check" class="text-success" />
-                    <span>手动审批</span>
+                    <span>{{ t('settings.safety.confirm') }}</span>
                   </div>
                 </el-option>
-                <el-option label="直接阻止" value="block">
+                <el-option :label="t('settings.safety.block')" value="block">
                   <div class="flex-option">
                     <Icon icon="lucide:ban" />
-                    <span>直接阻止</span>
+                    <span>{{ t('settings.safety.block') }}</span>
                   </div>
                 </el-option>
               </el-select>
@@ -392,9 +446,7 @@ onMounted(loadSettings)
                 <div v-if="settings.safety_default_action === 'allow'" class="allow-warning">
                   <Icon icon="lucide:flame" class="warning-icon" />
                   <div class="warning-text">
-                    <strong>风险警告：</strong>当前模式下，AI将无需任何审批，可以执行任何请求。绝对禁止在有重要数据和无法回滚的环境中使用！<br/>
-                    如果你不知道自己在做什么，禁止选择此项，请选择手动审批！
-                    如果您是在使用外部 MCP 客户端，则<strong>必须开启此项</strong>以实现全自动！务必使用信任的模型和环境！
+                    {{ t('settings.safety.allowWarning') }}
                   </div>
                 </div>
               </transition>
@@ -407,57 +459,57 @@ onMounted(loadSettings)
               <div class="card-header">
                 <Icon icon="lucide:network" class="card-icon" />
                 <div>
-                  <div class="card-title">对外暴露协议代理 (MCP)</div>
-                  <div class="card-desc">将系统能力通过 Streamable HTTP 协议暴露给其他智能体</div>
+                  <div class="card-title">{{ t('settings.mcp.cardTitle') }}</div>
+                  <div class="card-desc">{{ t('settings.mcp.cardDesc') }}</div>
                 </div>
               </div>
             </template>
 
             <el-alert
-              title="操作规避声明"
+              :title="t('settings.mcp.warningTitle')"
               type="error"
               show-icon
               :closable="false"
               style="margin-bottom: 24px;"
             >
-              <template #title>AI将无需任何审批，可以执行任何请求。绝对禁止在有重要数据和无法回滚的环境中使用！</template>
+              <template #title>{{ t('settings.mcp.warningBody') }}</template>
             </el-alert>
 
-            <el-form-item label="网关防御 Token (API Secret)">
+            <el-form-item :label="t('settings.mcp.tokenLabel')">
               <el-input 
                 v-model="settings.mcp_api_token" 
                 type="password"
                 show-password
-                placeholder="如果设定，则外部访问必定需要 Bearer 鉴权。"
+                :placeholder="t('settings.mcp.tokenPlaceholder')"
                 @change="() => saveSettings(false)"
               >
                 <template #append>
                   <el-button @click="generateMcpToken">
-                    <Icon icon="lucide:dices" /> 随机生成
+                    <Icon icon="lucide:dices" /> {{ t('settings.mcp.generateToken') }}
                   </el-button>
                 </template>
               </el-input>
             </el-form-item>
 
-            <el-form-item label="配置外部大模型客户端连接 (以 VS Code / Cline 为例)">
+            <el-form-item :label="t('settings.mcp.clientConfigLabel')">
               <div class="mcp-instructions">
                 <div class="instruction-box">
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                     <h4>
                       <Icon icon="lucide:terminal" />
-                      cline_mcp_settings.json 等配置文件
+                      {{ t('settings.mcp.clientConfigTitle') }}
                     </h4>
                     <el-button size="small" @click="copyMcpJson" plain round>
-                      <Icon icon="lucide:copy" style="margin-right: 4px;" /> 复制完整 JSON
+                      <Icon icon="lucide:copy" style="margin-right: 4px;" /> {{ t('settings.mcp.copyJson') }}
                     </el-button>
                   </div>
-                  <p>在 VS Code 的 Cline 或 Roo Code 等多模型插件中，建议将连接类型设置为 <code>streamable-http</code>，并桥接本远程网关：</p>
+                  <p>{{ t('settings.mcp.instructions') }}</p>
                   <p class="instruction-note">
-                    <Icon icon="lucide:server" /> 当前示例网关地址：<code>{{ mcpGatewayUrl }}</code>
+                    <Icon icon="lucide:server" /> {{ t('settings.mcp.gatewayAddress') }}<code>{{ mcpGatewayUrl }}</code>
                   </p>
                   <div class="code-block" v-html="highlightJson(mcpJsonExample)"></div>
                   <p class="instruction-note">
-                    <Icon icon="lucide:info" /> 开发模式下（5173）示例会自动指向后端端口（默认 6689）；部署模式下示例会自动使用当前同源端口。请确保启用了正确的 Bearer Header（如已启用防御）。
+                    <Icon icon="lucide:info" /> {{ t('settings.mcp.gatewayNote') }}
                   </p>
                 </div>
               </div>
@@ -539,6 +591,31 @@ onMounted(loadSettings)
   border-radius: 12px;
   border: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
+}
+
+.language-card {
+  border: 1px solid var(--el-color-primary-light-5);
+  background: linear-gradient(180deg, #fafafa 0%, #ffffff 100%);
+}
+
+.language-radio-group {
+  width: 100%;
+  display: flex;
+}
+
+.language-radio-group :deep(.el-radio-button) {
+  flex: 1;
+}
+
+.language-radio-group :deep(.el-radio-button__inner) {
+  width: 100%;
+  font-weight: 600;
+}
+
+.language-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 
 .card-header {

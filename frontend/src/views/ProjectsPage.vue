@@ -2,10 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/stores/project'
 
 const projectStore = useProjectStore()
 const router = useRouter()
+const { t } = useI18n()
 let pollingTimer: number | null = null
 
 // 描述内联编辑状态
@@ -56,36 +58,38 @@ function createDefaultImportForm(): ImportFormState {
   }
 }
 
-const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
-  {
-    id: 'sample-fastapi',
-    name: 'FastAPI 示例',
-    description: '自动填充本机 FastAPI 示例地址与源码目录。',
-    base_url: 'http://localhost:8010',
-    openapi_url: 'http://localhost:8010/openapi.json',
-    source_path: '/app/backend_for_test/fastapi_sample',
-    login_route_id: 'POST:/api/auth/login',
-    username: '111',
-    password: '111111',
-    body_field_username: 'username',
-    body_field_password: 'password',
-    available: true,
-  },
-  {
-    id: 'sample-node',
-    name: 'Node 示例',
-    description: '自动填充本机 Node 示例地址与源码目录。',
-    base_url: 'http://localhost:8020',
-    openapi_url: 'http://localhost:8020/openapi.json',
-    source_path: '/app/backend_for_test/node_sample',
-    login_route_id: 'POST:/api/auth/login',
-    username: '111',
-    password: '111111',
-    body_field_username: 'username',
-    body_field_password: 'password',
-    available: true,
-  },
-]
+function getFallbackImportPresets(): ImportPreset[] {
+  return [
+    {
+      id: 'sample-fastapi',
+      name: t('projects.presets.fastapi.name'),
+      description: t('projects.presets.fastapi.description'),
+      base_url: 'http://localhost:8010',
+      openapi_url: 'http://localhost:8010/openapi.json',
+      source_path: '/app/backend_for_test/fastapi_sample',
+      login_route_id: 'POST:/api/auth/login',
+      username: '111',
+      password: '111111',
+      body_field_username: 'username',
+      body_field_password: 'password',
+      available: true,
+    },
+    {
+      id: 'sample-node',
+      name: t('projects.presets.node.name'),
+      description: t('projects.presets.node.description'),
+      base_url: 'http://localhost:8020',
+      openapi_url: 'http://localhost:8020/openapi.json',
+      source_path: '/app/backend_for_test/node_sample',
+      login_route_id: 'POST:/api/auth/login',
+      username: '111',
+      password: '111111',
+      body_field_username: 'username',
+      body_field_password: 'password',
+      available: true,
+    },
+  ]
+}
 
 // 导入表单
 const importForm = ref<ImportFormState>(createDefaultImportForm())
@@ -123,7 +127,7 @@ function applyImportPresetById(presetId: string) {
   const preset = importPresets.value.find((item) => item.id === presetId)
   if (!preset) return
   if (!preset.available) {
-    ElMessage.warning('该预置在当前环境不可用，请检查示例目录是否存在')
+    ElMessage.warning(t('projects.messages.presetUnavailable'))
     return
   }
 
@@ -144,12 +148,12 @@ function applyImportPresetById(presetId: string) {
   routeOptions.value = [
     {
       route_id: preset.login_route_id,
-      label: 'POST /api/auth/login  · 示例登录接口',
+      label: t('projects.importDialog.sampleLoginRoute'),
     },
   ]
   loginVerified.value = null
   connectionStatus.value = 'untested'
-  ElMessage.success(`已填充预置：${preset.name}`)
+  ElMessage.success(t('projects.messages.presetApplied', { name: preset.name }))
 }
 
 async function fetchImportPresets() {
@@ -158,7 +162,7 @@ async function fetchImportPresets() {
     const response = await fetch('/api/projects/import-presets')
     const data = (await response.json()) as { presets?: ImportPreset[]; detail?: string }
     if (!response.ok) {
-      throw new Error(data.detail || '获取预置失败')
+      throw new Error(data.detail || t('projects.messages.presetFetchFailed'))
     }
 
     importPresets.value = Array.isArray(data.presets) ? data.presets : []
@@ -169,8 +173,8 @@ async function fetchImportPresets() {
       selectedPresetId.value = ''
     }
   } catch {
-    importPresets.value = FALLBACK_IMPORT_PRESETS
-    ElMessage.warning('未能从后端读取预置，已使用默认示例配置')
+    importPresets.value = getFallbackImportPresets()
+    ElMessage.warning(t('projects.messages.presetFallback'))
   } finally {
     presetLoading.value = false
   }
@@ -179,7 +183,7 @@ async function fetchImportPresets() {
 // 测试连通性
 async function testConnection() {
   if (!importForm.value.base_url) {
-    ElMessage.warning('请先填写 API 地址')
+    ElMessage.warning(t('projects.messages.apiUrlRequired'))
     return false
   }
   
@@ -196,7 +200,7 @@ async function testConnection() {
     
     const data = await response.json()
     if (!response.ok) {
-      ElMessage.error(data.detail || '连接失败')
+      ElMessage.error(data.detail || t('projects.messages.connectionFailed'))
       connectionStatus.value = 'error'
       return false
     } else {
@@ -215,7 +219,7 @@ async function testConnection() {
     }
   } catch (error) {
     connectionStatus.value = 'error'
-    ElMessage.error('测试请求发出失败，请检查浏览器代理或网络')
+    ElMessage.error(t('projects.messages.connectionRequestFailed'))
     return false
   } finally {
     testConnectionLoading.value = false
@@ -241,7 +245,7 @@ async function fetchRoutes(force = false) {
     })
     const data = await resp.json()
     if (!resp.ok) {
-      ElMessage.error(data.detail || '获取路由失败')
+      ElMessage.error(data.detail || t('projects.messages.routesFetchFailed'))
       return
     }
     routeOptions.value = (data.routes || []).map((r: any) => ({
@@ -249,7 +253,7 @@ async function fetchRoutes(force = false) {
       label: `${r.method} ${r.path}${r.summary ? '  · ' + r.summary : ''}`,
     }))
   } catch {
-    ElMessage.error('获取路由失败')
+    ElMessage.error(t('projects.messages.routesFetchFailed'))
   } finally {
     routesLoading.value = false
   }
@@ -259,7 +263,7 @@ async function fetchRoutes(force = false) {
 async function verifyLogin(): Promise<boolean> {
   const { base_url, login_route_id, username, password, body_field_username, body_field_password } = importForm.value
   if (!login_route_id || !username || !password) {
-    ElMessage.warning('请先选择登录接口并填写账号密码')
+    ElMessage.warning(t('projects.messages.loginInfoRequired'))
     return false
   }
   loginVerifying.value = true
@@ -273,16 +277,16 @@ async function verifyLogin(): Promise<boolean> {
     const data = await resp.json()
     if (data.success) {
       loginVerified.value = true
-      ElMessage.success('登录验证成功')
+      ElMessage.success(t('projects.messages.loginVerifySuccess'))
       return true
     } else {
       loginVerified.value = false
-      ElMessage.error(data.message || '登录验证失败')
+      ElMessage.error(data.message || t('projects.messages.loginVerifyFailed'))
       return false
     }
   } catch {
     loginVerified.value = false
-    ElMessage.error('验证请求失败')
+    ElMessage.error(t('projects.messages.verifyRequestFailed'))
     return false
   } finally {
     loginVerifying.value = false
@@ -297,7 +301,7 @@ async function submitImport() {
   }
 
   if (!importForm.value.name || !importForm.value.base_url || !importForm.value.source_path) {
-    ElMessage.warning('项目名称、API 地址和本地源码路径均为必填项')
+    ElMessage.warning(t('projects.messages.requiredFieldsMissing'))
     return
   }
 
@@ -322,7 +326,7 @@ async function submitImport() {
   try {
     await projectStore.importProject(importForm.value)
     importDialogVisible.value = false
-    ElMessage.success('项目导入成功')
+    ElMessage.success(t('projects.messages.importSuccess'))
   } catch (error) {
     console.error('导入失败:', error)
   } finally {
@@ -338,10 +342,14 @@ async function triggerDiscovery(projectId: string) {
   try {
     project.discovery_status = 'in_progress'
     await projectStore.triggerDiscovery(projectId)
-    ElMessage.success('项目发现任务已启动')
+    ElMessage.success(t('projects.messages.discoveryStarted'))
   } catch (error: any) {
     project.discovery_status = 'failed'
-    ElMessage.error('发现失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
+    ElMessage.error(
+      t('projects.messages.discoveryFailed', {
+        reason: error?.response?.data?.detail || error.message || t('common.unknown'),
+      }),
+    )
   }
 }
 
@@ -350,11 +358,11 @@ async function handleDiscoveryClick(project: any) {
   if (project.discovery_status === 'completed') {
     try {
       await ElMessageBox.confirm(
-        '重新建模将清除已生成的认知图谱和权限映射数据，并重新拉取 OpenAPI 进行分析。这个过程需要耗费一些时间，是否确定重新建模？',
-        '重新建模确认',
+        t('projects.dialogs.rediscoveryConfirm.message'),
+        t('projects.dialogs.rediscoveryConfirm.title'),
         {
-          confirmButtonText: '确定重构',
-          cancelButtonText: '取消',
+          confirmButtonText: t('projects.dialogs.rediscoveryConfirm.confirm'),
+          cancelButtonText: t('common.cancel'),
           type: 'warning',
         }
       )
@@ -370,19 +378,23 @@ async function handleDiscoveryClick(project: any) {
 async function removeProject(projectId: string) {
   try {
     await ElMessageBox.confirm(
-      '确定要删除该项目吗？删除后将无法恢复，所有关联的发现数据和会话记录都将被清除。',
-      '确认删除',
+      t('projects.dialogs.deleteConfirm.message'),
+      t('projects.dialogs.deleteConfirm.title'),
       {
-        confirmButtonText: '确定删除',
-        cancelButtonText: '取消',
+        confirmButtonText: t('projects.dialogs.deleteConfirm.confirm'),
+        cancelButtonText: t('common.cancel'),
         type: 'warning',
       }
     )
     await projectStore.deleteProject(projectId)
-    ElMessage.success('项目已删除')
+    ElMessage.success(t('projects.messages.deleteSuccess'))
   } catch (error: any) {
     if (error !== 'cancel') {
-      ElMessage.error('删除失败: ' + (error?.response?.data?.detail || error.message || '未知错误'))
+      ElMessage.error(
+        t('projects.messages.deleteFailed', {
+          reason: error?.response?.data?.detail || error.message || t('common.unknown'),
+        }),
+      )
     }
   }
 }
@@ -403,9 +415,9 @@ async function saveDesc(projectId: string) {
   descSaving.value = true
   try {
     await projectStore.updateProjectDescription(projectId, editingDescValue.value)
-    ElMessage.success('描述已保存')
+    ElMessage.success(t('projects.messages.descSaved'))
   } catch {
-    ElMessage.error('保存失败')
+    ElMessage.error(t('projects.messages.saveFailed'))
   } finally {
     descSaving.value = false
     editingDescId.value = null
@@ -466,13 +478,13 @@ function getStatusType(status: string): string {
 function getStatusText(status: string): string {
   switch (status) {
     case 'completed':
-      return '已完成'
+      return t('projects.status.completed')
     case 'in_progress':
-      return '进行中'
+      return t('projects.status.inProgress')
     case 'failed':
-      return '失败'
+      return t('projects.status.failed')
     case 'pending':
-      return '待处理'
+      return t('projects.status.pending')
     default:
       return status
   }
@@ -482,10 +494,10 @@ function getStatusText(status: string): string {
 <template>
   <div class="projects-page">
     <div class="page-header">
-      <h2>项目管理</h2>
+      <h2>{{ t('projects.pageTitle') }}</h2>
       <el-button type="primary" @click="openImportDialog">
         <el-icon><Plus /></el-icon>
-        导入项目
+        {{ t('projects.importProject') }}
       </el-button>
     </div>
 
@@ -521,24 +533,24 @@ function getStatusText(status: string): string {
                 type="textarea"
                 :rows="3"
                 autofocus
-                placeholder="输入描述（可纳正 AI 生成的内容）"
+                :placeholder="t('projects.descriptionForm.placeholder')"
                 @keydown.esc="cancelEditDesc"
               />
               <div class="desc-actions">
-                <el-button size="small" type="primary" :loading="descSaving" @click="saveDesc(project.id)">保存</el-button>
-                <el-button size="small" @click="cancelEditDesc">取消</el-button>
+                <el-button size="small" type="primary" :loading="descSaving" @click="saveDesc(project.id)">{{ t('common.save') }}</el-button>
+                <el-button size="small" @click="cancelEditDesc">{{ t('common.cancel') }}</el-button>
               </div>
             </template>
             <!-- 展示状态 -->
             <template v-else>
               <p
                 class="info-item desc-text"
-                :title="'点击编辑描述'"
+                :title="t('projects.descriptionForm.clickToEdit')"
                 @click="startEditDesc(project)"
               >
                 <el-icon><Document /></el-icon>
                 <span v-if="project.description">{{ project.description }}</span>
-                <span v-else class="desc-placeholder">点击添加描述（AI 将在建图后自动填充）</span>
+                <span v-else class="desc-placeholder">{{ t('projects.descriptionForm.emptyHint') }}</span>
               </p>
             </template>
           </div>
@@ -549,7 +561,7 @@ function getStatusText(status: string): string {
           <!-- 发现进度条 -->
           <div v-if="project.discovery_status === 'in_progress'" class="discovery-progress">
             <el-progress :percentage="project.discovery_progress || 0" :stroke-width="8" />
-            <span class="progress-hint">{{ project.discovery_message || 'AI 正在建模、请稍候...' }}</span>
+            <span class="progress-hint">{{ project.discovery_message || t('projects.progressHint') }}</span>
           </div>
           <div v-if="project.discovery_status === 'failed' && project.discovery_error" class="error-hint">
             <el-icon style="color: var(--el-color-danger)"><WarningFilled /></el-icon>
@@ -563,9 +575,9 @@ function getStatusText(status: string): string {
             type="primary"
             @click.stop="enterProject(project.id)"
             :disabled="project.discovery_status !== 'completed'"
-            :title="project.discovery_status !== 'completed' ? '请先完成项目发现' : ''"
+            :title="project.discovery_status !== 'completed' ? t('projects.actions.enterChatHint') : ''"
           >
-            <el-icon><ChatRound /></el-icon> 开始对话
+            <el-icon><ChatRound /></el-icon> {{ t('projects.actions.enterChat') }}
           </el-button>
           <el-button
             size="small"
@@ -575,13 +587,13 @@ function getStatusText(status: string): string {
             :disabled="project.discovery_status === 'in_progress'"
           >
             <template v-if="project.discovery_status === 'completed'">
-              <Icon icon="solar:refresh-circle-bold-duotone" style="margin-right: 4px; vertical-align: middle;" />重新建模
+              <Icon icon="solar:refresh-circle-bold-duotone" style="margin-right: 4px; vertical-align: middle;" />{{ t('projects.actions.rediscover') }}
             </template>
             <template v-else-if="project.discovery_status === 'in_progress'">
-              建模中...
+              {{ t('projects.actions.discovering') }}
             </template>
             <template v-else>
-              {{ project.discovery_status === 'failed' ? '重试发现' : '开始发现' }}
+              {{ project.discovery_status === 'failed' ? t('projects.actions.retryDiscovery') : t('projects.actions.startDiscovery') }}
             </template>
           </el-button>
           <el-button
@@ -590,25 +602,25 @@ function getStatusText(status: string): string {
             plain
             @click.stop="removeProject(project.id)"
           >
-            删除
+            {{ t('common.delete') }}
           </el-button>
         </div>
       </el-card>
     </div>
 
     <!-- 空状态 -->
-    <el-empty v-else description="暂无项目">
-      <el-button type="primary" @click="openImportDialog">导入第一个项目</el-button>
+    <el-empty v-else :description="t('projects.emptyState')">
+      <el-button type="primary" @click="openImportDialog">{{ t('projects.importFirstProject') }}</el-button>
     </el-empty>
 
     <!-- 导入对话框 -->
     <el-dialog
       v-model="importDialogVisible"
-      title="导入项目"
+      :title="t('projects.importDialog.title')"
       width="500px"
     >
       <el-form :model="importForm" label-width="100px">
-        <el-form-item label="示例预置">
+        <el-form-item :label="t('projects.importDialog.presetsLabel')">
           <div class="preset-actions">
             <el-button
               v-for="preset in importPresets"
@@ -624,55 +636,55 @@ function getStatusText(status: string): string {
           </div>
           <div v-if="selectedPreset" class="preset-selected">
             <div>{{ selectedPreset.description }}</div>
-            <div class="preset-source">源码目录：{{ selectedPreset.source_path }}</div>
-            <div class="preset-source">登录账号：{{ selectedPreset.username }} / {{ selectedPreset.password }}</div>
+            <div class="preset-source">{{ t('projects.importDialog.selectedPresetSourcePath', { path: selectedPreset.source_path }) }}</div>
+            <div class="preset-source">{{ t('projects.importDialog.selectedPresetCredentials', { username: selectedPreset.username, password: selectedPreset.password }) }}</div>
           </div>
         </el-form-item>
-        <el-form-item label="项目名称" required>
-          <el-input v-model="importForm.name" placeholder="请输入项目名称" />
+        <el-form-item :label="t('projects.importDialog.fields.name.label')" required>
+          <el-input v-model="importForm.name" :placeholder="t('projects.importDialog.fields.name.placeholder')" />
         </el-form-item>
-        <el-form-item label="API 地址" required>
-          <el-input v-model="importForm.base_url" placeholder="http://localhost:6689" />
+        <el-form-item :label="t('projects.importDialog.fields.apiUrl.label')" required>
+          <el-input v-model="importForm.base_url" :placeholder="t('projects.importDialog.fields.apiUrl.placeholder')" />
         </el-form-item>
-        <el-form-item label="OpenAPI 地址">
-          <el-input v-model="importForm.openapi_url" placeholder="/openapi.json" />
+        <el-form-item :label="t('projects.importDialog.fields.openapiUrl.label')">
+          <el-input v-model="importForm.openapi_url" :placeholder="t('projects.importDialog.fields.openapiUrl.placeholder')" />
         </el-form-item>
-        <el-form-item label="源码路径" required>
-          <el-input v-model="importForm.source_path" placeholder="例如：D:\Projects\my-backend" />
+        <el-form-item :label="t('projects.importDialog.fields.sourcePath.label')" required>
+          <el-input v-model="importForm.source_path" :placeholder="t('projects.importDialog.fields.sourcePath.placeholder')" />
         </el-form-item>
-        <el-form-item label="描述">
+        <el-form-item :label="t('projects.importDialog.fields.description.label')">
           <el-input
             v-model="importForm.description"
             type="textarea"
             :rows="3"
-            placeholder="项目描述"
+            :placeholder="t('projects.importDialog.fields.description.placeholder')"
           />
         </el-form-item>
 
-        <el-divider>认证拦截解决方案</el-divider>
+        <el-divider>{{ t('projects.importDialog.authSection.title') }}</el-divider>
         <el-alert
-          title="对于需要登录才能访问的系统，填写账号密码并选择登录接口。验证通过后，AI 每次执行任务时会自动先登录获取 token。"
+          :title="t('projects.importDialog.authSection.alert')"
           type="info"
           show-icon
           :closable="false"
           style="margin-bottom: 16px;"
         />
         <div class="preset-help preset-credential-hint">
-          示例后端统一登录账号为 111，密码为 111111。选择上方预置后会自动填入，直接点“验证登录”即可测试登录态。
+          {{ t('projects.importDialog.authSection.help') }}
         </div>
-        <el-form-item label="Username">
-          <el-input v-model="importForm.username" placeholder="管理员账号 (选填)" @change="loginVerified = null" />
+        <el-form-item :label="t('projects.importDialog.fields.username.label')">
+          <el-input v-model="importForm.username" :placeholder="t('projects.importDialog.fields.username.placeholder')" @change="loginVerified = null" />
         </el-form-item>
-        <el-form-item label="Password">
-          <el-input v-model="importForm.password" type="password" placeholder="管理员密码 (选填)" show-password @change="loginVerified = null" />
+        <el-form-item :label="t('projects.importDialog.fields.password.label')">
+          <el-input v-model="importForm.password" type="password" :placeholder="t('projects.importDialog.fields.password.placeholder')" show-password @change="loginVerified = null" />
         </el-form-item>
         <template v-if="importForm.username">
-          <el-form-item label="登录接口">
+          <el-form-item :label="t('projects.importDialog.fields.loginRoute.label')">
             <div style="display:flex;gap:8px;width:100%">
               <el-select
                 v-model="importForm.login_route_id"
                 filterable
-                placeholder="选择或搜索登录接口"
+                :placeholder="t('projects.importDialog.fields.loginRoute.placeholder')"
                 style="flex:1"
                 :loading="routesLoading"
                 @focus="routeOptions.length === 0 && fetchRoutes()"
@@ -685,14 +697,14 @@ function getStatusText(status: string): string {
                   :value="r.route_id"
                 />
               </el-select>
-              <el-button :loading="routesLoading" @click="fetchRoutes(true)">刷新</el-button>
+              <el-button :loading="routesLoading" @click="fetchRoutes(true)">{{ t('projects.importDialog.fields.loginRoute.refresh') }}</el-button>
             </div>
           </el-form-item>
-          <el-form-item label="用户名字段">
-            <el-input v-model="importForm.body_field_username" placeholder="username" @change="loginVerified = null" />
+          <el-form-item :label="t('projects.importDialog.fields.usernameField.label')">
+            <el-input v-model="importForm.body_field_username" :placeholder="t('projects.importDialog.fields.usernameField.placeholder')" @change="loginVerified = null" />
           </el-form-item>
-          <el-form-item label="密码字段">
-            <el-input v-model="importForm.body_field_password" placeholder="password" @change="loginVerified = null" />
+          <el-form-item :label="t('projects.importDialog.fields.passwordField.label')">
+            <el-input v-model="importForm.body_field_password" :placeholder="t('projects.importDialog.fields.passwordField.placeholder')" @change="loginVerified = null" />
           </el-form-item>
         </template>
       </el-form>
@@ -704,16 +716,16 @@ function getStatusText(status: string): string {
             :loading="loginVerifying"
             @click="verifyLogin"
           >
-            {{ loginVerified === true ? '✓ 验证通过' : loginVerified === false ? '✗ 验证失败，重试' : '验证登录' }}
+            {{ loginVerified === true ? t('projects.importDialog.verifyLogin.success') : loginVerified === false ? t('projects.importDialog.verifyLogin.failed') : t('projects.importDialog.verifyLogin.idle') }}
           </el-button>
           <div class="dialog-footer-actions">
-            <el-button @click="importDialogVisible = false">取消</el-button>
+            <el-button @click="importDialogVisible = false">{{ t('projects.importDialog.footer.cancel') }}</el-button>
             <el-button
               type="primary"
               @click="submitImport"
               :loading="importLoading || testConnectionLoading"
             >
-              导入项目
+              {{ t('projects.importDialog.footer.import') }}
             </el-button>
           </div>
         </div>

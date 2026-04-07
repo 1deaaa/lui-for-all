@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { ElMessage } from 'element-plus'
 import { Check, Close, Warning, List } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import type { ApprovalBlock } from '@/vite-env.d'
 
 const props = defineProps<{
@@ -10,6 +11,7 @@ const props = defineProps<{
 }>()
 
 const sessionStore = useSessionStore()
+const { t } = useI18n()
 const loading = ref(false)
 
 // 统一处理 items 逻辑
@@ -44,7 +46,7 @@ async function handleAction(action: 'approve' | 'reject') {
   loading.value = true
   try {
     const taskRunId = sessionStore.currentTaskRun?.id
-    if (!taskRunId) throw new Error('任务未选中')
+    if (!taskRunId) throw new Error(t('confirmPanel.messages.taskNotSelected'))
 
     const approvedIds = action === 'approve' ? items.value.map(i => i.write_id) : []
 
@@ -59,9 +61,9 @@ async function handleAction(action: 'approve' | 'reject') {
       approvedIds,
     })
 
-    ElMessage.success(action === 'approve' ? '已批准操作，AI 继续执行中...' : '已拒绝操作')
+    ElMessage.success(action === 'approve' ? t('confirmPanel.messages.approved') : t('confirmPanel.messages.rejected'))
   } catch (e: any) {
-    ElMessage.error('操作失败: ' + (e.message || '未知错误'))
+    ElMessage.error(t('confirmPanel.messages.failed', { reason: e.message || t('common.unknown') }))
   } finally {
     loading.value = false
   }
@@ -73,10 +75,10 @@ async function handleAction(action: 'approve' | 'reject') {
     <div class="panel-header">
       <el-icon class="panel-icon"><Warning v-if="!isBatch" /><List v-else /></el-icon>
       <span class="panel-title">
-        {{ isBatch ? `待审批批量操作 (${items.length}项)` : (block.title || '待审批操作') }}
+        {{ isBatch ? t('confirmPanel.batchTitle', { count: items.length }) : (block.title || t('confirmPanel.singleTitle')) }}
       </span>
       <el-tag :type="riskLevel === 'critical' ? 'danger' : 'warning'" size="small" effect="plain">
-        {{ riskLevel === 'critical' ? '高危' : '安全确认' }}
+        {{ riskLevel === 'critical' ? t('confirmPanel.riskCritical') : t('confirmPanel.riskWarning') }}
       </el-tag>
     </div>
 
@@ -102,14 +104,14 @@ async function handleAction(action: 'approve' | 'reject') {
 
     <div class="panel-actions">
       <template v-if="!resolved">
-        <el-button size="small" plain :icon="Close" :loading="loading" @click="handleAction('reject')">拒绝</el-button>
+        <el-button size="small" plain :icon="Close" :loading="loading" @click="handleAction('reject')">{{ t('confirmPanel.reject') }}</el-button>
         <el-button size="small" type="primary" :icon="Check" :loading="loading" @click="handleAction('approve')">
-          {{ isBatch ? '全部批准' : '批准执行' }}
+          {{ isBatch ? t('confirmPanel.approveAll') : t('confirmPanel.approve') }}
         </el-button>
       </template>
       <template v-else>
         <span class="status-text" :class="actionResult!">
-          {{ actionResult === 'approved' ? '✓ 已批准' : '✕ 已拒绝' }}
+          {{ actionResult === 'approved' ? t('confirmPanel.approved') : t('confirmPanel.rejected') }}
         </span>
       </template>
     </div>

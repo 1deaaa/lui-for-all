@@ -16,6 +16,7 @@
 
 <script>
 import { ref, onMounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import VueMarkdown from 'vue-markdown-stream'
 import 'vue-markdown-stream/dist/index.css'
 import { full as emoji } from 'markdown-it-emoji'
@@ -42,6 +43,7 @@ export default {
     }
   },
   setup(props) {
+    const { t, locale } = useI18n()
     const markdownRenderer = ref(null)
     const rootEl = ref(null)
     
@@ -89,14 +91,14 @@ export default {
           const languageLabel = document.createElement('span')
           languageLabel.className = 'code-block-language'
           const languageMatch = codeElement?.className?.match(/language-([\w+-]+)/i)
-          languageLabel.textContent = languageMatch ? languageMatch[1].toUpperCase() : 'CODE'
+          languageLabel.textContent = languageMatch ? languageMatch[1].toUpperCase() : t('markdown.codeLanguageDefault')
 
           const copyButton = document.createElement('button')
           copyButton.type = 'button'
           copyButton.className = 'code-block-copy-button'
-          copyButton.textContent = '复制'
+          copyButton.textContent = t('markdown.copyCode')
 
-          const resetButtonState = (text = '复制') => {
+          const resetButtonState = (text = t('markdown.copyCode')) => {
             copyButton.textContent = text
             copyButton.classList.remove('copied', 'error')
           }
@@ -107,10 +109,10 @@ export default {
 
             try {
               await navigator.clipboard.writeText(codeText)
-              copyButton.textContent = '已复制'
+              copyButton.textContent = t('markdown.copied')
               copyButton.classList.add('copied')
             } catch (error) {
-              copyButton.textContent = '复制失败'
+              copyButton.textContent = t('markdown.copyFailed')
               copyButton.classList.add('error')
               console.error('复制代码失败:', error)
             }
@@ -166,6 +168,13 @@ export default {
       () => {
         enhanceCodeBlocks()
       }
+    )
+
+    watch(
+      () => locale.value,
+      () => {
+        enhanceCodeBlocks()
+      },
     )
     
     return {

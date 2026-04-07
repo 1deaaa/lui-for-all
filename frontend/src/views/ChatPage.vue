@@ -4,6 +4,7 @@ import { useWindowSize } from '@vueuse/core'
 import { useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
+import { useI18n } from 'vue-i18n'
 import type { Session } from '@/vite-env.d'
 import BlockRenderer from '@/components/BlockRenderer.vue'
 import ConfirmPanel from '@/components/blocks/ConfirmPanel.vue'
@@ -18,6 +19,7 @@ const emit = defineEmits(['openDrawer'])
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
 const route = useRoute()
+const { t } = useI18n()
 
 const inputMessage = ref('')
 const messageContainer = ref<HTMLElement | null>(null)
@@ -96,7 +98,11 @@ async function startSession(projectId: string) {
     await sessionStore.createSession(projectId)
     await sessionStore.fetchHistory(projectId)
   } catch (e: any) {
-    ElMessage.error('创建会话失败: ' + (e.message || '未知错误'))
+    ElMessage.error(
+      t('chat.messages.createSessionFailed', {
+        reason: e.message || t('common.unknown'),
+      }),
+    )
   } finally {
     sessionCreating.value = false
   }
@@ -115,7 +121,7 @@ async function handleSend() {
   if (!sessionStore.currentSession) {
     const id = selectedProject.value?.id
     if (!id) {
-      ElMessage.warning('请先在左侧选择一个项目')
+      ElMessage.warning(t('chat.messages.selectProjectFirst'))
       return
     }
     await startSession(id)
@@ -178,6 +184,21 @@ watch(
     scrollToBottom()
   }
 )
+
+function getProjectStatusLabel(status: string): string {
+  switch (status) {
+    case 'completed':
+      return t('projects.status.completed')
+    case 'in_progress':
+      return t('projects.status.inProgress')
+    case 'failed':
+      return t('projects.status.failed')
+    case 'pending':
+      return t('projects.status.pending')
+    default:
+      return status
+  }
+}
 </script>
 
 <template>
@@ -185,12 +206,12 @@ watch(
     <!-- 左侧项目面板 -->
     <div class="project-panel" :class="{ collapsed: isSidebarCollapsed }">
       <div class="project-panel-inner">
-      <div class="panel-title">项目列表</div>
+      <div class="panel-title">{{ t('chat.sidebar.projectsTitle') }}</div>
 
       <div v-if="readyProjects.length === 0" class="panel-empty">
-        <p>暂无已完成发现的项目</p>
+        <p>{{ t('chat.sidebar.emptyProjects') }}</p>
         <el-button type="primary" size="small" @click="$router.push('/projects')">
-          去导入项目
+          {{ t('chat.sidebar.goImport') }}
         </el-button>
       </div>
 
@@ -208,7 +229,7 @@ watch(
       <!-- 历史会话列表 -->
       <template v-if="selectedProject && sessionStore.historyList.length > 0">
         <div class="panel-divider" />
-        <div class="panel-title-sm">历史对话</div>
+        <div class="panel-title-sm">{{ t('chat.sidebar.historyTitle') }}</div>
         <TransitionGroup name="history-list" tag="div" class="history-list-wrapper">
           <div
             v-for="s in sessionStore.historyList"
@@ -217,24 +238,24 @@ watch(
             :class="{ active: sessionStore.currentSession?.id === s.id }"
             @click="switchToHistory(s)"
           >
-            <div class="history-item-title">{{ s.title || '未命名对话' }}</div>
-            <button class="history-item-del" @click="handleDeleteSession(s, $event)" title="删除">&times;</button>
+            <div class="history-item-title">{{ s.title || t('chat.sidebar.untitledSession') }}</div>
+            <button class="history-item-del" @click="handleDeleteSession(s, $event)" :title="t('chat.sidebar.deleteSession')">&times;</button>
           </div>
         </TransitionGroup>
       </template>
 
       <div class="panel-divider" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0" />
       <div class="panel-title-sm" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0">
-        其他项目（建模未完成）
+        {{ t('chat.sidebar.otherProjects') }}
       </div>
       <div
         v-for="p in projectStore.projects.filter(p => p.discovery_status !== 'completed')"
         :key="p.id"
         class="project-item disabled"
-        :title="`状态: ${p.discovery_status} — 请先完成 AI 建模后再使用`"
+        :title="t('chat.sidebar.disabledProjectHint', { status: getProjectStatusLabel(p.discovery_status) })"
       >
         <div class="project-item-name">{{ p.name }}</div>
-        <el-tag size="small" type="info">{{ p.discovery_status }}</el-tag>
+        <el-tag size="small" type="info">{{ getProjectStatusLabel(p.discovery_status) }}</el-tag>
       </div>
       </div>
     </div>
@@ -244,19 +265,19 @@ watch(
       <!-- 顶栏 -->
       <div class="chat-topbar" :class="{ 'is-mobile-topbar': isMobile }">
         <!-- 移动端时，最左侧显示全局 Logo 呼出抽屉 -->
-        <button v-if="isMobile" class="icon-btn global-drawer-btn" @click="emit('openDrawer')" title="全局菜单">
+        <button v-if="isMobile" class="icon-btn global-drawer-btn" @click="emit('openDrawer')" :title="t('chat.topbar.globalMenu')">
           <BrandLogo :size="24" />
         </button>
 
         <!-- 原有的项目侧边栏 Toggle 按钮 -->
-        <button class="icon-btn sidebar-toggle-btn" @click="toggleSidebar" title="收起/展开项目列表" :style="isMobile ? 'margin-left: 8px;' : ''">
+        <button class="icon-btn sidebar-toggle-btn" @click="toggleSidebar" :title="t('chat.topbar.toggleSidebar')" :style="isMobile ? 'margin-left: 8px;' : ''">
           <Icon :icon="isSidebarCollapsed ? 'solar:hamburger-menu-linear' : 'solar:sidebar-minimalistic-linear'" />
         </button>
         <template v-if="selectedProject">
           <span class="chat-project-name">{{ selectedProject.name }}</span>
           <span class="chat-project-url">{{ selectedProject.base_url }}</span>
         </template>
-        <span v-else class="chat-hint-topbar">← 请在左侧选择一个项目</span>
+        <span v-else class="chat-hint-topbar">{{ t('chat.topbar.selectProjectHint') }}</span>
         
         <div class="topbar-actions" v-if="selectedProject">
           <RouteMapAnalyzer />
@@ -267,7 +288,7 @@ watch(
           >
             <Icon v-if="sessionCreating" icon="solar:spinner-bold-duotone" class="is-loading" />
             <Icon v-else icon="solar:chat-round-line-bold-duotone" class="btn-icon" />
-            <span class="btn-text">新建对话</span>
+            <span class="btn-text">{{ t('chat.topbar.newChat') }}</span>
           </button>
         </div>
       </div>
@@ -280,15 +301,15 @@ watch(
             <div class="welcome-icon">
               <Icon icon="solar:chat-round-dots-bold-duotone" />
             </div>
-            <div class="welcome-title">与 {{ selectedProject.name }} 开始对话</div>
-            <div class="welcome-desc">你可以用自然语言描述你想完成的操作，AI 会自动帮你调用对应接口。</div>
+            <div class="welcome-title">{{ t('chat.welcome.title', { name: selectedProject.name }) }}</div>
+            <div class="welcome-desc">{{ t('chat.welcome.desc') }}</div>
           </template>
           <template v-else>
             <div class="welcome-icon">
               <Icon icon="solar:magnifer-bold-duotone" />
             </div>
-            <div class="welcome-title">请先选择项目</div>
-            <div class="welcome-desc">在左侧选择一个已完成 AI 建模的项目，然后就可以开始对话了。</div>
+            <div class="welcome-title">{{ t('chat.welcome.noProjectTitle') }}</div>
+            <div class="welcome-desc">{{ t('chat.welcome.noProjectDesc') }}</div>
           </template>
         </div>
 
@@ -319,7 +340,7 @@ watch(
                 <div class="thought-header" @click="toggleThought(msg.id)">
                   <el-icon v-if="sessionStore.isStreaming && !msg.content" class="is-loading"><Loading /></el-icon>
                   <el-icon v-else><Monitor /></el-icon>
-                  <span>AI 思考过程</span>
+                  <span>{{ t('chat.message.thoughtProcess') }}</span>
                   <el-icon class="thought-toggle" :class="{ expanded: thoughtExpanded[msg.id] }"><ArrowDown /></el-icon>
                 </div>
                 <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
@@ -377,7 +398,7 @@ watch(
           <div class="loading-dots">
             <span></span><span></span><span></span>
           </div>
-          <span class="loading-text">{{ sessionCreating ? '正在建立会话...' : 'AI 处理中...' }}</span>
+          <span class="loading-text">{{ sessionCreating ? t('chat.loading.creatingSession') : t('chat.loading.processing') }}</span>
         </div>
 
         <!-- 错误提示 -->
@@ -399,7 +420,7 @@ watch(
             :stroke-width="3"
             class="runtime-bar-progress"
           />
-          <span class="runtime-bar-msg">{{ sessionStore.progressMessage || 'AI 正在处理中...' }}{{ sessionStore.progressPercent > 0 ? '　' + sessionStore.progressPercent + '%' : '' }}</span>
+          <span class="runtime-bar-msg">{{ sessionStore.progressMessage || t('chat.runtime.processingHint') }}{{ sessionStore.progressPercent > 0 ? '　' + sessionStore.progressPercent + '%' : '' }}</span>
           <el-icon class="runtime-bar-toggle" :class="{ expanded: runtimeExpanded }">
             <ArrowDown />
           </el-icon>
@@ -449,7 +470,7 @@ watch(
             v-model="inputMessage"
             type="textarea"
             :rows="3"
-            :placeholder="selectedProject ? `描述你想对「${selectedProject.name}」执行的操作...` : '请先在左侧选择一个项目'"
+            :placeholder="selectedProject ? t('chat.input.placeholder', { name: selectedProject.name }) : t('chat.input.placeholderNoProject')"
             :disabled="!selectedProject || sessionCreating"
             @keydown.enter.ctrl.prevent="handleSend"
             @keydown.enter.exact.prevent="handleSend"
@@ -457,14 +478,14 @@ watch(
             class="chat-input"
           />
           <div class="input-toolbar">
-            <span class="input-hint">Enter 发送 &nbsp;·&nbsp; Shift+Enter 换行</span>
+            <span class="input-hint">{{ t('chat.input.hint') }}</span>
             <el-button
               type="primary"
               :loading="sessionStore.loading || sessionCreating"
               :disabled="!inputMessage.trim() || !selectedProject"
               @click="handleSend"
             >
-              发送
+              {{ t('chat.input.send') }}
             </el-button>
           </div>
         </div>

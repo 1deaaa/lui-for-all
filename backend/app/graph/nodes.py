@@ -50,6 +50,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
 
         # 项目全局描述
         project_description = state.get("project_description") or "未知"
+        response_language = state.get("response_language") or "简体中文"
 
         emit_runtime_event("task_progress", node_name="agent_entry", progress=0.05, message="AI 正在判断请求类型")
 
@@ -58,6 +59,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
             capability_list=capability_list,
             project_description=project_description,
             user_message=state["user_message"],
+            response_language=response_language,
         )}]
         for msg in state.get("chat_history", []):
             messages.append({"role": msg["role"], "content": msg["content"]})
@@ -143,10 +145,18 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
         return {"current_node": "summarize"}
 
     artifacts = state.get("execution_artifacts", [])
+    response_language = state.get("response_language") or "简体中文"
+    response_locale = (state.get("response_locale") or "zh-CN").lower()
     emit_runtime_event("task_progress", node_name="summarize", progress=0.90, message="正在整理执行结果并生成总结")
 
     if not artifacts:
-        return {"summary_text": "没有执行任何操作。", "current_node": "summarize"}
+        if response_locale.startswith("en"):
+            no_result_summary = "No operation was executed."
+        elif response_locale.startswith("ja"):
+            no_result_summary = "操作は実行されませんでした。"
+        else:
+            no_result_summary = "没有执行任何操作。"
+        return {"summary_text": no_result_summary, "current_node": "summarize"}
 
     try:
         results_json = json.dumps(
@@ -160,6 +170,7 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
             [{"role": "user", "content": SUMMARY_PROMPT.format(
                 user_message=state["user_message"],
                 results=results_json,
+                response_language=response_language,
             )}],
             temperature=0.5,
         ):

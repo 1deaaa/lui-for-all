@@ -28,6 +28,17 @@ from app.schemas.event import format_sse_event
 router = APIRouter()
 
 
+def _resolve_response_language(locale: str | None) -> tuple[str, str]:
+    """将前端 locale 标准化为内部 locale 与提示词语言名。"""
+    normalized = (locale or "").strip().lower().replace("_", "-")
+
+    if normalized.startswith("en"):
+        return "en-US", "English"
+    if normalized.startswith("ja"):
+        return "ja-JP", "日本語"
+    return "zh-CN", "简体中文"
+
+
 def _build_parameter_hints_from_route(route: dict[str, Any]) -> dict[str, Any]:
     """从 route_map 路由记录提取参数提示（含 request_body_fields）。"""
     hints: dict[str, Any] = {}
@@ -234,6 +245,7 @@ async def send_message(
 async def stream_events(
     session_id: str,
     task_run_id: str | None = None,
+    locale: str | None = None,
     resume_write_id: str | None = None,
     resume_action: str | None = None,
     resume_approved_ids: str | None = None,
@@ -260,6 +272,7 @@ async def stream_events(
         task_run_data = None
         available_capabilities = []
         chat_history_dicts = []
+        response_locale, response_language = _resolve_response_language(locale)
 
         async with async_session() as db:
             task_repository = TaskRepository(db)
@@ -357,6 +370,8 @@ async def stream_events(
                 "session_id": session_id,
                 "project_id": task_run_data["project_id"],
                 "trace_id": task_run_data["trace_id"],
+                "response_locale": response_locale,
+                "response_language": response_language,
                 "project_base_url": task_run_data["project_base_url"],
                 "project_username": task_run_data["project_username"],
                 "project_password": task_run_data["project_password"],

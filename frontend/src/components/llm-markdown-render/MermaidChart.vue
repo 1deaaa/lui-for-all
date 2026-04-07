@@ -2,7 +2,7 @@
   <div class="mermaid-block" :style="wrapperStyle">
     <!-- 加载状态 -->
     <div v-show="loading && !error" class="loading-overlay">
-      <span class="loading-text">流程图渲染中</span>
+      <span class="loading-text">{{ t('charts.mermaidRendering') }}</span>
       <div class="wiggle-box blue"></div>
     </div>
 
@@ -18,17 +18,17 @@
           />
         </svg>
       </div>
-      <span class="text-red-600 font-medium">图表渲染失败</span>
+      <span class="text-red-600 font-medium">{{ t('charts.mermaidRenderFailed') }}</span>
       <button
         @click="retryRender"
         class="retry-btn"
       >
-        重试
+        {{ t('charts.retry') }}
       </button>
     </div>
 
     <div class="mermaid-container" :style="containerStyle" ref="mermaidContainer"></div>
-    <button class="download-btn" @click="downloadChart" title="下载图表">
+    <button class="download-btn" @click="downloadChart" :title="t('charts.downloadChart')">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M8 1V10M8 10L5 7M8 10L11 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M3 10V12C3 13.1046 3.89543 14 5 14H11C12.1046 14 13 13.1046 13 12V10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -40,6 +40,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, onBeforeUnmount } from 'vue'
 import mermaid from 'mermaid'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   config: {
@@ -47,6 +48,7 @@ const props = defineProps({
     default: '',
   },
 })
+const { t } = useI18n()
 
 // 初始加载状态取决于是否有配置内容
 const loading = ref<boolean>(!!props.config?.trim())

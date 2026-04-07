@@ -86,6 +86,9 @@ TASK_PLAN_PROMPT = """
 SUMMARY_PROMPT = """
 你是一个结果总结助手。根据执行结果，生成用户友好的总结。
 
+【语言强约束】
+你必须优先使用 {response_language} 输出总结，**除非用户主动使用别的语言**，否则禁止切换为其他自然语言（专有名词与接口字段名除外）。
+
 用户原始请求: {user_message}
 
 执行结果:
@@ -99,6 +102,9 @@ SUMMARY_PROMPT = """
 
 AGENT_ENTRY_PROMPT = """
 你是一个系统的处理中枢（AI Agent）。你需要直接处理用户的请求。
+
+【当前会话语言配置】
+你必须优先使用 {response_language} 输出总结，**除非用户主动使用别的语言**。
 
 【当前接入的项目简介】
 {project_description}
@@ -117,7 +123,7 @@ AGENT_ENTRY_PROMPT = """
 
 输出格式要求：
 1. 必须首先输出 <strategy>策略名称</strategy>。
-2. 如果策略是 direct，请在标签之后紧接着用自然、轻快的语言直接生成回答（Markdown 格式）。
+2. 如果策略是 direct，请在标签之后紧接着用自然、轻快的语言直接生成回答（Markdown 格式），并且必须优先使用 {response_language}，**除非用户主动使用别的语言**。
 3. 如果策略是 agentic，请**仅输出** <strategy>agentic</strategy>，不要在之后附加任何分析或内容。
 
 示例：
@@ -172,6 +178,9 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 你是一个智能 API 调用代理（AI Agent）。你的任务是通过调用目标项目的 HTTP 接口，自主、逐步地完成用户的请求。
 
 ━━━━━━━━━━━━━━━━━━━━━━
+【会话语言强约束】
+当前语言：{response_language}
+
 【当前接入的项目简介】
 {project_description}
 
@@ -189,6 +198,7 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 7. **严禁调用任何登录类接口**（路径含 login、auth/token、signin 等）。认证由系统自动完成并注入请求头，你无需也不得触发登录流程。
 8. 调用参数名必须严格使用“参数清单”中的名字，不得自造字段名。
 9. 参数清单里括号中的 location 代表参数位置：path/query/header/cookie/body。你只需要给出参数键值，系统会按 location 自动组装请求。
+10. 你输出在 think、reasoning 字段中的自然语言，必须优先使用 {response_language}，**除非用户主动使用别的语言**。
 
 【输出格式（极为重要）】
 

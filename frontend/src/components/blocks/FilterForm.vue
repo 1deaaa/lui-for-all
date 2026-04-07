@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
+import { useI18n } from 'vue-i18n'
 import axios from 'axios'
 
 const props = defineProps<{
@@ -23,6 +24,7 @@ const props = defineProps<{
 
 const formData = reactive<Record<string, any>>({})
 const loading = ref(false)
+const { t } = useI18n()
 
 // 初始化表单数据
 props.block.fields.forEach(field => {
@@ -119,7 +121,7 @@ async function handleSubmit() {
       
       <el-form-item>
         <el-button type="primary" @click="handleSubmit" :loading="loading">
-          提交
+          {{ t('filterForm.submit') }}
         </el-button>
       </el-form-item>
     </el-form>

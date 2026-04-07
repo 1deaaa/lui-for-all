@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
 defineProps<{
   block: {
     block_type: 'diff_card'
@@ -12,6 +14,8 @@ defineProps<{
     }>
   }
 }>()
+
+const { t } = useI18n()
 
 // 获取变更类型颜色
 function getChangeColor(type: string): string {
@@ -31,11 +35,11 @@ function getChangeColor(type: string): string {
 function getChangeText(type: string): string {
   switch (type) {
     case 'added':
-      return '新增'
+      return t('diffCard.added')
     case 'removed':
-      return '删除'
+      return t('diffCard.removed')
     case 'modified':
-      return '修改'
+      return t('diffCard.modified')
     default:
       return type
   }
@@ -70,11 +74,11 @@ function getChangeText(type: string): string {
         
         <div class="diff-values">
           <div class="old-value" v-if="item.change_type !== 'added'">
-            <span class="label">旧值:</span>
+            <span class="label">{{ t('diffCard.oldValue') }}</span>
             <span class="value">{{ item.old_value }}</span>
           </div>
           <div class="new-value" v-if="item.change_type !== 'removed'">
-            <span class="label">新值:</span>
+            <span class="label">{{ t('diffCard.newValue') }}</span>
             <span class="value">{{ item.new_value }}</span>
           </div>
         </div>
