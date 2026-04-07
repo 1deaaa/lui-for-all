@@ -100,6 +100,8 @@ class ProjectImportPreset(BaseModel):
     openapi_url: str
     source_path: str
     login_route_id: str
+    username: str
+    password: str
     body_field_username: str = "username"
     body_field_password: str = "password"
     available: bool = True
@@ -143,11 +145,13 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
         ProjectImportPreset(
             id="sample-fastapi",
             name="FastAPI 示例（Docker）",
-            description="自动填充容器内 FastAPI 示例地址与源码目录。",
-            base_url="http://sample-fastapi:8010",
-            openapi_url="http://sample-fastapi:8010/openapi.json",
+            description="自动填充本机 FastAPI 示例地址与源码目录。",
+            base_url="http://localhost:8010",
+            openapi_url="http://localhost:8010/openapi.json",
             source_path=fastapi_source_path,
             login_route_id="POST:/api/auth/login",
+            username="111",
+            password="111111",
             body_field_username="username",
             body_field_password="password",
             available=fastapi_available,
@@ -155,11 +159,13 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
         ProjectImportPreset(
             id="sample-node",
             name="Node 示例（Docker）",
-            description="自动填充容器内 Node 示例地址与源码目录。",
-            base_url="http://sample-node:8020",
-            openapi_url="http://sample-node:8020/openapi.json",
+            description="自动填充本机 Node 示例地址与源码目录。",
+            base_url="http://localhost:8020",
+            openapi_url="http://localhost:8020/openapi.json",
             source_path=node_source_path,
             login_route_id="POST:/api/auth/login",
+            username="111",
+            password="111111",
             body_field_username="username",
             body_field_password="password",
             available=node_available,

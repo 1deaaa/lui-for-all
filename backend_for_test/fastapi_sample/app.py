@@ -39,6 +39,8 @@ ORDERS: dict[str, list[dict[str, Any]]] = {}
 JOBS: dict[str, dict[str, Any]] = {}
 IDEMPOTENCY_PAYMENTS: dict[str, dict[str, Any]] = {}
 TOKENS: dict[str, str] = {}
+LOGIN_USERNAME = "111"
+LOGIN_PASSWORD = "111111"
 
 
 class LoginRequest(BaseModel):
@@ -185,6 +187,9 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/login")
 def login(request: LoginRequest, response: Response) -> dict[str, Any]:
+    if request.username != LOGIN_USERNAME or request.password != LOGIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
     token = f"token-{uuid.uuid4().hex}"
     TOKENS[token] = request.username
     response.set_cookie(key="session_token", value=token, httponly=True)

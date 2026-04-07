@@ -34,6 +34,8 @@ interface ImportPreset {
   openapi_url: string
   source_path: string
   login_route_id: string
+  username: string
+  password: string
   body_field_username: string
   body_field_password: string
   available: boolean
@@ -58,11 +60,13 @@ const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
   {
     id: 'sample-fastapi',
     name: 'FastAPI 示例（Docker）',
-    description: '自动填充容器内 FastAPI 示例地址与源码目录。',
-    base_url: 'http://sample-fastapi:8010',
-    openapi_url: 'http://sample-fastapi:8010/openapi.json',
+    description: '自动填充本机 FastAPI 示例地址与源码目录。',
+    base_url: 'http://localhost:8010',
+    openapi_url: 'http://localhost:8010/openapi.json',
     source_path: '/app/backend_for_test/fastapi_sample',
     login_route_id: 'POST:/api/auth/login',
+    username: '111',
+    password: '111111',
     body_field_username: 'username',
     body_field_password: 'password',
     available: true,
@@ -70,11 +74,13 @@ const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
   {
     id: 'sample-node',
     name: 'Node 示例（Docker）',
-    description: '自动填充容器内 Node 示例地址与源码目录。',
-    base_url: 'http://sample-node:8020',
-    openapi_url: 'http://sample-node:8020/openapi.json',
+    description: '自动填充本机 Node 示例地址与源码目录。',
+    base_url: 'http://localhost:8020',
+    openapi_url: 'http://localhost:8020/openapi.json',
     source_path: '/app/backend_for_test/node_sample',
     login_route_id: 'POST:/api/auth/login',
+    username: '111',
+    password: '111111',
     body_field_username: 'username',
     body_field_password: 'password',
     available: true,
@@ -128,6 +134,8 @@ function applyImportPresetById(presetId: string) {
     base_url: preset.base_url,
     openapi_url: preset.openapi_url,
     source_path: preset.source_path,
+    username: preset.username,
+    password: preset.password,
     login_route_id: preset.login_route_id,
     body_field_username: preset.body_field_username,
     body_field_password: preset.body_field_password,
@@ -608,14 +616,11 @@ function getStatusText(status: string): string {
             >
               {{ preset.name }}
             </el-button>
-            <el-button size="small" text :loading="presetLoading" @click="fetchImportPresets">刷新</el-button>
-          </div>
-          <div class="preset-help">
-            点击预置可自动填充 API 地址、OpenAPI 地址与源码目录。
           </div>
           <div v-if="selectedPreset" class="preset-selected">
             <div>{{ selectedPreset.description }}</div>
             <div class="preset-source">源码目录：{{ selectedPreset.source_path }}</div>
+            <div class="preset-source">登录账号：{{ selectedPreset.username }} / {{ selectedPreset.password }}</div>
           </div>
         </el-form-item>
         <el-form-item label="项目名称" required>
@@ -647,6 +652,9 @@ function getStatusText(status: string): string {
           :closable="false"
           style="margin-bottom: 16px;"
         />
+        <div class="preset-help preset-credential-hint">
+          示例后端统一登录账号为 111，密码为 111111。选择上方预置后会自动填入，直接点“验证登录”即可测试登录态。
+        </div>
         <el-form-item label="Username">
           <el-input v-model="importForm.username" placeholder="管理员账号 (选填)" @change="loginVerified = null" />
         </el-form-item>

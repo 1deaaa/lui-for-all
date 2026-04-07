@@ -12,6 +12,8 @@ const orders = new Map();
 const jobs = new Map();
 const idempotencyPayments = new Map();
 const tokens = new Map();
+const LOGIN_USERNAME = '111';
+const LOGIN_PASSWORD = '111111';
 
 function now() {
   return new Date().toISOString();
@@ -253,6 +255,11 @@ app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
     res.status(400).json({ detail: 'username 和 password 必填' });
+    return;
+  }
+
+  if (username !== LOGIN_USERNAME || password !== LOGIN_PASSWORD) {
+    res.status(401).json({ detail: '用户名或密码错误' });
     return;
   }
 
