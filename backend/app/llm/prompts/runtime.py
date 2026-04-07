@@ -175,7 +175,7 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 【当前接入的项目简介】
 {project_description}
 
-【可用接口列表】（格式：route_id | safety_level | 描述）
+【可用接口列表】（每项包含 route_id / safety_level / 描述 / 参数清单）
 {capability_list}
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -187,6 +187,8 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 5. 当你认为已经获取了足够的信息，或者已经完成了任务，请输出 action=finish。
 6. 如果在某轮中无法继续（接口不存在、参数不足、连续失败），请直接进入 action=finish 并在 think 字段中说明情况。
 7. **严禁调用任何登录类接口**（路径含 login、auth/token、signin 等）。认证由系统自动完成并注入请求头，你无需也不得触发登录流程。
+8. 调用参数名必须严格使用“参数清单”中的名字，不得自造字段名。
+9. 参数清单里括号中的 location 代表参数位置：path/query/header/cookie/body。你只需要给出参数键值，系统会按 location 自动组装请求。
 
 【输出格式（极为重要）】
 

@@ -6,6 +6,7 @@
 import logging
 import uuid
 from datetime import datetime, UTC, timedelta
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,73 @@ from app.repositories.task_repository import TaskRepository
 from app.schemas.event import format_sse_event
 
 router = APIRouter()
+
+
+def _build_parameter_hints_from_route(route: dict[str, Any]) -> dict[str, Any]:
+    """从 route_map 路由记录提取参数提示（含 request_body_fields）。"""
+    hints: dict[str, Any] = {}
+    all_params = (route.get("parameters") or []) + (route.get("request_body_fields") or [])
+
+    for param in all_params:
+        if not isinstance(param, dict):
+            continue
+        name = param.get("name")
+        if not name:
+            continue
+
+        location = str(param.get("location") or "query")
+        key = name if name not in hints else f"{name}@{location}"
+        hints[key] = {
+            "name": name,
+            "location": location,
+            "type": param.get("type_hint", "str"),
+            "required": bool(param.get("required", False)),
+            "description": param.get("description"),
+            "default": param.get("default"),
+            "example": param.get("example"),
+        }
+
+    return hints
+
+
+def _merge_parameter_hints(
+    capability_hints: dict[str, Any] | None,
+    backed_by_routes: list[dict[str, Any]] | None,
+    route_hints_by_route_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """将 capability 已有 hints 与 route_map hints 合并，优先保留已有字段并补齐缺失项。"""
+    merged = dict(capability_hints or {})
+    if not backed_by_routes:
+        return merged
+
+    existing_names: set[str] = set()
+    for key, value in merged.items():
+        if isinstance(value, dict) and value.get("name"):
+            existing_names.add(str(value.get("name")))
+        else:
+            existing_names.add(str(key).split("@", 1)[0])
+
+    for route in backed_by_routes:
+        if not isinstance(route, dict):
+            continue
+        route_id = route.get("route_id")
+        if not route_id:
+            continue
+
+        route_hints = route_hints_by_route_id.get(str(route_id), {})
+        for hint_key, hint_val in route_hints.items():
+            hint_name = (
+                str(hint_val.get("name"))
+                if isinstance(hint_val, dict) and hint_val.get("name")
+                else str(hint_key).split("@", 1)[0]
+            )
+
+            if hint_name in existing_names:
+                continue
+            merged[hint_key] = hint_val
+            existing_names.add(hint_name)
+
+    return merged
 
 
 class CreateSessionRequest(BaseModel):
@@ -215,7 +283,18 @@ async def stream_events(
                             chat_history_dicts.append({"role": m.role, "content": m.content})
 
                     capabilities = await project_repository.list_capabilities(task_run.project_id)
+                    route_map = await project_repository.get_latest_route_map(task_run.project_id)
                     project = await project_repository.get_by_id(task_run.project_id)
+
+                    route_hints_by_route_id: dict[str, dict[str, Any]] = {}
+                    if route_map and isinstance(route_map.routes, list):
+                        for route in route_map.routes:
+                            if not isinstance(route, dict):
+                                continue
+                            route_id = route.get("route_id")
+                            if not route_id:
+                                continue
+                            route_hints_by_route_id[str(route_id)] = _build_parameter_hints_from_route(route)
 
                     task_run_data = {
                         "id": task_run.id,
@@ -245,7 +324,11 @@ async def stream_events(
                             "data_sensitivity": c.data_sensitivity,
                             "best_modalities": c.best_modalities,
                             "requires_confirmation": c.requires_confirmation,
-                            "parameter_hints": c.parameter_hints,
+                            "parameter_hints": _merge_parameter_hints(
+                                c.parameter_hints,
+                                c.backed_by_routes,
+                                route_hints_by_route_id,
+                            ),
                         }
                         for c in capabilities
                     ]

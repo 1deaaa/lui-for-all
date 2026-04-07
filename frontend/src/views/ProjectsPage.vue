@@ -59,7 +59,7 @@ function createDefaultImportForm(): ImportFormState {
 const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
   {
     id: 'sample-fastapi',
-    name: 'FastAPI 示例（Docker）',
+    name: 'FastAPI 示例',
     description: '自动填充本机 FastAPI 示例地址与源码目录。',
     base_url: 'http://localhost:8010',
     openapi_url: 'http://localhost:8010/openapi.json',
@@ -73,7 +73,7 @@ const FALLBACK_IMPORT_PRESETS: ImportPreset[] = [
   },
   {
     id: 'sample-node',
-    name: 'Node 示例（Docker）',
+    name: 'Node 示例',
     description: '自动填充本机 Node 示例地址与源码目录。',
     base_url: 'http://localhost:8020',
     openapi_url: 'http://localhost:8020/openapi.json',
@@ -256,11 +256,11 @@ async function fetchRoutes(force = false) {
 }
 
 // 验证登录
-async function verifyLogin() {
+async function verifyLogin(): Promise<boolean> {
   const { base_url, login_route_id, username, password, body_field_username, body_field_password } = importForm.value
   if (!login_route_id || !username || !password) {
     ElMessage.warning('请先选择登录接口并填写账号密码')
-    return
+    return false
   }
   loginVerifying.value = true
   loginVerified.value = null
@@ -274,13 +274,16 @@ async function verifyLogin() {
     if (data.success) {
       loginVerified.value = true
       ElMessage.success('登录验证成功')
+      return true
     } else {
       loginVerified.value = false
       ElMessage.error(data.message || '登录验证失败')
+      return false
     }
   } catch {
     loginVerified.value = false
     ElMessage.error('验证请求失败')
+    return false
   } finally {
     loginVerifying.value = false
   }
@@ -298,10 +301,12 @@ async function submitImport() {
     return
   }
 
-  // 如果填了账号密码但未通过登录验证，阻止提交
+  // 如果填写了账号密码，导入前自动补跑一次登录验证
   if (importForm.value.username && loginVerified.value !== true) {
-    ElMessage.warning('请先完成登录接口验证')
-    return
+    const verified = await verifyLogin()
+    if (!verified) {
+      return
+    }
   }
 
   // 如果没有账号密码，清空 login_route_id
@@ -689,27 +694,29 @@ function getStatusText(status: string): string {
           <el-form-item label="密码字段">
             <el-input v-model="importForm.body_field_password" placeholder="password" @change="loginVerified = null" />
           </el-form-item>
-          <el-form-item label=" ">
-            <el-button
-              :loading="loginVerifying"
-              :type="loginVerified === true ? 'success' : loginVerified === false ? 'danger' : 'primary'"
-              @click="verifyLogin"
-            >
-              {{ loginVerified === true ? '✓ 验证通过' : loginVerified === false ? '✗ 验证失败，重试' : '验证登录' }}
-            </el-button>
-          </el-form-item>
         </template>
       </el-form>
 
       <template #footer>
-        <el-button @click="importDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          @click="submitImport"
-          :loading="importLoading || testConnectionLoading"
-        >
-          导入项目
-        </el-button>
+        <div class="dialog-footer-row">
+          <el-button
+            class="verify-login-btn"
+            :loading="loginVerifying"
+            @click="verifyLogin"
+          >
+            {{ loginVerified === true ? '✓ 验证通过' : loginVerified === false ? '✗ 验证失败，重试' : '验证登录' }}
+          </el-button>
+          <div class="dialog-footer-actions">
+            <el-button @click="importDialogVisible = false">取消</el-button>
+            <el-button
+              type="primary"
+              @click="submitImport"
+              :loading="importLoading || testConnectionLoading"
+            >
+              导入项目
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -859,6 +866,39 @@ function getStatusText(status: string): string {
   margin-top: 4px;
   font-family: var(--font-mono);
   word-break: break-all;
+}
+
+.dialog-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.dialog-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.verify-login-btn {
+  background-color: #2f3136;
+  border-color: #2f3136;
+  color: #ffffff;
+}
+
+.verify-login-btn:hover,
+.verify-login-btn:focus {
+  background-color: #1f2125;
+  border-color: #1f2125;
+  color: #ffffff;
+}
+
+.verify-login-btn.is-loading {
+  opacity: 0.92;
 }
 
 .progress-hint {

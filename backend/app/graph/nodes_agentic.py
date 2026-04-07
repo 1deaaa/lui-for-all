@@ -102,14 +102,49 @@ def _emit(event: str, **payload: Any):
     get_runtime_emitter().emit(event, **payload)
 
 
+def _format_parameter_hints(parameter_hints: dict[str, Any], max_items: int = 12) -> str:
+    """将 parameter_hints 压缩成易读文本，注入系统提示。"""
+    if not parameter_hints:
+        return "无"
+
+    items: list[str] = []
+    for _, hint in list(parameter_hints.items())[:max_items]:
+        if not isinstance(hint, dict):
+            continue
+        name = hint.get("name") or "unknown"
+        location = hint.get("location") or "unknown"
+        required = "必填" if hint.get("required") else "可选"
+        type_hint = hint.get("type") or "str"
+        items.append(f"{name}({location},{required},{type_hint})")
+
+    if len(parameter_hints) > max_items:
+        items.append(f"... 另有 {len(parameter_hints) - max_items} 个参数")
+
+    return "，".join(items) if items else "无"
+
+
+def _find_route_parameter_hints(state: GraphState, route_id: str) -> dict[str, Any]:
+    """从可用能力中按 route_id 反查参数提示。"""
+    for cap in state.get("available_capabilities", []):
+        routes = cap.get("backed_by_routes") or []
+        if any(isinstance(r, dict) and r.get("route_id") == route_id for r in routes):
+            return cap.get("parameter_hints") or {}
+
+    for cap in state.get("available_capabilities", []):
+        if cap.get("capability_id") == route_id:
+            return cap.get("parameter_hints") or {}
+    return {}
+
+
 def _build_capability_list(available_capabilities: list[dict]) -> str:
-    """构建接口列表文本，注入 Agentic System Prompt"""
+    """构建接口列表文本（含参数清单），注入 Agentic System Prompt。"""
     lines = []
     for cap in available_capabilities:
         cap_id = cap.get("capability_id", "")
         safety = cap.get("safety_level", "readonly_safe")
         name = cap.get("name") or ""
         desc = cap.get("description") or ""
+        parameter_hints = cap.get("parameter_hints") or {}
         routes = cap.get("backed_by_routes", [])
         # 取第一个路由作为 route_id 示例
         route_id = ""
@@ -117,7 +152,9 @@ def _build_capability_list(available_capabilities: list[dict]) -> str:
             first = routes[0]
             if isinstance(first, dict):
                 route_id = first.get("route_id", "")
-        lines.append(f"- {route_id or cap_id} | {safety} | {name}：{desc}")
+        line = f"- {route_id or cap_id} | {safety} | {name}：{desc}"
+        line += f"\n  参数: {_format_parameter_hints(parameter_hints)}"
+        lines.append(line)
     return "\n".join(lines) if lines else "（无可用接口）"
 
 
@@ -175,6 +212,7 @@ async def _execute_http(
     from app.services.auth_session_service import AuthSessionService
 
     method, path = _parse_route(route_id)
+    route_hints = _find_route_parameter_hints(state, route_id)
 
     # 替换路径模板变量
     path_param_keys = re.findall(r'\{(\w+)\}', path)
@@ -184,6 +222,38 @@ async def _execute_http(
             path = path.replace(f'{{{key}}}', str(remaining.pop(key)))
     parameters = remaining
 
+    # 按参数声明位置拆分，避免将 query/header/cookie 错塞进 body 导致 422
+    query_params: dict[str, Any] = {}
+    body_params: dict[str, Any] = {}
+    header_params: dict[str, str] = {}
+    cookie_params: dict[str, str] = {}
+
+    for key, value in parameters.items():
+        hint = route_hints.get(key)
+        if not isinstance(hint, dict):
+            hint = next(
+                (
+                    h for h in route_hints.values()
+                    if isinstance(h, dict) and h.get("name") == key
+                ),
+                None,
+            )
+
+        location = (hint or {}).get("location", "")
+        if location == "query":
+            query_params[key] = value
+        elif location == "header":
+            header_params[key] = str(value)
+        elif location == "cookie":
+            cookie_params[key] = str(value)
+        elif location == "body":
+            body_params[key] = value
+        else:
+            if method in ("POST", "PUT", "PATCH"):
+                body_params[key] = value
+            else:
+                query_params[key] = value
+
     base_url = state.get("project_base_url", "http://localhost:6689").rstrip("/")
     auth = AuthSessionService()
     if bearer_token:
@@ -192,6 +262,16 @@ async def _execute_http(
         auth._cookie_name = cookie_name
     headers = auth.build_headers({"Content-Type": "application/json"})
 
+    if header_params:
+        headers.update(header_params)
+
+    if cookie_params:
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_params.items())
+        if headers.get("Cookie"):
+            headers["Cookie"] = f"{headers['Cookie']}; {cookie_str}"
+        else:
+            headers["Cookie"] = cookie_str
+
     executor = HTTPExecutor(base_url=base_url, trace_id=state.get("trace_id"))
     norm_path = path if path.startswith("/") else f"/{path}"
     full_url = f"{base_url}{norm_path}"
@@ -199,15 +279,18 @@ async def _execute_http(
     logger.info(
         f"[http] {method} {full_url} | "
         f"has_token={bool(bearer_token)} | "
-        f"params={list(parameters.keys()) if parameters else []}"
+        f"query={list(query_params.keys()) if query_params else []} | "
+        f"body={list(body_params.keys()) if body_params else []} | "
+        f"header={list(header_params.keys()) if header_params else []} | "
+        f"cookie={list(cookie_params.keys()) if cookie_params else []}"
     )
 
     status_code, response_body, duration_ms = await executor.execute(
         method=method,
         path=norm_path,
         headers=headers,
-        params=parameters if method == "GET" else None,
-        body=parameters if method in ("POST", "PUT", "PATCH") else None,
+        params=query_params or None,
+        body=body_params if method in ("POST", "PUT", "PATCH") else None,
     )
 
     # 先尝试从响应体捕获 token（Bearer 模式）
@@ -238,7 +321,12 @@ async def _execute_http(
         "captured_cookie_name": auth.cookie_name,
         "url": full_url,
         "method": method,
-        "parameters": parameters,
+        "parameters": {
+            "query": query_params,
+            "body": body_params,
+            "header": header_params,
+            "cookie": cookie_params,
+        },
     }
 
 

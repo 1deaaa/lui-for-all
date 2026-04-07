@@ -46,6 +46,8 @@ logging.getLogger("docket").setLevel(logging.WARNING)
 logging.getLogger("pydocket").setLevel(logging.WARNING)
 logging.getLogger("fakeredis").setLevel(logging.WARNING)
 logging.getLogger("fastmcp").setLevel(logging.WARNING)
+logging.getLogger("sse_starlette").setLevel(logging.WARNING)
+logging.getLogger("sse_starlette.sse").setLevel(logging.WARNING)
 
 
 def init_telemetry():

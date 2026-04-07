@@ -75,6 +75,8 @@ CUSTOM_LOG_CONFIG = {
         "pydocket":             {"level": "WARNING", "propagate": True},
         "fakeredis":            {"level": "WARNING", "propagate": True},
         "fastmcp":              {"level": "WARNING", "propagate": True},
+        "sse_starlette":        {"level": "WARNING", "propagate": True},
+        "sse_starlette.sse":    {"level": "WARNING", "propagate": True},
     },
 }
 

@@ -185,16 +185,26 @@ async function handleSafetyActionChange(val: string) {
   }
 }
 
-const windowHost = window.location.host
+function resolveMcpGatewayOrigin(): string {
+  const isViteDevServer = import.meta.env.DEV && window.location.port === '5173'
+  if (isViteDevServer) {
+    const devBackend = import.meta.env.VITE_BACKEND_PROXY_TARGET || 'http://localhost:6689'
+    return devBackend.replace(/\/+$/, '')
+  }
+  return `${window.location.protocol}//${window.location.host}`.replace(/\/+$/, '')
+}
+
+const mcpGatewayOrigin = computed(() => resolveMcpGatewayOrigin())
+const mcpGatewayUrl = computed(() => `${mcpGatewayOrigin.value}/mcp/`)
 const mcpJsonExample = computed(() => {
   const token = settings.value.mcp_api_token || '在这里填入您的Token'
-  const url = `http://${windowHost}/mcp/sse`
+  const url = mcpGatewayUrl.value
   
-  // 提供标准的 SSE 直接连接 JSON
+  // 提供标准的 Streamable HTTP 连接 JSON
   return JSON.stringify({
     "mcpServers": {
       "lui-for-all-remote": {
-        "type": "sse",
+        "type": "streamable-http",
         "url": url,
         "headers": {
           "Authorization": `Bearer ${token}`
@@ -398,7 +408,7 @@ onMounted(loadSettings)
                 <Icon icon="lucide:network" class="card-icon" />
                 <div>
                   <div class="card-title">对外暴露协议代理 (MCP)</div>
-                  <div class="card-desc">将系统能力通过 SSE 协议暴露给其他智能体</div>
+                  <div class="card-desc">将系统能力通过 Streamable HTTP 协议暴露给其他智能体</div>
                 </div>
               </div>
             </template>
@@ -441,10 +451,13 @@ onMounted(loadSettings)
                       <Icon icon="lucide:copy" style="margin-right: 4px;" /> 复制完整 JSON
                     </el-button>
                   </div>
-                  <p>在 VS Code 的 Cline 或 Roo Code 等多模型插件中，您可以直接将连接类型设置为 <code>sse</code>（如今大多数前沿客户端已经原生兼容），并桥接本远程网关：</p>
+                  <p>在 VS Code 的 Cline 或 Roo Code 等多模型插件中，建议将连接类型设置为 <code>streamable-http</code>，并桥接本远程网关：</p>
+                  <p class="instruction-note">
+                    <Icon icon="lucide:server" /> 当前示例网关地址：<code>{{ mcpGatewayUrl }}</code>
+                  </p>
                   <div class="code-block" v-html="highlightJson(mcpJsonExample)"></div>
                   <p class="instruction-note">
-                    <Icon icon="lucide:info" /> 此为示例配置，具体格式请参考您所使用的客户端的配置规范，但务必确保将 <code>type</code> 设置为 <code>sse</code>，以及使用正确的 Bearer Header（如已启用防御）。
+                    <Icon icon="lucide:info" /> 开发模式下（5173）示例会自动指向后端端口（默认 6689）；部署模式下示例会自动使用当前同源端口。请确保启用了正确的 Bearer Header（如已启用防御）。
                   </p>
                 </div>
               </div>

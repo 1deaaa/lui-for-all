@@ -44,19 +44,8 @@ class OpenAPIIngestor:
             "cookie": ParameterLocation.COOKIE,
         }
 
-        # 解析类型
         schema = param.get("schema", {})
-        type_hint = schema.get("type", "string")
-        if type_hint == "integer":
-            type_hint = "int"
-        elif type_hint == "number":
-            type_hint = "float"
-        elif type_hint == "boolean":
-            type_hint = "bool"
-        elif type_hint == "array":
-            type_hint = "list"
-        elif type_hint == "object":
-            type_hint = "dict"
+        type_hint = self._schema_type_hint(schema)
 
         return ParameterSchema(
             name=param.get("name", ""),
@@ -70,6 +59,40 @@ class OpenAPIIngestor:
             example=param.get("example"),
         )
 
+    def _normalize_type_hint(self, raw_type: str | None) -> str:
+        """统一 OpenAPI 类型到内部 type_hint。"""
+        type_map = {
+            "integer": "int",
+            "number": "float",
+            "boolean": "bool",
+            "array": "list",
+            "object": "dict",
+            "string": "str",
+        }
+        return type_map.get((raw_type or "").lower(), "str")
+
+    def _schema_type_hint(self, schema: dict[str, Any]) -> str:
+        """从 schema 结构推断类型提示。"""
+        if not schema:
+            return "str"
+
+        raw_type = schema.get("type")
+        if raw_type:
+            return self._normalize_type_hint(raw_type)
+
+        if "$ref" in schema:
+            return "dict"
+
+        for key in ("anyOf", "oneOf", "allOf"):
+            variants = schema.get(key)
+            if isinstance(variants, list):
+                for item in variants:
+                    hint = self._schema_type_hint(item)
+                    if hint != "str":
+                        return hint
+
+        return "str"
+
     def _expand_schema_fields(
         self, schema_name: str, schemas: dict[str, Any]
     ) -> list[ParameterSchema]:
@@ -80,18 +103,7 @@ class OpenAPIIngestor:
         fields: list[ParameterSchema] = []
 
         for field_name, field_def in properties.items():
-            raw_type = field_def.get("type", "string")
-            # 类型映射
-            type_map = {
-                "integer": "int", "number": "float",
-                "boolean": "bool", "array": "list", "object": "dict",
-            }
-            type_hint = type_map.get(raw_type, "str")
-
-            # 处理 anyOf / $ref
-            if not raw_type and "anyOf" in field_def:
-                ref_types = [t.get("type", "") for t in field_def["anyOf"]]
-                type_hint = next((type_map.get(t, "str") for t in ref_types if t), "str")
+            type_hint = self._schema_type_hint(field_def)
 
             fields.append(
                 ParameterSchema(
@@ -107,18 +119,79 @@ class OpenAPIIngestor:
 
         return fields
 
+    def _extract_request_body_fields(
+        self,
+        schema_obj: dict[str, Any],
+        schemas: dict[str, Any],
+    ) -> list[ParameterSchema]:
+        """从请求体 schema（含 inline / $ref / allOf 等）提取顶层字段。"""
+        if not schema_obj:
+            return []
+
+        # 1) 直接引用组件 schema
+        ref = schema_obj.get("$ref")
+        if ref:
+            schema_name = ref.split("/")[-1]
+            return self._expand_schema_fields(schema_name, schemas)
+
+        # 2) inline object
+        if schema_obj.get("type") == "object":
+            properties = schema_obj.get("properties", {})
+            required_fields = set(schema_obj.get("required", []))
+            fields: list[ParameterSchema] = []
+            for field_name, field_def in properties.items():
+                fields.append(
+                    ParameterSchema(
+                        name=field_name,
+                        location=ParameterLocation.BODY,
+                        required=field_name in required_fields,
+                        type_hint=self._schema_type_hint(field_def),
+                        description=field_def.get("description"),
+                        default=field_def.get("default"),
+                        example=field_def.get("example"),
+                    )
+                )
+            return fields
+
+        # 3) 组合 schema（allOf/oneOf/anyOf）
+        for key in ("allOf", "oneOf", "anyOf"):
+            variants = schema_obj.get(key)
+            if not isinstance(variants, list):
+                continue
+
+            merged: list[ParameterSchema] = []
+            seen_names: set[str] = set()
+            for item in variants:
+                for field in self._extract_request_body_fields(item, schemas):
+                    if field.name in seen_names:
+                        continue
+                    seen_names.add(field.name)
+                    merged.append(field)
+            if merged:
+                return merged
+
+        return []
+
     def parse_request_body(
         self, request_body: dict[str, Any], schemas: dict[str, Any]
     ) -> tuple[str | None, list[ParameterSchema]]:
         """解析请求体：返回 (schema_ref_name, 展开字段列表)"""
         content = request_body.get("content", {})
         for content_type, content_schema in content.items():
-            if content_type.startswith("application/json"):
-                ref = content_schema.get("schema", {}).get("$ref", "")
-                if ref:
-                    schema_name = ref.split("/")[-1]
-                    expanded = self._expand_schema_fields(schema_name, schemas)
-                    return schema_name, expanded
+            if not (
+                content_type.startswith("application/json")
+                or content_type.startswith("application/x-www-form-urlencoded")
+                or content_type.startswith("multipart/form-data")
+            ):
+                continue
+
+            schema_obj = content_schema.get("schema", {}) or {}
+            schema_name = None
+            if "$ref" in schema_obj:
+                schema_name = schema_obj["$ref"].split("/")[-1]
+
+            expanded = self._extract_request_body_fields(schema_obj, schemas)
+            return schema_name, expanded
         return None, []
 
     def parse_responses(self, responses: dict[str, Any]) -> tuple[list[ResponseSchema], bool]:

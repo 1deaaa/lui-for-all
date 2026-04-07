@@ -119,8 +119,17 @@ class CapabilityGraphBuilder:
 
     def _extract_parameter_hints(self, route: RouteInfo) -> dict[str, Any]:
         hints: dict[str, Any] = {}
-        for param in route.parameters:
-            hints[param.name] = {
+        all_params = list(route.parameters) + list(route.request_body_fields)
+        for param in all_params:
+            location = getattr(param.location, "value", str(param.location))
+            hint_key = param.name
+            if hint_key in hints:
+                # 同名参数在不同位置并存时，追加 location 后缀避免覆盖
+                hint_key = f"{param.name}@{location}"
+
+            hints[hint_key] = {
+                "name": param.name,
+                "location": location,
                 "type": param.type_hint,
                 "required": param.required,
                 "description": param.description,

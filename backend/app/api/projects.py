@@ -144,7 +144,7 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
     return [
         ProjectImportPreset(
             id="sample-fastapi",
-            name="FastAPI 示例（Docker）",
+            name="FastAPI 示例",
             description="自动填充本机 FastAPI 示例地址与源码目录。",
             base_url="http://localhost:8010",
             openapi_url="http://localhost:8010/openapi.json",
@@ -158,7 +158,7 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
         ),
         ProjectImportPreset(
             id="sample-node",
-            name="Node 示例（Docker）",
+            name="Node 示例",
             description="自动填充本机 Node 示例地址与源码目录。",
             base_url="http://localhost:8020",
             openapi_url="http://localhost:8020/openapi.json",
