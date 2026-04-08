@@ -125,6 +125,12 @@ def _format_parameter_hints(parameter_hints: dict[str, Any], max_items: int = 12
 
 def _find_route_parameter_hints(state: GraphState, route_id: str) -> dict[str, Any]:
     """从可用能力中按 route_id 反查参数提示。"""
+    route_hint_map = state.get("route_hints_by_route_id") or {}
+    if isinstance(route_hint_map, dict):
+        route_level_hints = route_hint_map.get(route_id)
+        if isinstance(route_level_hints, dict) and route_level_hints:
+            return route_level_hints
+
     for cap in state.get("available_capabilities", []):
         routes = cap.get("backed_by_routes") or []
         if any(isinstance(r, dict) and r.get("route_id") == route_id for r in routes):
@@ -134,6 +140,46 @@ def _find_route_parameter_hints(state: GraphState, route_id: str) -> dict[str, A
         if cap.get("capability_id") == route_id:
             return cap.get("parameter_hints") or {}
     return {}
+
+
+def _resolve_param_hint(route_hints: dict[str, Any], key: str, method: str) -> dict[str, Any] | None:
+    """根据参数名解析最匹配的提示，兼容 name@location 与同名多位置。"""
+    direct = route_hints.get(key)
+    if isinstance(direct, dict):
+        return direct
+
+    candidates: list[dict[str, Any]] = []
+    for hint_key, hint_val in route_hints.items():
+        if not isinstance(hint_val, dict):
+            continue
+        base_name = str(hint_val.get("name") or str(hint_key).split("@", 1)[0])
+        if base_name == key:
+            candidates.append(hint_val)
+
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # 同名冲突时按方法优先级选择，避免 query/body 错位导致 422。
+    if method in ("POST", "PUT", "PATCH"):
+        location_order = ("body", "query", "header", "cookie", "path")
+    else:
+        location_order = ("query", "path", "header", "cookie", "body")
+
+    for location in location_order:
+        matched = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("location") or "").lower() == location
+            ),
+            None,
+        )
+        if matched is not None:
+            return matched
+
+    return candidates[0]
 
 
 def _build_capability_list(available_capabilities: list[dict]) -> str:
@@ -156,6 +202,25 @@ def _build_capability_list(available_capabilities: list[dict]) -> str:
         line += f"\n  参数: {_format_parameter_hints(parameter_hints)}"
         lines.append(line)
     return "\n".join(lines) if lines else "（无可用接口）"
+
+
+def _is_explicit_direct_request(user_message: str) -> bool:
+    """识别用户是否明确要求直接回答且不要调用接口。"""
+    text = (user_message or "").lower()
+    direct_markers = (
+        "请直接回复",
+        "直接回复",
+        "直接回答",
+        "只回复",
+        "仅回复",
+        "不要调用接口",
+        "不用调用接口",
+        "无需调用接口",
+        "reply directly",
+        "direct reply",
+        "do not call api",
+    )
+    return any(marker in text for marker in direct_markers)
 
 
 def _build_messages(state: GraphState) -> list[dict]:
@@ -216,7 +281,7 @@ async def _execute_http(
     route_hints = _find_route_parameter_hints(state, route_id)
 
     # 替换路径模板变量
-    path_param_keys = re.findall(r'\{(\w+)\}', path)
+    path_param_keys = re.findall(r"\{([^{}]+)\}", path)
     remaining = dict(parameters)
     for key in path_param_keys:
         if key in remaining:
@@ -230,30 +295,28 @@ async def _execute_http(
     cookie_params: dict[str, str] = {}
 
     for key, value in parameters.items():
-        hint = route_hints.get(key)
-        if not isinstance(hint, dict):
-            hint = next(
-                (
-                    h for h in route_hints.values()
-                    if isinstance(h, dict) and h.get("name") == key
-                ),
-                None,
-            )
-
-        location = (hint or {}).get("location", "")
+        key_str = str(key)
+        hint = _resolve_param_hint(route_hints, key_str, method)
+        location = str((hint or {}).get("location", "")).lower()
         if location == "query":
-            query_params[key] = value
+            query_params[key_str] = value
         elif location == "header":
-            header_params[key] = str(value)
+            header_params[key_str] = str(value)
         elif location == "cookie":
-            cookie_params[key] = str(value)
+            cookie_params[key_str] = str(value)
         elif location == "body":
-            body_params[key] = value
+            body_params[key_str] = value
+        elif location == "path":
+            placeholder = f"{{{key_str}}}"
+            if placeholder in path:
+                path = path.replace(placeholder, str(value))
+            else:
+                query_params[key_str] = value
         else:
             if method in ("POST", "PUT", "PATCH"):
-                body_params[key] = value
+                body_params[key_str] = value
             else:
-                query_params[key] = value
+                query_params[key_str] = value
 
     base_url = state.get("project_base_url", "http://localhost:6689").rstrip("/")
     auth = AuthSessionService()
@@ -538,18 +601,20 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 
         except Exception as exc:
             logger.error(f"[agentic_loop] JSON 解析失败: {exc}\n原文: {full_text[:500]}")
-            # 增加鲁棒性：如果无法解析 JSON，但内容看起来像是在直接回答，则强制 finish
-            if len(full_text) > 20 and not full_text.strip().startswith("{"):
-                import asyncio
-                # 伪流式发射：每次发2个字符，间隔0.025秒（每秒约80字符，符合视觉习惯）
-                for i in range(0, len(full_text), 2):
-                    _emit("token_emitted", token=full_text[i: i+2])
-                    await asyncio.sleep(0.025)
-                
+            # 仅在用户明确要求“直接回复/不要调用接口”时，允许纯文本降级。
+            text_compact = full_text.strip()
+            looks_like_plain_answer = (
+                len(text_compact) > 0
+                and '"action"' not in text_compact
+                and "'action'" not in text_compact
+                and not text_compact.startswith("{")
+                and _is_explicit_direct_request(str(state.get("user_message") or ""))
+            )
+            if looks_like_plain_answer:
                 return {
                     "agentic_done": True,
                     "agentic_iterations": iterations,
-                    "summary_text": full_text.strip(),
+                    "final_answer_draft": text_compact,
                 }
             
             return {
@@ -590,12 +655,25 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
         # 完结此轮和缓存
         _task_run_llm_cache.pop(cache_key, None)
         logger.info(f"[agentic_loop] 正常完成任务。")
-        # AI 决定结束，交给总结节点汇报
+        final_answer = str(decision.get("final_answer") or "").strip()
+
+        # finish 阶段不进行本地伪流式发射，避免将一次性内容模拟为实时输出。
+        if final_answer:
+            return {
+                "agentic_done": True,
+                "agentic_iterations": iterations,
+                "agentic_history": existing_history + new_history,
+                "execution_artifacts": new_artifacts,
+                "final_answer_draft": final_answer,
+            }
+
+        logger.error("[agentic_loop] action=finish 缺少 final_answer，视为协议错误")
         return {
             "agentic_done": True,
             "agentic_iterations": iterations,
             "agentic_history": existing_history + new_history,
             "execution_artifacts": new_artifacts,
+            "error": "AI 输出格式错误：finish 缺少 final_answer",
         }
 
     elif action == "call":

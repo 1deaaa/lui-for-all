@@ -8,6 +8,7 @@ import os
 import socket
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -173,23 +174,78 @@ def _extract_routes_from_source(source_path: str) -> list[dict[str, str]]:
     return routes
 
 
-def _build_openapi_probe_url(base_url: str, openapi_url: str | None) -> str:
-    """构建 OpenAPI 探测地址，兼容绝对/相对路径。"""
+def _build_openapi_probe_urls(base_url: str, openapi_url: str | None) -> list[str]:
+    """构建 OpenAPI 探测候选地址（兼容反向代理与子路径部署）。"""
     base = base_url.rstrip("/")
+    parsed_base = urlparse(base)
+
+    candidates: list[str] = []
+
     if openapi_url:
         if openapi_url.startswith("http"):
-            return openapi_url
-        suffix = openapi_url if openapi_url.startswith("/") else f"/{openapi_url}"
-        return f"{base}{suffix}"
-    return f"{base}/openapi.json"
+            candidates.append(openapi_url)
+        else:
+            suffix = openapi_url if openapi_url.startswith("/") else f"/{openapi_url}"
+            candidates.append(f"{base}{suffix}")
+    else:
+        candidates.append(f"{base}/openapi.json")
+
+    if parsed_base.scheme and parsed_base.netloc:
+        origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+        base_path = parsed_base.path.rstrip("/")
+
+        candidates.extend(
+            [
+                f"{origin}/openapi.json",
+                f"{origin}/api/openapi.json",
+                f"{origin}/v1/openapi.json",
+            ]
+        )
+
+        if base_path:
+            candidates.append(f"{origin}{base_path}/openapi.json")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+
+    return deduped
+
+
+def _is_valid_openapi_spec(spec: object) -> bool:
+    """判断 payload 是否为 OpenAPI 文档。"""
+    if not isinstance(spec, dict):
+        return False
+
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return False
+
+    return "openapi" in spec or "swagger" in spec or bool(paths)
 
 
 def _extract_routes_from_openapi_spec(spec: dict) -> list[dict[str, str]]:
     """将 OpenAPI paths 转为标准路由列表。"""
+    if not isinstance(spec, dict):
+        return []
+
+    paths = spec.get("paths", {})
+    if not isinstance(paths, dict):
+        return []
+
     routes: list[dict[str, str]] = []
-    for path, methods in spec.get("paths", {}).items():
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
         for method, op in methods.items():
             if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+                if not isinstance(op, dict):
+                    op = {}
                 summary = op.get("summary") or op.get("operationId") or ""
                 routes.append(
                     {
@@ -211,90 +267,91 @@ async def _resolve_import_routes_openapi_first(
     """导入链路统一路由发现：优先 OpenAPI，失败时按需回退 AST。"""
     import httpx
 
-    test_url = _build_openapi_probe_url(base_url, openapi_url)
+    probe_urls = _build_openapi_probe_urls(base_url, openapi_url)
+    probe_issues: list[str] = []
+    auth_blocked_status: int | None = None
 
     try:
         async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
-            response = await client.get(test_url)
-            response.raise_for_status()
+            for test_url in probe_urls:
+                try:
+                    response = await client.get(test_url)
+                except httpx.TimeoutException:
+                    probe_issues.append(f"{test_url} 超时")
+                    continue
+                except Exception as request_error:
+                    probe_issues.append(f"{test_url} 连接失败({type(request_error).__name__})")
+                    continue
 
-        content_type = response.headers.get("content-type", "")
-        if "application/json" not in content_type:
-            if source_path:
-                ast_routes = _extract_routes_from_source(source_path)
+                status = response.status_code
+                if status in (401, 403):
+                    auth_blocked_status = status
+                    probe_issues.append(f"{test_url} 需要授权 (HTTP {status})")
+                    continue
+                if status >= 400:
+                    probe_issues.append(f"{test_url} 返回 HTTP {status}")
+                    continue
+
+                content_type = (response.headers.get("content-type", "") or "").lower()
+                if "application/json" not in content_type:
+                    probe_issues.append(f"{test_url} 返回非 JSON ({content_type or 'unknown'})")
+                    continue
+
+                try:
+                    spec = response.json()
+                except Exception as parse_error:
+                    probe_issues.append(f"{test_url} JSON 解析失败 ({type(parse_error).__name__})")
+                    continue
+
+                if not _is_valid_openapi_spec(spec):
+                    payload_type = type(spec).__name__
+                    if isinstance(spec, dict):
+                        payload_hint = f"keys={list(spec.keys())[:3]}"
+                    elif isinstance(spec, list):
+                        payload_hint = f"list_len={len(spec)}"
+                    else:
+                        payload_hint = ""
+                    probe_issues.append(
+                        f"{test_url} JSON 不是 OpenAPI 文档 ({payload_type} {payload_hint})"
+                    )
+                    continue
+
                 return {
-                    "status": "warning",
-                    "message": f"OpenAPI 地址返回非 JSON ({content_type})，已切换 AST 语义发现。",
-                    "routes": ast_routes,
-                    "source": "ast",
+                    "status": "success",
+                    "message": f"连接与 OpenAPI 探索可用 ({test_url})",
+                    "routes": _extract_routes_from_openapi_spec(spec),
+                    "source": "openapi",
                 }
-            return {
-                "status": "warning",
-                "message": f"连接成功，但地址返回的不是 JSON ({content_type})。",
-                "routes": [],
-                "source": "openapi",
-            }
+    except Exception as fatal_error:
+        probe_issues.append(f"探测流程异常({type(fatal_error).__name__})")
 
-        try:
-            spec = response.json()
-        except Exception as parse_error:
-            if source_path:
-                ast_routes = _extract_routes_from_source(source_path)
-                return {
-                    "status": "warning",
-                    "message": f"OpenAPI JSON 解析失败，已切换 AST 语义发现: {type(parse_error).__name__}",
-                    "routes": ast_routes,
-                    "source": "ast",
-                }
-            raise HTTPException(status_code=400, detail=f"OpenAPI JSON 解析失败: {parse_error}")
+    brief_issue = "；".join(probe_issues[:3]) if probe_issues else "未找到可用 OpenAPI 地址"
+    if len(probe_issues) > 3:
+        brief_issue += f"；另有 {len(probe_issues) - 3} 条探测失败"
 
+    if source_path:
+        ast_routes = _extract_routes_from_source(source_path)
         return {
-            "status": "success",
-            "message": "连接与 OpenAPI 探索可用",
-            "routes": _extract_routes_from_openapi_spec(spec),
+            "status": "warning",
+            "message": f"OpenAPI 不可用（{brief_issue}），已切换 AST 语义发现。",
+            "routes": ast_routes,
+            "source": "ast",
+        }
+
+    if auth_blocked_status in (401, 403):
+        return {
+            "status": "warning",
+            "message": f"接口存在授权拦截 (HTTP {auth_blocked_status})。",
+            "routes": [],
             "source": "openapi",
         }
-    except httpx.TimeoutException:
-        if source_path:
-            ast_routes = _extract_routes_from_source(source_path)
-            return {
-                "status": "warning",
-                "message": f"目标服务连接超时 ({test_url})，已切换 AST 语义发现。",
-                "routes": ast_routes,
-                "source": "ast",
-            }
-        raise HTTPException(status_code=408, detail=f"目标服务连接超时 ({test_url})。请查证地址是否可达或服务是否启动。")
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if source_path:
-            ast_routes = _extract_routes_from_source(source_path)
-            return {
-                "status": "warning",
-                "message": f"OpenAPI 拉取失败 (HTTP {status})，已切换 AST 语义发现。",
-                "routes": ast_routes,
-                "source": "ast",
-            }
 
-        if status in (401, 403):
-            return {
-                "status": "warning",
-                "message": f"接口存在授权拦截 (HTTP {status})。",
-                "routes": [],
-                "source": "openapi",
-            }
-        raise HTTPException(status_code=status, detail=f"访问目标时遭到了错误状态码: HTTP {status} ({test_url})")
-    except HTTPException:
-        raise
-    except Exception as e:
-        if source_path:
-            ast_routes = _extract_routes_from_source(source_path)
-            return {
-                "status": "warning",
-                "message": f"OpenAPI 连通失败，已切换 AST 语义发现: {type(e).__name__}",
-                "routes": ast_routes,
-                "source": "ast",
-            }
-        raise HTTPException(status_code=500, detail=f"连接失败或服务未启动: {str(e)}")
+    return {
+        "status": "warning",
+        "message": f"OpenAPI 不可用：{brief_issue}",
+        "routes": [],
+        "source": "openapi",
+    }
 
 
 def _build_sample_import_presets() -> list[ProjectImportPreset]:

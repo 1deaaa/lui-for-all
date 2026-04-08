@@ -47,6 +47,8 @@ class GraphState(TypedDict):
 
     # 可用能力列表（预加载，只读，供所有节点参考）
     available_capabilities: list[dict[str, Any]]
+    # route_id -> 参数提示映射（比 capability 级 hints 更精确）
+    route_hints_by_route_id: dict[str, dict[str, Any]]
 
     # ───── Agentic Loop 核心字段 ─────
     # 多轮对话历史（包含 AI 决策 + 工具结果），每轮节点返回完整列表（替换语义）
@@ -64,6 +66,9 @@ class GraphState(TypedDict):
 
     # 执行产物（所有轮次的 HTTP 执行结果汇总）
     execution_artifacts: Annotated[list[ExecutionArtifact], merge_lists]
+
+    # agentic finish 阶段传递的最终答复草稿（用于 summarize 二次流式整理）
+    final_answer_draft: str | None
 
     # 最终结果
     summary_text: str | None

@@ -76,12 +76,19 @@ def _merge_parameter_hints(
     if not backed_by_routes:
         return merged
 
-    existing_names: set[str] = set()
-    for key, value in merged.items():
-        if isinstance(value, dict) and value.get("name"):
-            existing_names.add(str(value.get("name")))
+    def _hint_identity(hint_key: str, hint_val: Any) -> str:
+        if isinstance(hint_val, dict):
+            name = str(hint_val.get("name") or str(hint_key).split("@", 1)[0])
+            location = str(hint_val.get("location") or "")
         else:
-            existing_names.add(str(key).split("@", 1)[0])
+            name = str(hint_key).split("@", 1)[0]
+            location = ""
+        return f"{name}@{location}" if location else name
+
+    existing_identities: set[str] = {
+        _hint_identity(str(key), value)
+        for key, value in merged.items()
+    }
 
     for route in backed_by_routes:
         if not isinstance(route, dict):
@@ -92,18 +99,31 @@ def _merge_parameter_hints(
 
         route_hints = route_hints_by_route_id.get(str(route_id), {})
         for hint_key, hint_val in route_hints.items():
-            hint_name = (
-                str(hint_val.get("name"))
-                if isinstance(hint_val, dict) and hint_val.get("name")
-                else str(hint_key).split("@", 1)[0]
-            )
-
-            if hint_name in existing_names:
+            identity = _hint_identity(str(hint_key), hint_val)
+            if identity in existing_identities:
                 continue
             merged[hint_key] = hint_val
-            existing_names.add(hint_name)
+            existing_identities.add(identity)
 
     return merged
+
+
+def _unpack_stream_item(stream_item: Any) -> tuple[str | None, Any]:
+    """兼容 LangGraph 不同版本的流式输出结构。"""
+    if isinstance(stream_item, tuple) and len(stream_item) == 2:
+        return str(stream_item[0]), stream_item[1]
+
+    if isinstance(stream_item, dict):
+        stream_type = stream_item.get("type")
+        payload = stream_item.get("data")
+        if stream_type is not None:
+            return str(stream_type), payload
+
+        if len(stream_item) == 1:
+            key, value = next(iter(stream_item.items()))
+            return str(key), value
+
+    return None, None
 
 
 class CreateSessionRequest(BaseModel):
@@ -382,12 +402,14 @@ async def stream_events(
                 "chat_history": chat_history_dicts,
                 "user_message": task_run_data["user_message"],
                 "available_capabilities": available_capabilities,
+                "route_hints_by_route_id": route_hints_by_route_id,
                 # Agentic Loop 初始化字段
                 "agentic_history": [],
                 "agentic_done": False,
                 "agentic_iterations": 0,
                 "pending_writes": [],
                 "execution_artifacts": [],
+                "final_answer_draft": None,
                 "summary_text": None,
                 "ui_blocks": [],
                 "error": None,
@@ -444,13 +466,18 @@ async def stream_events(
             else:
                 input_data = initial_state
 
-            async for stream_type, payload in graph_app.astream(
+            async for stream_item in graph_app.astream(
                 input_data,
                 config,
                 stream_mode=["custom", "updates"],
             ):
+                stream_type, payload = _unpack_stream_item(stream_item)
+                if not stream_type:
+                    continue
 
                 if stream_type == "custom":
+                    if not isinstance(payload, dict):
+                        continue
                     event_type = payload.get("event")
                     if event_type == "write_approval_required":
                         if is_resume and payload.get("batch_id") == resume_batch_id:
@@ -480,13 +507,15 @@ async def stream_events(
                             )
                         )
                     elif event_type == "token_emitted":
-                        yield format_sse_event(
-                            TokenEmittedEvent(
-                                session_id=session_id,
-                                task_run_id=task_run_id,
-                                token=payload.get("token", ""),
+                        token = str(payload.get("token", ""))
+                        if token:
+                            yield format_sse_event(
+                                TokenEmittedEvent(
+                                    session_id=session_id,
+                                    task_run_id=task_run_id,
+                                    token=token,
+                                )
                             )
-                        )
                     elif event_type == "thought_emitted":
                         yield format_sse_event(
                             ThoughtEmittedEvent(
@@ -618,6 +647,8 @@ async def stream_events(
                             )
                         )
                 elif stream_type == "updates":
+                    if not isinstance(payload, dict):
+                        continue
                     for node_name, node_update in payload.items():
                         if isinstance(node_update, dict):
                             for k, v in node_update.items():
