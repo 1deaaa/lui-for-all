@@ -270,7 +270,7 @@ onMounted(loadSettings)
     </div>
 
     <div class="content-scroll" v-loading="loading">
-      <el-form :model="settings" label-position="top" class="settings-form">
+      <el-form :model="settings" label-position="top" class="settings-form" autocomplete="off">
         <div class="cards-grid">
 
           <!-- Language Config Card -->
@@ -334,8 +334,11 @@ onMounted(loadSettings)
               <el-col :span="24" :md="12">
                 <el-form-item :label="t('settings.llm.apiBaseLabel')">
                   <el-input 
+                    id="llm_api_base"
+                    name="llm_api_base"
                     v-model="settings.llm_api_base" 
                     :placeholder="t('settings.llm.apiBasePlaceholder')" 
+                    autocomplete="off"
                     @blur="formatApiBase"
                     @change="() => saveSettings(false)"
                   >
@@ -348,9 +351,12 @@ onMounted(loadSettings)
               <el-col :span="24" :md="12">
                 <el-form-item :label="t('settings.llm.apiKeyLabel')">
                   <el-input 
+                    id="llm_api_key"
+                    name="llm_api_key"
                     v-model="settings.llm_api_key" 
                     type="password" 
                     show-password 
+                    autocomplete="new-password"
                     :placeholder="t('settings.llm.apiKeyPlaceholder')" 
                     @change="() => saveSettings(false)"
                   >
@@ -477,9 +483,12 @@ onMounted(loadSettings)
 
             <el-form-item :label="t('settings.mcp.tokenLabel')">
               <el-input 
+                id="mcp_api_token"
+                name="mcp_api_token"
                 v-model="settings.mcp_api_token" 
                 type="password"
                 show-password
+                autocomplete="new-password"
                 :placeholder="t('settings.mcp.tokenPlaceholder')"
                 @change="() => saveSettings(false)"
               >
