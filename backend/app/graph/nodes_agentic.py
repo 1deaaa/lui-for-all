@@ -204,25 +204,6 @@ def _build_capability_list(available_capabilities: list[dict]) -> str:
     return "\n".join(lines) if lines else "（无可用接口）"
 
 
-def _is_explicit_direct_request(user_message: str) -> bool:
-    """识别用户是否明确要求直接回答且不要调用接口。"""
-    text = (user_message or "").lower()
-    direct_markers = (
-        "请直接回复",
-        "直接回复",
-        "直接回答",
-        "只回复",
-        "仅回复",
-        "不要调用接口",
-        "不用调用接口",
-        "无需调用接口",
-        "reply directly",
-        "direct reply",
-        "do not call api",
-    )
-    return any(marker in text for marker in direct_markers)
-
-
 def _build_messages(state: GraphState) -> list[dict]:
     """构建本轮 LLM 消息列表"""
     login_route = state.get("project_login_route_id") or ""
@@ -560,7 +541,6 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
 
         # 流式调用 LLM
         full_text = ""
-        early_buffer = ""
 
         try:
             async for chunk_type, token in llm_client.stream_chat_completion(
@@ -601,22 +581,6 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 
         except Exception as exc:
             logger.error(f"[agentic_loop] JSON 解析失败: {exc}\n原文: {full_text[:500]}")
-            # 仅在用户明确要求“直接回复/不要调用接口”时，允许纯文本降级。
-            text_compact = full_text.strip()
-            looks_like_plain_answer = (
-                len(text_compact) > 0
-                and '"action"' not in text_compact
-                and "'action'" not in text_compact
-                and not text_compact.startswith("{")
-                and _is_explicit_direct_request(str(state.get("user_message") or ""))
-            )
-            if looks_like_plain_answer:
-                return {
-                    "agentic_done": True,
-                    "agentic_iterations": iterations,
-                    "final_answer_draft": text_compact,
-                }
-            
             return {
                 "agentic_done": True,
                 "agentic_iterations": iterations,

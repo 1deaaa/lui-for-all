@@ -74,7 +74,7 @@ async def test_agentic_finish_without_final_answer_returns_protocol_error(monkey
 
 
 @pytest.mark.asyncio
-async def test_plain_text_fallback_requires_explicit_direct_request(monkeypatch):
+async def test_plain_text_agentic_output_returns_protocol_error(monkeypatch):
     nodes_agentic._task_run_llm_cache.clear()
 
     def fake_emit(event: str, **payload):
@@ -86,21 +86,7 @@ async def test_plain_text_fallback_requires_explicit_direct_request(monkeypatch)
     monkeypatch.setattr(nodes_agentic, "_emit", fake_emit)
     monkeypatch.setattr(nodes_agentic.llm_client, "stream_chat_completion", fake_stream_plain_text)
 
-    direct_state = {
-        "agentic_iterations": 0,
-        "available_capabilities": [],
-        "chat_history": [],
-        "user_message": "请直接回复：后端正在流式输出。不要调用接口。",
-        "agentic_history": [],
-        "project_description": "测试项目",
-        "response_language": "简体中文",
-    }
-    config = {"configurable": {"thread_id": "test-plain-text-fallback-direct"}}
-
-    direct_result = await nodes_agentic.agentic_loop_node(direct_state, config)
-    assert direct_result["final_answer_draft"] == "后端正在流式输出。\n我已完成验证。"
-
-    agentic_state = {
+    state = {
         "agentic_iterations": 0,
         "available_capabilities": [],
         "chat_history": [],
@@ -109,8 +95,8 @@ async def test_plain_text_fallback_requires_explicit_direct_request(monkeypatch)
         "project_description": "测试项目",
         "response_language": "简体中文",
     }
-    config2 = {"configurable": {"thread_id": "test-plain-text-fallback-agentic"}}
+    config = {"configurable": {"thread_id": "test-plain-text-protocol-error"}}
 
-    agentic_result = await nodes_agentic.agentic_loop_node(agentic_state, config2)
-    assert "final_answer_draft" not in agentic_result
-    assert agentic_result.get("error", "").startswith("AI 输出格式错误")
+    result = await nodes_agentic.agentic_loop_node(state, config)
+    assert "final_answer_draft" not in result
+    assert result.get("error", "").startswith("AI 输出格式错误")

@@ -144,24 +144,6 @@ def _build_route_hints_by_route_id(routes: list[dict[str, Any]] | None) -> dict[
     return route_hints_by_route_id
 
 
-def _unpack_stream_item(stream_item: Any) -> tuple[str | None, Any]:
-    """兼容 LangGraph 不同版本的流式输出结构。"""
-    if isinstance(stream_item, tuple) and len(stream_item) == 2:
-        return str(stream_item[0]), stream_item[1]
-
-    if isinstance(stream_item, dict):
-        stream_type = stream_item.get("type")
-        payload = stream_item.get("data")
-        if stream_type is not None:
-            return str(stream_type), payload
-
-        if len(stream_item) == 1:
-            key, value = next(iter(stream_item.items()))
-            return str(key), value
-
-    return None, None
-
-
 # ─────────────────────────────────────────
 # Tool: list_projects
 # ─────────────────────────────────────────
@@ -624,15 +606,11 @@ async def chat(
     graph_interrupted = False
 
     try:
-        async for stream_item in graph_app.astream(
+        async for stream_type, payload in graph_app.astream(
             initial_state,
             config,
             stream_mode=["custom", "updates"],
         ):
-            stream_type, payload = _unpack_stream_item(stream_item)
-            if not stream_type:
-                continue
-
             if stream_type == "custom":
                 if not isinstance(payload, dict):
                     continue
@@ -700,15 +678,11 @@ async def chat(
         try:
             from langgraph.types import Command
 
-            async for stream_item in graph_app.astream(
+            async for stream_type, payload in graph_app.astream(
                 Command(resume={"approved_ids": []}),
                 config,
                 stream_mode=["custom", "updates"],
             ):
-                stream_type, payload = _unpack_stream_item(stream_item)
-                if not stream_type:
-                    continue
-
                 if stream_type == "updates":
                     if not isinstance(payload, dict):
                         continue

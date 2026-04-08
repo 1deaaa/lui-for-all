@@ -24,25 +24,6 @@ def emit_runtime_event(event: str, **payload: Any):
     get_runtime_emitter().emit(event, **payload)
 
 
-def _is_explicit_direct_request(user_message: str) -> bool:
-    """识别用户是否明确要求直接回答且不要调用接口。"""
-    text = (user_message or "").lower()
-    direct_markers = (
-        "请直接回复",
-        "直接回复",
-        "直接回答",
-        "只回复",
-        "仅回复",
-        "不要调用接口",
-        "不用调用接口",
-        "无需调用接口",
-        "reply directly",
-        "direct reply",
-        "do not call api",
-    )
-    return any(marker in text for marker in direct_markers)
-
-
 # ==================== Agent 入口决策节点 ====================
 
 async def agent_entry_node(state: GraphState) -> dict[str, Any]:
@@ -70,25 +51,22 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
         emit_runtime_event("task_progress", node_name="agent_entry", progress=0.05, message="AI 正在判断请求类型")
 
         # 第一阶段：仅做路由判定，避免把正文与策略混在同一流里造成前端“假流式”观感。
-        if _is_explicit_direct_request(user_message):
-            strategy = "direct"
-        else:
-            decision_prompt = (
-                "你是请求路由判定器。\n"
-                "如果用户只是闲聊、问候、询问系统能力介绍，请输出 direct。\n"
-                "如果用户需要查询数据、调用接口、执行任务，请输出 agentic。\n"
-                "只允许输出一个词：direct 或 agentic。\n\n"
-                f"用户输入：{user_message}"
-            )
+        decision_prompt = (
+            "你是请求路由判定器。\n"
+            "如果用户只是闲聊、打招呼、询问系统能力介绍，输出 direct。\n"
+            "如果用户要求查询数据、调用接口、执行任务，输出 agentic。\n"
+            "只允许输出一个词：direct 或 agentic。\n\n"
+            f"用户输入：{user_message}"
+        )
 
-            decision_raw = await llm_client.simple_completion(
-                prompt=decision_prompt,
-                temperature=0.0,
-                max_tokens=8,
-            )
-            decision_text = str(decision_raw or "").strip().lower()
-            if "direct" in decision_text and "agentic" not in decision_text:
-                strategy = "direct"
+        decision_raw = await llm_client.simple_completion(
+            prompt=decision_prompt,
+            temperature=0.0,
+            max_tokens=8,
+        )
+        decision_text = str(decision_raw or "").strip().lower()
+        if "direct" in decision_text and "agentic" not in decision_text:
+            strategy = "direct"
 
         # 第二阶段：direct 分支单独发起云端流式回答，token 原样透传。
         if strategy == "direct":
