@@ -11,6 +11,8 @@
 
 > Languages: [简体中文](README.md) | **English** | [日本語](README.ja-JP.md)
 
+> Developer Protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md)
+
 ## What Problem Does It Solve?
 
 Many backend systems, especially enterprise and internal-operation systems, are powerful but hard to use. Users must navigate complex menus, remember filter combinations, and fill repetitive forms to finish tasks that can be described in one sentence.
@@ -152,6 +154,11 @@ flowchart TD
 - Auto-resolves sample backend addresses by runtime environment
 - Uses container DNS names in Docker and `localhost` on local host
 - `test-connection` and `fetch-routes` can fall back to AST discovery with `source_path`, preventing import flow from being blocked by OpenAPI reachability
+
+9. Pluggable chat protocol for custom GUIs
+- Developers can directly integrate with `chat` endpoints and replace the built-in frontend without changing backend execution logic
+- Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 8 UI block types
+- Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
 
 ## Quick Start
 

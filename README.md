@@ -11,6 +11,8 @@
 
 > 文档语言：**简体中文** | [English](README.en-US.md) | [日本語](README.ja-JP.md)
 
+> 开发者协议文档：[Chat 端点集成协议](CHAT_ENDPOINT_INTEGRATION.md)
+
 ## 它解决什么问题？
 
 许多后端系统，尤其是**企业系统、办事系统、专业工作系统**往往功能强大，却极难使用——用户必须深入多级菜单、记住筛选项组合、反复填写表单，才能完成一件本可以用一句话描述的事。
@@ -252,6 +254,16 @@ flowchart LR
     - 本机运行优先使用 `localhost` 端口
 - 连通性测试与路由拉取接口支持 `source_path`，在 OpenAPI 不可用时自动切换 AST 发现，导入流程不再被单点阻塞
 
+### 9. Chat 端点可插拔前端协议（支持自定义 GUI）
+
+LUI-for-All 将“聊天能力内核”与“前端呈现层”解耦：
+
+- 开发者可直接对接 `chat` 端点，替换现有前端 UI，而无需改动后端执行链路
+- 协议完整覆盖当前前端元素：AI 工作进度、HTTP 调用记录、审批请求/审批记录、AI 思考流、8 类 UI Block
+- 数据类型边界清晰：流式事件走 SSE，历史/审计回放走普通 JSON 接口
+
+详细字段与事件清单见：[Chat 端点集成协议](CHAT_ENDPOINT_INTEGRATION.md)
+
 ---
 
 ## 快速开始
@@ -327,7 +339,7 @@ pnpm dev
                        │ HTTP / SSE
 ┌──────────────────────▼──────────────────────────────────────┐
 │                  后端 (FastAPI)                               │
-│  /api/sessions  /api/projects  /api/settings                │
+│  /api/chat  /api/sessions  /api/projects  /api/settings     │
 │       │                │                                     │
 │  LangGraph 编排器    Project Modeler                         │
 │  ┌────────────┐      ┌──────────────────────────┐           │
@@ -349,7 +361,7 @@ pnpm dev
 lui-for-all/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # FastAPI 路由层 (projects, sessions, settings)
+│   │   ├── api/           # FastAPI 路由层 (chat, projects, sessions, settings)
 │   │   ├── graph/         # LangGraph 状态机定义
 │   │   ├── orchestrator/  # 任务编排状态与节点
 │   │   ├── discovery/     # OpenAPI 摄取与能力建模
