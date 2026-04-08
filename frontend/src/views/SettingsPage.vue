@@ -776,4 +776,38 @@ onMounted(loadSettings)
   font-weight: 500;
   color: var(--el-text-color-regular);
 }
+
+/* ================= 移动端适配 (断点 768px) ================= */
+@media (max-width: 768px) {
+  .header-section {
+    padding: 16px 5%;
+  }
+
+  .content-scroll {
+    padding: 16px 5%; /* 使用百分比适配窄屏幕 */
+  }
+
+  .settings-form {
+    width: 100%;
+  }
+
+  .cards-grid {
+    gap: 16px;
+  }
+
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .llm-actions {
+    margin-top: 12px;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .model-select-wrap {
+    flex-direction: column;
+  }
+}
 </style>

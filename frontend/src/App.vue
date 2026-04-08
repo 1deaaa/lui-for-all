@@ -27,7 +27,9 @@ const elementPlusLocale = computed(() => elementPlusLocaleMap[currentLocale.valu
 
 // 响应式窗口
 const { width } = useWindowSize()
-const isMobile = computed(() => width.value <= 768)
+// 全局断点阈值，控制移动端样式切换点
+const MOBILE_BREAKPOINT = 768
+const isMobile = computed(() => width.value <= MOBILE_BREAKPOINT)
 
 // 菜单状态控制
 const drawerVisible = ref(false)
