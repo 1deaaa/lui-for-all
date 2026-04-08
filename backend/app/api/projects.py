@@ -5,6 +5,7 @@
 
 import asyncio
 import os
+import socket
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PROJECT_ROOT
 from app.db import async_session, get_session
+from app.discovery.route_extractor import RouteExtractor
 from app.models.audit import Approval, HttpExecution, ModelCall, PolicyVerdictRecord
 from app.models.project import CapabilityRecord, Project, RouteMapRecord
 from app.models.session import Message, Session
@@ -49,6 +51,7 @@ class FetchRoutesRequest(BaseModel):
     """从 OpenAPI 地址拉取路由列表请求"""
     base_url: str
     openapi_url: str | None = None
+    source_path: str | None = None
 
 
 class VerifyLoginRequest(BaseModel):
@@ -66,6 +69,7 @@ class TestConnectionRequest(BaseModel):
 
     base_url: str
     openapi_url: str | None = None
+    source_path: str | None = None
 
 
 class ProjectImportResponse(BaseModel):
@@ -124,9 +128,56 @@ def _resolve_source_path(candidates: list[Path]) -> tuple[str, bool]:
     return str(normalized[0]), False
 
 
+def _is_running_in_container() -> bool:
+    return Path("/.dockerenv").exists() or os.environ.get("CONTAINER") == "1"
+
+
+def _resolve_sample_base_url(service_name: str, port: int) -> str:
+    """根据运行环境生成示例服务地址。"""
+    env_key = f"LUI_{service_name.replace('-', '_').upper()}_BASE_URL"
+    override = os.environ.get(env_key)
+    if override:
+        return override.rstrip("/")
+
+    if _is_running_in_container():
+        try:
+            socket.getaddrinfo(service_name, port)
+            return f"http://{service_name}:{port}"
+        except OSError:
+            pass
+
+    return f"http://localhost:{port}"
+
+
+def _extract_routes_from_source(source_path: str) -> list[dict[str, str]]:
+    extractor = RouteExtractor(source_path)
+    snippets = extractor.extract_all_routes()
+
+    routes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for snippet in snippets:
+        route_id = f"{snippet.method}:{snippet.path}"
+        if route_id in seen:
+            continue
+        seen.add(route_id)
+        routes.append(
+            {
+                "route_id": route_id,
+                "method": snippet.method,
+                "path": snippet.path,
+                "summary": f"AST:{snippet.adapter_name} {snippet.file_path}:{snippet.start_line}",
+            }
+        )
+
+    routes.sort(key=lambda item: (item["path"], item["method"]))
+    return routes
+
+
 def _build_sample_import_presets() -> list[ProjectImportPreset]:
     """构建示例项目导入预置，自动探测当前运行环境下可用路径。"""
     repo_sample_root = PROJECT_ROOT / "backend_for_test"
+    fastapi_base_url = _resolve_sample_base_url("sample-fastapi", 8010)
+    node_base_url = _resolve_sample_base_url("sample-node", 8020)
 
     fastapi_source_path, fastapi_available = _resolve_source_path(
         [
@@ -146,8 +197,8 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
             id="sample-fastapi",
             name="FastAPI 示例",
             description="自动填充本机 FastAPI 示例地址与源码目录。",
-            base_url="http://localhost:8010",
-            openapi_url="http://localhost:8010/openapi.json",
+            base_url=fastapi_base_url,
+            openapi_url=f"{fastapi_base_url}/openapi.json",
             source_path=fastapi_source_path,
             login_route_id="POST:/api/auth/login",
             username="111",
@@ -160,8 +211,8 @@ def _build_sample_import_presets() -> list[ProjectImportPreset]:
             id="sample-node",
             name="Node 示例",
             description="自动填充本机 Node 示例地址与源码目录。",
-            base_url="http://localhost:8020",
-            openapi_url="http://localhost:8020/openapi.json",
+            base_url=node_base_url,
+            openapi_url=f"{node_base_url}/openapi.json",
             source_path=node_source_path,
             login_route_id="POST:/api/auth/login",
             username="111",
@@ -309,6 +360,19 @@ async def fetch_routes(request: FetchRoutesRequest):
             resp.raise_for_status()
             spec = resp.json()
     except Exception as e:
+        if request.source_path:
+            try:
+                routes = _extract_routes_from_source(request.source_path)
+                return {
+                    "routes": routes,
+                    "source": "ast",
+                    "warning": f"OpenAPI 不可用，已切换 AST 语义发现: {type(e).__name__}",
+                }
+            except Exception as ast_error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"无法获取 OpenAPI 文档，且 AST 语义发现失败: {ast_error}",
+                )
         raise HTTPException(status_code=400, detail=f"无法获取 OpenAPI 文档: {e}")
 
     routes = []
@@ -322,7 +386,7 @@ async def fetch_routes(request: FetchRoutesRequest):
                     "path": path,
                     "summary": summary,
                 })
-    return {"routes": routes}
+    return {"routes": routes, "source": "openapi"}
 
 
 @router.post("/verify-login")
@@ -389,7 +453,23 @@ async def test_connection(request: TestConnectionRequest):
 
             content_type = response.headers.get("content-type", "")
             if "application/json" not in content_type:
-                return {"status": "warning", "message": f"连接成功，但地址返回的不是一个 JSON ({content_type})", "routes": []}
+                if request.source_path:
+                    try:
+                        ast_routes = _extract_routes_from_source(request.source_path)
+                    except Exception:
+                        ast_routes = []
+                    return {
+                        "status": "warning",
+                        "message": f"连接成功，但地址返回的不是 JSON ({content_type})。已尝试 AST 路由发现。",
+                        "routes": ast_routes,
+                        "source": "ast" if ast_routes else "openapi",
+                    }
+                return {
+                    "status": "warning",
+                    "message": f"连接成功，但地址返回的不是一个 JSON ({content_type})",
+                    "routes": [],
+                    "source": "openapi",
+                }
 
             # 顺带解析路由列表，避免前端再发一次相同请求
             routes = []
@@ -408,15 +488,58 @@ async def test_connection(request: TestConnectionRequest):
             except Exception:
                 pass
 
-            return {"status": "success", "message": "连接与 OpenAPI 探索可用", "routes": routes}
+            return {
+                "status": "success",
+                "message": "连接与 OpenAPI 探索可用",
+                "routes": routes,
+                "source": "openapi",
+            }
     except httpx.TimeoutException:
+        if request.source_path:
+            try:
+                ast_routes = _extract_routes_from_source(request.source_path)
+                return {
+                    "status": "warning",
+                    "message": f"目标服务连接超时 ({test_url})，但已从源码提取 {len(ast_routes)} 条路由。",
+                    "routes": ast_routes,
+                    "source": "ast",
+                }
+            except Exception:
+                pass
         raise HTTPException(status_code=408, detail=f"目标服务连接超时 ({test_url})。请查证地址是否可达或服务是否启动。")
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
         if status in (401, 403):
-            return {"status": "warning", "message": f"接口存在跨域拦截或强制授权阻断 (状态码: {status})。确认这是否符合预期。", "routes": []}
+            if request.source_path:
+                try:
+                    ast_routes = _extract_routes_from_source(request.source_path)
+                    return {
+                        "status": "warning",
+                        "message": f"接口被授权阻断 (状态码: {status})，已从源码提取路由。",
+                        "routes": ast_routes,
+                        "source": "ast",
+                    }
+                except Exception:
+                    pass
+            return {
+                "status": "warning",
+                "message": f"接口存在跨域拦截或强制授权阻断 (状态码: {status})。确认这是否符合预期。",
+                "routes": [],
+                "source": "openapi",
+            }
         raise HTTPException(status_code=status, detail=f"访问目标时遭到了错误状态码: HTTP {status} ({test_url})")
     except Exception as e:
+        if request.source_path:
+            try:
+                ast_routes = _extract_routes_from_source(request.source_path)
+                return {
+                    "status": "warning",
+                    "message": f"OpenAPI 连通失败，已切换 AST 语义发现: {type(e).__name__}",
+                    "routes": ast_routes,
+                    "source": "ast",
+                }
+            except Exception:
+                pass
         raise HTTPException(status_code=500, detail=f"连接失败或服务未启动: {str(e)}")
 
 

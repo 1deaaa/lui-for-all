@@ -32,10 +32,12 @@ LUI: [Understand intent -> call existing APIs -> render table + highlights]
 - Uses read-only access to existing code by default
 - Runtime write operations are isolated in `workspace/`
 
-2. Automatic capability modeling from OpenAPI
-- Ingests `OpenAPI/Swagger` documents automatically
-- Builds capability graph with domain, modality, and policy metadata
-- Re-run discovery to sync with upstream API changes
+2. Hybrid discovery: OpenAPI + Tree-sitter AST
+- OpenAPI-first ingestion for fast, structured route discovery
+- Unified AST extraction layer (`FrameAdapter + get_tree_sitter_query`) for full handler implementation capture
+- Built-in adapters for mainstream backends: Python (FastAPI/Flask/Sanic), Node.js (NestJS/Express/Fastify), Java (Spring Boot), C# (ASP.NET Core), and Go (Gin/Echo/Fiber/chi)
+- Automatic AST fallback when OpenAPI is unavailable, using `source_path`
+- Route parameter normalization across frameworks (for example, `:id -> {id}`) to improve matching quality
 
 3. Strict declarative UI whitelist
 - Model output is JSON blocks only, not raw HTML/JS/CSS
@@ -59,13 +61,19 @@ LUI: [Understand intent -> call existing APIs -> render table + highlights]
 - Built-in Agent Matchbox routing
 - Model switching without business code changes
 
+8. Docker-aware connectivity for project import
+- Auto-resolves sample backend addresses by runtime environment
+- Uses container DNS names in Docker and `localhost` on local host
+- `test-connection` and `fetch-routes` can fall back to AST discovery with `source_path`, preventing import flow from being blocked by OpenAPI reachability
+
 ## Quick Start
 
 ### Requirements
 
 - Python 3.11+ (Conda recommended)
 - Node.js 18+ and pnpm 10
-- Target project exposes OpenAPI (`/openapi.json` or local file)
+- OpenAPI is recommended (`/openapi.json` or local file)
+- If OpenAPI is unavailable, provide a reachable source path (`source_path`) for AST-based discovery
 
 ### 1. Clone
 
@@ -104,14 +112,16 @@ pnpm dev
 
 ### 5. Import your first project
 
-Open `http://localhost:5173`, create a project, and provide your OpenAPI URL (for example: `http://your-app/openapi.json`).
+Open `http://localhost:5173`, create a project, and provide your OpenAPI URL first (for example: `http://your-app/openapi.json`).
+
+If your target system does not expose OpenAPI, you can still onboard by providing `source_path`; discovery will automatically switch to AST mode.
 
 ## Architecture (Summary)
 
 - Frontend: Vue 3 + Vite + Pinia + Vue Router + Element Plus
 - Protocol: AG-UI style SSE events + declarative UI blocks
 - Backend: FastAPI + LangGraph + SQLAlchemy + SQLite
-- Discovery: OpenAPI ingestion + capability graph building
+- Discovery: OpenAPI ingestion + Tree-sitter AST fallback + capability graph building
 - Runtime safety: policy matrix + human-in-the-loop approval
 
 ## Roadmap
@@ -121,7 +131,7 @@ Open `http://localhost:5173`, create a project, and provide your OpenAPI URL (fo
 - [x] 8 UI block whitelist
 - [x] Real-time SSE streaming and approval interrupt
 - [x] Multi-model gateway
-- [ ] Git semantic parsing
+- [x] Tree-sitter AST semantic route discovery (OpenAPI-optional onboarding)
 - [ ] Capability graph visual management
 - [ ] Multi-tenant permission system
 - [ ] Private deployment guide

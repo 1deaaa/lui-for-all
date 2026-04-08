@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.discovery.capability_builder import build_capability_graph
 from app.discovery.enrichers.project_context import generate_project_context
 from app.discovery.openapi_ingestor import ingest_openapi
+from app.discovery.semantic_ingestor import ingest_semantic_routes
 from app.models.project import CapabilityRecord, Project, RouteMapRecord
 from app.schemas.capability import CapabilityGraph
 from app.schemas.route_map import RouteMap
@@ -36,13 +37,27 @@ class DiscoveryService:
             if progress_callback:
                 await progress_callback(percent, message)
 
-        await report(5, "正在拉取 OpenAPI 文档")
+        route_source_label = "OpenAPI"
 
-        # 1. 摄取 OpenAPI
-        route_map = await ingest_openapi(base_url, openapi_path)
+        # 1. 优先摄取 OpenAPI，失败时自动降级为 AST 语义发现
+        try:
+            await report(5, "正在拉取 OpenAPI 文档")
+            route_map = await ingest_openapi(base_url, openapi_path)
+            route_source_label = "OpenAPI"
+            await report(20, f"OpenAPI 解析完成，共发现 {len(route_map.routes)} 条路由")
+        except Exception as openapi_error:
+            if not source_path:
+                raise
+
+            await report(
+                12,
+                f"OpenAPI 不可用，切换到 AST 语义发现：{type(openapi_error).__name__}",
+            )
+            route_map = await ingest_semantic_routes(source_path=source_path, base_url=base_url)
+            route_source_label = "AST"
+            await report(20, f"AST 路由发现完成，共发现 {len(route_map.routes)} 条路由")
+
         route_map.project_id = project_id
-
-        await report(20, f"OpenAPI 解析完成，共发现 {len(route_map.routes)} 条路由")
 
         await report(25, f"开始推断项目的全局业务上下文边界")
         global_context = await generate_project_context(route_map, source_path, self.db)
@@ -107,7 +122,7 @@ class DiscoveryService:
         # 建模阶段总结
         print(f"\n{'='*50}")
         print(f"🚀 项目建模完成: {project.name if project else project_id}")
-        print(f"   - OpenAPI 接口总数: {len(route_map.routes)}")
+        print(f"   - {route_source_label} 路由总数: {len(route_map.routes)}")
         ai_cap_count = sum(1 for cap in capability_graph.capabilities if cap.source_code_analysis is not None)
         print(f"   - AI 精准识别接口: {ai_cap_count}")
         print(f"   - 规则降级接口: {len(route_map.routes) - ai_cap_count}")

@@ -1,232 +1,319 @@
 """
-Python 装饰器风格适配器
-=======================
+Python 装饰器风格适配器（Tree-sitter 版）
+========================================
 
-支持所有使用「路由装饰器」风格的 Python 后端框架：
-
-    ✅ FastAPI   (@app.get / @router.post 等)
-    ✅ Flask     (@app.route / @bp.get 等)
-    ✅ Sanic     (@app.route / @bp.get 等)
-    ✅ Starlette (装饰器路由)
-    ✅ Litestar  (@get / @post 等)
-
-若使用的是 Django（urls.py 集中配置式路由），请参考
-adapters/CONTRIBUTING.md 中的 Django 适配器贡献指南。
+覆盖：FastAPI / Flask / Sanic / Starlette / Litestar 等装饰器路由风格。
 """
+
+from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
-from app.discovery.adapters.base import (
-    FrameAdapter,
-    RouteSnippet,
-    iter_source_files,
-    path_matches,
+from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
+
+
+_KNOWN_FRAMEWORKS = frozenset(
+    {
+        "fastapi",
+        "flask",
+        "sanic",
+        "starlette",
+        "litestar",
+        "falcon",
+        "aiohttp",
+        "tornado",
+        "bottle",
+        "quart",
+    }
 )
 
-
-# ────────────────────────────────────────────────────────────────
-# 正则：装饰器识别
-# ────────────────────────────────────────────────────────────────
-
-# 匹配 @xxx.get("/path") / @xxx.post("/path") / @xxx.api_route("/path") 等
-_DECORATOR_RE = re.compile(
-    r'^\s*@\w[\w.]*\.(get|post|put|delete|patch|options|head|api_route)\s*\(\s*["\']([^"\']+)["\']',
-    re.IGNORECASE,
-)
-
-# 匹配 methods=["GET", "POST"] 参数（Flask @app.route 风格）
-_METHODS_RE = re.compile(r'methods\s*=\s*\[([^\]]+)\]', re.IGNORECASE)
-
-# 用于 can_handle() 快速探针
 _DECORATOR_PROBE_RE = re.compile(
-    r'@\w[\w.]*\.(get|post|put|delete|patch|options|head|route|api_route)\s*\(',
+    r"@\w[\w.]*\.(get|post|put|delete|patch|options|head|route|api_route)\s*\(",
     re.IGNORECASE,
 )
 
-# 主流 Python Web 框架关键词（用于依赖文件检测）
-_KNOWN_FRAMEWORKS = frozenset([
-    "fastapi", "flask", "sanic", "starlette", "litestar",
-    "falcon", "aiohttp", "tornado", "bottle", "quart",
-])
+_METHOD_DECORATOR_RE = re.compile(
+    r"@(?:(?P<target>[\w.]+)\.)?(?P<verb>get|post|put|delete|patch|options|head)\s*\((?P<args>.*?)\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROUTE_DECORATOR_RE = re.compile(
+    r"@(?:(?P<target>[\w.]+)\.)?(?:route|api_route)\s*\((?P<args>.*?)\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_METHODS_ARG_RE = re.compile(r"methods\s*=\s*\[([^\]]+)\]", re.IGNORECASE)
+_STRING_RE = re.compile(r"['\"]([^'\"]*)['\"]")
+_PATH_KW_RE = re.compile(
+    r"(?:path|url|rule)\s*=\s*(['\"][^'\"]*['\"])",
+    re.IGNORECASE,
+)
+_ROUTER_PREFIX_RE = re.compile(
+    r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?:APIRouter|Blueprint)\((?P<args>.*?)\)",
+    re.DOTALL,
+)
+_PREFIX_IN_ARGS_RE = re.compile(
+    r"(?:prefix|url_prefix)\s*=\s*['\"]([^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+
+_HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
 
 
-# ────────────────────────────────────────────────────────────────
-# 内部工具函数
-# ────────────────────────────────────────────────────────────────
-
-def _decorator_matches(line: str, method: str, path: str) -> bool:
-    """判断单行装饰器是否与 (method, path) 匹配"""
-    m = _DECORATOR_RE.match(line)
-    if not m:
-        return False
-
-    dec_verb = m.group(1).lower()
-    dec_path = m.group(2)
-
-    # Flask 的 @app.route() 使用 methods=[...] 参数
-    if dec_verb == "api_route" or dec_verb == "route":
-        mm = _METHODS_RE.search(line)
-        if mm:
-            methods = [x.strip().strip("'\"").upper() for x in mm.group(1).split(",")]
-            if method.upper() not in methods:
-                return False
-        # route() 不指定 methods 时默认 GET
-        elif method.upper() != "GET":
-            return False
-    else:
-        if dec_verb.upper() != method.upper():
-            return False
-
-    return path_matches(dec_path, path)
+def _unquote(value: str) -> str:
+    data = value.strip()
+    if len(data) >= 2 and data[0] in {'"', "'"} and data[-1] == data[0]:
+        return data[1:-1]
+    return data
 
 
-def _extract_function_body(lines: list[str], decorator_line_idx: int) -> tuple[int, int]:
-    """
-    从命中的装饰器行开始，提取完整函数体（含上方连续所有装饰器）。
-    返回 (start_idx, end_idx)，均 0-based，end 包含。
-
-    算法：基于 Python 缩进规则，当缩进层级回到 def 行或更浅时停止。
-    """
-    n = len(lines)
-
-    # 1. 向上找到最早的连续装饰器行
-    start = decorator_line_idx
-    while start > 0:
-        prev = lines[start - 1].strip()
-        if prev.startswith("@"):
-            start -= 1
-        else:
-            break
-
-    # 2. 向下找到 def / async def 行
-    def_idx = None
-    for i in range(decorator_line_idx, min(decorator_line_idx + 15, n)):
-        if re.match(r"\s*(async\s+)?def\s+\w+", lines[i]):
-            def_idx = i
-            break
-
-    if def_idx is None:
-        return start, decorator_line_idx
-
-    # 3. 计算函数基准缩进
-    base_indent = len(lines[def_idx]) - len(lines[def_idx].lstrip())
-
-    # 4. 从 def 行之后扫描，找到函数体结束
-    end = def_idx
-    i = def_idx + 1
-    while i < n:
-        line = lines[i]
-        stripped = line.strip()
-
-        # 空行 / 纯注释不终止
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-
-        curr_indent = len(line) - len(line.lstrip())
-        if curr_indent <= base_indent:
-            break  # 回到函数定义层或更浅 → 函数结束
-
-        end = i
-        i += 1
-
-    return start, end
+def _extract_path_from_args(args: str) -> str:
+    kw = _PATH_KW_RE.search(args)
+    if kw:
+        return normalize_path(_unquote(kw.group(1)))
+    m = _STRING_RE.search(args)
+    if m:
+        return normalize_path(m.group(1))
+    return "/"
 
 
-# ────────────────────────────────────────────────────────────────
-# 适配器实现
-# ────────────────────────────────────────────────────────────────
+def _extract_methods_from_args(args: str) -> list[str]:
+    match = _METHODS_ARG_RE.search(args)
+    if not match:
+        return ["GET"]
+
+    raw = match.group(1)
+    names = [token.upper() for token in re.findall(r"[A-Za-z]+", raw)]
+    methods = [name for name in names if name in _HTTP_METHODS]
+    return methods or ["GET"]
+
+
+def _extract_router_prefixes(source_text: str) -> dict[str, str]:
+    prefixes: dict[str, str] = {}
+    for hit in _ROUTER_PREFIX_RE.finditer(source_text):
+        name = hit.group("name")
+        args = hit.group("args")
+        pref = _PREFIX_IN_ARGS_RE.search(args)
+        if pref:
+            prefixes[name] = normalize_path(pref.group(1))
+    return prefixes
+
 
 class PythonDecoratorAdapter(FrameAdapter):
-    """
-    Python 装饰器风格路由适配器。
-
-    覆盖：FastAPI、Flask、Sanic、Starlette、Litestar 等。
-    不覆盖：Django（其路由定义在 urls.py，与视图分离，需独立适配器）。
-    """
+    """Python 装饰器路由适配器。"""
 
     NAME = "python_decorator"
     LANGUAGES = [".py"]
-
-    EXCLUDE_DIRS = {
-        "__pycache__", ".git", "venv", ".venv",
-        "test", "tests", "alembic", "migrations",
-        ".backup_migrations", ".pytest_cache", "node_modules",
-    }
-
-    # ── 探针 ──────────────────────────────────────────────────
+    TREE_SITTER_LANGUAGES = ["python"]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:
-        """
-        检测目标目录是否是 Python 装饰器风格的后端项目。
-
-        检测顺序：
-          1. 依赖文件中包含已知 Python Web 框架名称
-          2. 任意 .py 文件中包含装饰器路由模式
-        """
-        # 信号1：依赖文件扫描（快速）
-        for dep_name in ("requirements.txt", "requirements-base.txt",
-                          "pyproject.toml", "Pipfile", "setup.py"):
+        for dep_name in (
+            "requirements.txt",
+            "requirements-base.txt",
+            "pyproject.toml",
+            "Pipfile",
+            "setup.py",
+        ):
             dep_path = source_path / dep_name
-            if dep_path.exists():
-                try:
-                    content = dep_path.read_text(encoding="utf-8", errors="ignore").lower()
-                    if any(fw in content for fw in _KNOWN_FRAMEWORKS):
-                        return True
-                except Exception:
-                    pass
-
-        # 信号2：源码文件快速探针（扫描前 30 个 .py 文件）
-        count = 0
-        for py_file in source_path.rglob("*.py"):
-            if count >= 30:
-                break
-            count += 1
+            if not dep_path.exists():
+                continue
             try:
-                content = py_file.read_text(encoding="utf-8", errors="ignore")
-                if _DECORATOR_PROBE_RE.search(content):
-                    return True
+                content = dep_path.read_text(encoding="utf-8", errors="ignore").lower()
             except Exception:
                 continue
+            if any(fw in content for fw in _KNOWN_FRAMEWORKS):
+                return True
+
+        scanned = 0
+        for py_file in source_path.rglob("*.py"):
+            if scanned >= 30:
+                break
+            scanned += 1
+            try:
+                content = py_file.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if _DECORATOR_PROBE_RE.search(content):
+                return True
 
         return False
 
-    # ── 提取 ─────────────────────────────────────────────────
+    def get_tree_sitter_query(self) -> str:
+        return """
+(
+  (decorated_definition
+    (decorator) @decorator
+    definition: (function_definition) @handler) @decorated
+)
+(
+  (decorated_definition
+    (decorator) @decorator
+    definition: (async_function_definition) @handler) @decorated
+)
+"""
 
-    def extract_route(self, method: str, path: str) -> RouteSnippet | None:
-        """提取单条路由的完整函数体（找到第一个匹配即返回）"""
-        for py_file in iter_source_files(self.source_path, {".py"}, self.EXCLUDE_DIRS):
+    def _parse_decorator_routes(
+        self,
+        decorator_text: str,
+        router_prefixes: dict[str, str],
+    ) -> list[tuple[str, str]]:
+        text = decorator_text.strip()
+
+        m = _METHOD_DECORATOR_RE.match(text)
+        if m:
+            target = (m.group("target") or "").split(".")[0]
+            method = (m.group("verb") or "GET").upper()
+            path = _extract_path_from_args(m.group("args") or "")
+            if target in router_prefixes:
+                path = join_paths(router_prefixes[target], path)
+            return [(method, path)]
+
+        r = _ROUTE_DECORATOR_RE.match(text)
+        if r:
+            target = (r.group("target") or "").split(".")[0]
+            args = r.group("args") or ""
+            path = _extract_path_from_args(args)
+            methods = _extract_methods_from_args(args)
+            if target in router_prefixes:
+                path = join_paths(router_prefixes[target], path)
+            return [(method, path) for method in methods]
+
+        return []
+
+    def _extract_routes_from_tree(
+        self,
+        source_file: Path,
+        source_bytes: bytes,
+        root_node: Any,
+        captures: list[tuple[Any, str]],
+    ) -> list[RouteSnippet]:
+        _ = root_node
+
+        source_text = source_bytes.decode("utf-8", errors="replace")
+        router_prefixes = _extract_router_prefixes(source_text)
+
+        groups: dict[tuple[int, int], dict[str, Any]] = {}
+
+        for node, cap_name in captures:
+            group_node = None
+            if cap_name == "decorated":
+                group_node = node
+            elif node.parent is not None and node.parent.type == "decorated_definition":
+                group_node = node.parent
+
+            if group_node is None:
+                continue
+
+            key = (group_node.start_byte, group_node.end_byte)
+            bucket = groups.setdefault(
+                key,
+                {
+                    "snippet_node": group_node,
+                    "decorators": [],
+                },
+            )
+
+            if cap_name == "decorator":
+                bucket["decorators"].append(node)
+
+        snippets: list[RouteSnippet] = []
+
+        for bucket in groups.values():
+            snippet_node = bucket["snippet_node"]
+            decorators = bucket["decorators"]
+
+            for dec_node in decorators:
+                dec_text = source_bytes[dec_node.start_byte : dec_node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                for method, path in self._parse_decorator_routes(dec_text, router_prefixes):
+                    snippets.append(
+                        self._make_snippet(
+                            method=method,
+                            path=path,
+                            source_file=source_file,
+                            source_bytes=source_bytes,
+                            node=snippet_node,
+                        )
+                    )
+
+        return snippets
+
+    def _fallback_extract_all_routes(self) -> list[RouteSnippet]:
+        """依赖缺失时回退到正则扫描，保证功能可用。"""
+        snippets: list[RouteSnippet] = []
+
+        for py_file in self._iter_source_files():
             try:
                 content = py_file.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
 
             lines = content.splitlines()
+            prefixes = _extract_router_prefixes(content)
 
-            for i, line in enumerate(lines):
+            idx = 0
+            while idx < len(lines):
+                line = lines[idx]
                 if not line.strip().startswith("@"):
-                    continue
-                if not _decorator_matches(line, method, path):
+                    idx += 1
                     continue
 
-                # 命中！提取函数体
-                s_idx, e_idx = _extract_function_body(lines, i)
-                code = "\n".join(lines[s_idx: e_idx + 1])
+                dec_text = line.strip()
+                routes = self._parse_decorator_routes(dec_text, prefixes)
+                if not routes:
+                    idx += 1
+                    continue
 
+                def_idx = None
+                for j in range(idx, min(idx + 20, len(lines))):
+                    if re.match(r"\s*(async\s+)?def\s+\w+", lines[j]):
+                        def_idx = j
+                        break
+
+                if def_idx is None:
+                    idx += 1
+                    continue
+
+                base_indent = len(lines[def_idx]) - len(lines[def_idx].lstrip())
+                start = idx
+                while start > 0 and lines[start - 1].strip().startswith("@"):
+                    start -= 1
+
+                end = def_idx
+                k = def_idx + 1
+                while k < len(lines):
+                    stripped = lines[k].strip()
+                    if not stripped or stripped.startswith("#"):
+                        k += 1
+                        continue
+                    curr_indent = len(lines[k]) - len(lines[k].lstrip())
+                    if curr_indent <= base_indent:
+                        break
+                    end = k
+                    k += 1
+
+                code = "\n".join(lines[start : end + 1])
                 try:
                     rel_path = str(py_file.relative_to(self.source_path))
                 except ValueError:
                     rel_path = str(py_file)
 
-                return RouteSnippet(
-                    route_id=f"{method.upper()}:{path}",
-                    file_path=rel_path,
-                    start_line=s_idx + 1,
-                    end_line=e_idx + 1,
-                    code=code,
-                    adapter_name=self.NAME,
-                )
+                for method, path in routes:
+                    snippets.append(
+                        RouteSnippet(
+                            route_id=f"{method}:{normalize_path(path)}",
+                            file_path=rel_path,
+                            start_line=start + 1,
+                            end_line=end + 1,
+                            code=code,
+                            adapter_name=self.NAME,
+                            method=method,
+                            path=path,
+                        )
+                    )
 
-        return None
+                idx = end + 1
+
+        return snippets

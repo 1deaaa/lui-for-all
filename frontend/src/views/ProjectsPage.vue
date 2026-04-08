@@ -194,7 +194,8 @@ async function testConnection() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         base_url: importForm.value.base_url,
-        openapi_url: importForm.value.openapi_url || null
+        openapi_url: importForm.value.openapi_url || null,
+        source_path: importForm.value.source_path || null,
       })
     })
     
@@ -241,6 +242,7 @@ async function fetchRoutes(force = false) {
       body: JSON.stringify({
         base_url: importForm.value.base_url,
         openapi_url: importForm.value.openapi_url || null,
+        source_path: importForm.value.source_path || null,
       }),
     })
     const data = await resp.json()

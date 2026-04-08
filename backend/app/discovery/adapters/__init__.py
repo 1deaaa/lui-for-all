@@ -12,15 +12,15 @@
 
 已注册适配器（按检测优先级排序）：
 
-    1. PythonDecoratorAdapter  — FastAPI / Flask / Sanic 等 Python 装饰器风格
-    2. NodejsTypescriptAdapter — NestJS / Express / Fastify 等 Node.js 框架
+    1. DjangoUrlconfAdapter   — Django urls.py 集中路由风格
+    2. PythonDecoratorAdapter — FastAPI / Flask / Sanic 等 Python 装饰器风格
+    3. NodejsTypescriptAdapter — NestJS / Express / Fastify 等 Node.js 框架
+    4. JavaSpringAdapter      — Spring Boot / Spring MVC
+    5. AspNetCoreAdapter      — ASP.NET Core Controller / Minimal API
+    6. GoWebAdapter           — Gin / Echo / Fiber / Chi
 
 待贡献：
 
-    - Django (urls.py 集中式路由)
-    - Spring Boot (Java, @GetMapping 等注解)
-    - ASP.NET Core (C#, [HttpGet] 等属性)
-    - Go (Gin / Echo / Fiber / chi 等)
     - Ruby on Rails (routes.rb 约定式路由)
     - PHP (Laravel routes/api.php)
     - 原生 HTTP 端点（不使用任何框架）
@@ -29,8 +29,12 @@
 from pathlib import Path
 
 from app.discovery.adapters.base import FrameAdapter, RouteSnippet, path_matches
+from app.discovery.adapters.django_urlconf import DjangoUrlconfAdapter
 from app.discovery.adapters.python_decorator import PythonDecoratorAdapter
 from app.discovery.adapters.nodejs_ts import NodejsTypescriptAdapter
+from app.discovery.adapters.java_spring import JavaSpringAdapter
+from app.discovery.adapters.aspnet_core import AspNetCoreAdapter
+from app.discovery.adapters.go_web import GoWebAdapter
 
 
 # ────────────────────────────────────────────────────────────────
@@ -43,8 +47,12 @@ from app.discovery.adapters.nodejs_ts import NodejsTypescriptAdapter
 # ────────────────────────────────────────────────────────────────
 
 _REGISTRY: list[type[FrameAdapter]] = [
+    DjangoUrlconfAdapter,
     PythonDecoratorAdapter,
     NodejsTypescriptAdapter,
+    JavaSpringAdapter,
+    AspNetCoreAdapter,
+    GoWebAdapter,
     # ── 未来贡献者在此追加 ──────────────────────────────────────
     # DjangoAdapter,          # 参见 adapters/django_urlconf.py（待贡献）
     # SpringBootAdapter,      # 参见 adapters/spring_boot.py（待贡献）
@@ -103,8 +111,12 @@ __all__ = [
     "FrameAdapter",
     "RouteSnippet",
     "path_matches",
+    "DjangoUrlconfAdapter",
     "PythonDecoratorAdapter",
     "NodejsTypescriptAdapter",
+    "JavaSpringAdapter",
+    "AspNetCoreAdapter",
+    "GoWebAdapter",
     "get_adapter",
     "list_adapters",
 ]

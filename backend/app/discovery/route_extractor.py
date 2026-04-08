@@ -91,3 +91,14 @@ class RouteExtractor:
         if not self._adapter:
             return {f"{m.upper()}:{p}": None for m, p in routes}
         return self._adapter.extract_batch(routes)
+
+    def extract_all_routes(self) -> list["RouteSnippet"]:
+        """
+        提取项目中可识别的全部路由片段。
+
+        Returns:
+            list[RouteSnippet]: 适配器可解析出的全部路由
+        """
+        if not self._adapter:
+            return []
+        return self._adapter.discover_routes()
