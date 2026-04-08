@@ -2,8 +2,12 @@
 import asyncio
 import sys
 import os
-os.chdir('d:/Desktop/talk-to-interface/backend')
-sys.path.insert(0, 'd:/Desktop/talk-to-interface/backend')
+from pathlib import Path
+
+backend_dir = Path(__file__).resolve().parents[2]
+os.chdir(backend_dir)
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 from app.graph.nodes import execute_requests_node
 from app.schemas.task import TaskPlan, TaskStep

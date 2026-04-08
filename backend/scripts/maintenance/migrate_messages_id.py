@@ -5,14 +5,21 @@
 SQLite 不支持 ALTER COLUMN，所以采用重建表的方式。
 """
 
-import asyncio
+import os
 import sqlite3
 from pathlib import Path
 
 
 def migrate():
-    # 定位 SQLite 数据库文件
-    db_path = Path(__file__).parent / "app.db"
+    backend_dir = Path(__file__).resolve().parents[2]
+    configured = os.getenv("LUI_DB_PATH")
+    if configured:
+        db_path = Path(configured)
+        if not db_path.is_absolute():
+            db_path = backend_dir / db_path
+    else:
+        db_path = backend_dir / "workspace" / "lui.db"
+
     if not db_path.exists():
         print(f"数据库文件不存在: {db_path}")
         return

@@ -196,6 +196,9 @@ backend_for_test/**/.vs/
 backend_for_test/**/.vscode/
 backend_for_test/**/.idea/
 
+# backend manual script logs
+backend/scripts/manual/logs/*
+
 # OS
 .DS_Store
 Thumbs.db

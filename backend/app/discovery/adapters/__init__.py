@@ -35,6 +35,7 @@ from app.discovery.adapters.nodejs_ts import NodejsTypescriptAdapter
 from app.discovery.adapters.java_spring import JavaSpringAdapter
 from app.discovery.adapters.aspnet_core import AspNetCoreAdapter
 from app.discovery.adapters.go_web import GoWebAdapter
+from app.discovery.adapters.paradigms import AST_PARADIGM_DESCRIPTIONS
 
 
 # ────────────────────────────────────────────────────────────────
@@ -97,14 +98,12 @@ def get_adapter(source_path: str) -> FrameAdapter | None:
 
 def list_adapters() -> list[dict]:
     """返回所有已注册适配器的基本信息（调试/诊断用）"""
-    return [
-        {
-            "name": cls.NAME,
-            "languages": cls.LANGUAGES,
-            "class": cls.__name__,
-        }
-        for cls in _REGISTRY
-    ]
+    return [cls.metadata() for cls in _REGISTRY]
+
+
+def list_ast_paradigms() -> dict[str, str]:
+    """Return normalized AST routing paradigms used by all adapters."""
+    return dict(AST_PARADIGM_DESCRIPTIONS)
 
 
 __all__ = [
@@ -119,4 +118,5 @@ __all__ = [
     "GoWebAdapter",
     "get_adapter",
     "list_adapters",
+    "list_ast_paradigms",
 ]

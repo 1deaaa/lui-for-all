@@ -4,11 +4,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 加载环境变量
-backend_dir = Path(__file__).parent
+backend_dir = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(backend_dir))
 load_dotenv(backend_dir / ".env")
 
-print("LLM_KEY =", os.getenv("LLM_KEY"))
+platform_api_key = os.getenv("LUI_MATCHBOX_PLATFORM_API_KEY")
+if not platform_api_key:
+    raise RuntimeError("请先设置环境变量 LUI_MATCHBOX_PLATFORM_API_KEY")
 
 from app.llm.agent_matchbox import initialize_matchbox, matchbox
 
@@ -27,8 +29,8 @@ for p in platforms:
         break
 
 if target_plat_id:
-    # 为阿里云平台配置指定的 API Key
-    mgr.update_platform_config("-1", target_plat_id, "GENERIC_OPENAI_STYLE_KEY_REDACTED")
+    # 为目标平台配置 API Key（来自环境变量）
+    mgr.update_platform_config("-1", target_plat_id, platform_api_key)
     print(f"✅ Successfully set API key for 阿里云百炼 (ID: {target_plat_id})")
     
     # 探测一下有哪些模型或者直接拿这个平台加一个 qwen3.5flash 模型用于专门测试

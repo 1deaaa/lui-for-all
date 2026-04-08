@@ -1,72 +1,69 @@
 const http = require('node:http');
 
-const routes = [];
-
-const router = {
-  get(path, handler) {
-    routes.push({ method: 'GET', path, handler });
-  },
-  post(path, handler) {
-    routes.push({ method: 'POST', path, handler });
-  },
-  put(path, handler) {
-    routes.push({ method: 'PUT', path, handler });
-  },
-  patch(path, handler) {
-    routes.push({ method: 'PATCH', path, handler });
-  },
-  delete(path, handler) {
-    routes.push({ method: 'DELETE', path, handler });
-  },
-  head(path, handler) {
-    routes.push({ method: 'HEAD', path, handler });
-  },
-  options(path, handler) {
-    routes.push({ method: 'OPTIONS', path, handler });
-  },
-};
-
-router.get('/api/items', function getItems(req, res) {
+function getItems(req, res) {
   res.end('GET /api/items');
-});
+}
 
-router.post('/api/items', function createItem(req, res) {
+function createItem(req, res) {
   res.end('POST /api/items');
-});
+}
 
-router.put('/api/items/:id', function replaceItem(req, res) {
+function replaceItem(req, res) {
   res.end('PUT /api/items/:id');
-});
+}
 
-router.patch('/api/items/:id', function patchItem(req, res) {
+function patchItem(req, res) {
   res.end('PATCH /api/items/:id');
-});
+}
 
-router.delete('/api/items/:id', function deleteItem(req, res) {
+function deleteItem(req, res) {
   res.end('DELETE /api/items/:id');
-});
+}
 
-router.head('/api/health', function healthHead(req, res) {
+function healthHead(req, res) {
   res.end();
-});
+}
 
-router.options('/api/health', function healthOptions(req, res) {
+function healthOptions(req, res) {
   res.setHeader('Allow', 'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS');
   res.end();
-});
+}
 
 const server = http.createServer((req, res) => {
-  const route = routes.find((item) => item.method === req.method && item.path === req.url);
-  if (!route) {
-    res.statusCode = 404;
-    res.end('Not Found');
-    return;
+  if (req.method === 'GET' && req.url === '/api/items') {
+    return getItems(req, res);
   }
-  route.handler(req, res);
+
+  if (req.method === 'POST' && req.url === '/api/items') {
+    return createItem(req, res);
+  }
+
+  if (req.method === 'PUT' && req.url === '/api/items/:id') {
+    return replaceItem(req, res);
+  }
+
+  if (req.method === 'PATCH' && req.url === '/api/items/:id') {
+    return patchItem(req, res);
+  }
+
+  if (req.method === 'DELETE' && req.url === '/api/items/:id') {
+    return deleteItem(req, res);
+  }
+
+  if (req.method === 'HEAD' && req.url === '/api/health') {
+    return healthHead(req, res);
+  }
+
+  if (req.method === 'OPTIONS' && req.url === '/api/health') {
+    return healthOptions(req, res);
+  }
+
+  res.statusCode = 404;
+  res.end('Not Found');
 });
 
 if (require.main === module) {
   server.listen(8030);
 }
 
-module.exports = { server, router, routes };
+module.exports = { server };

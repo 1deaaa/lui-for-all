@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
+from app.discovery.adapters.paradigms import (
+    AST_PARADIGM_CALL_REGISTRATION,
+    AST_PARADIGM_DECORATOR_METADATA,
+    AST_PARADIGM_IMPERATIVE_DISPATCH,
+)
 
 
 _TS_EXTENSIONS = {".ts", ".js", ".tsx", ".mts", ".mjs", ".cjs", ".cts"}
@@ -28,8 +33,6 @@ _KNOWN_FRAMEWORKS = frozenset(
         "hono",
         "elysia",
         "restify",
-        "@hapi/hapi",
-        "hapi",
     }
 )
 
@@ -37,6 +40,16 @@ _CALL_ROUTE_RE = re.compile(
     r"\.\s*(?P<verb>get|post|put|delete|patch|options|head)\s*\(\s*(?P<q>['\"`])(?P<path>/[^'\"`]*)(?P=q)",
     re.IGNORECASE,
 )
+
+_IF_CONDITION_METHOD_RE = re.compile(
+    r"(?:req\.(?:method|httpMethod)|method)\s*[=!]==?\s*['\"`](?P<left>[A-Za-z]+)['\"`]|['\"`](?P<right>[A-Za-z]+)['\"`]\s*[=!]==?\s*(?:req\.(?:method|httpMethod)|method)",
+    re.IGNORECASE,
+)
+_IF_CONDITION_PATH_RE = re.compile(
+    r"(?:req\.(?:url|path|pathname)|url|path|pathname)\s*[=!]==?\s*['\"`](?P<left>/[^'\"`]*)['\"`]|['\"`](?P<right>/[^'\"`]*)['\"`]\s*[=!]==?\s*(?:req\.(?:url|path|pathname)|url|path|pathname)",
+    re.IGNORECASE,
+)
+_HANDLER_CALL_RE = re.compile(r"(?:return\s+)?(?P<handler>[A-Za-z_]\w*)\s*\(")
 
 _NEST_DECORATOR_RE = re.compile(
     r"@(?P<verb>Get|Post|Put|Delete|Patch|Options|Head|All)\s*\((?P<args>.*?)\)\s*$",
@@ -56,6 +69,7 @@ _CONTROLLER_PREFIX_RE = re.compile(
 _STRING_RE = re.compile(r"['\"`]([^'\"`]+)['\"`]")
 _REQUEST_METHOD_RE = re.compile(r"RequestMethod\.([A-Za-z]+)")
 _HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+_HTTP_METHOD_SET = set(_HTTP_METHODS)
 
 
 def _find_ancestor(node: Any, wanted_types: set[str]) -> Any | None:
@@ -77,12 +91,131 @@ def _extract_path_from_args(args: str) -> str:
     return "/"
 
 
+def _split_top_level_args(text: str) -> list[str]:
+    args: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == quote:
+                quote = None
+            continue
+
+        if ch in {'\"', "'", "`"}:
+            quote = ch
+            buf.append(ch)
+            continue
+
+        if ch in "([{":
+            depth += 1
+            buf.append(ch)
+            continue
+
+        if ch in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+
+        if ch == "," and depth == 0:
+            args.append("".join(buf).strip())
+            buf = []
+            continue
+
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _extract_if_condition(if_text: str) -> str:
+    start = if_text.find("(")
+    if start < 0:
+        return ""
+
+    depth = 0
+    cond_start = -1
+    for idx in range(start, len(if_text)):
+        ch = if_text[idx]
+        if ch == "(":
+            if depth == 0:
+                cond_start = idx + 1
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and cond_start >= 0:
+                return if_text[cond_start:idx]
+    return ""
+
+
+def _extract_methods_from_condition(condition: str) -> list[str]:
+    methods: list[str] = []
+    for hit in _IF_CONDITION_METHOD_RE.finditer(condition):
+        method = (hit.group("left") or hit.group("right") or "").upper()
+        if method in _HTTP_METHOD_SET:
+            methods.append(method)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for method in methods:
+        if method in seen:
+            continue
+        seen.add(method)
+        deduped.append(method)
+    return deduped
+
+
+def _extract_path_from_condition(condition: str) -> str | None:
+    hit = _IF_CONDITION_PATH_RE.search(condition)
+    if not hit:
+        return None
+    raw = hit.group("left") or hit.group("right") or ""
+    if not raw:
+        return None
+    return normalize_path(raw)
+
+
+def _extract_first_handler_call(body: str) -> str | None:
+    for hit in _HANDLER_CALL_RE.finditer(body):
+        name = hit.group("handler")
+        if name in {"if", "switch", "for", "while", "return"}:
+            continue
+        return name
+    return None
+
+
 class NodejsTypescriptAdapter(FrameAdapter):
     """Node.js / TS 路由适配器。"""
 
     NAME = "nodejs_typescript"
     LANGUAGES = sorted(_TS_EXTENSIONS)
     TREE_SITTER_LANGUAGES = ["typescript", "javascript"]
+    AST_PARADIGMS = [
+        AST_PARADIGM_DECORATOR_METADATA,
+        AST_PARADIGM_CALL_REGISTRATION,
+        AST_PARADIGM_IMPERATIVE_DISPATCH,
+    ]
+    SUPPORTED_FRAMEWORKS = [
+        "nestjs",
+        "express",
+        "fastify",
+        "koa-router",
+        "hono",
+        "elysia",
+        "restify",
+        "node-native-http",
+    ]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:
@@ -111,7 +244,44 @@ class NodejsTypescriptAdapter(FrameAdapter):
 (decorator) @decorator
 (method_definition) @method
 (class_declaration) @class
+(function_declaration) @func_decl
+(variable_declarator) @var_decl
+(if_statement) @if_stmt
 """
+
+    def _build_handler_index(
+        self,
+        source_bytes: bytes,
+        captures: list[tuple[Any, str]],
+    ) -> dict[str, Any]:
+        handlers: dict[str, Any] = {}
+        for node, cap_name in captures:
+            if cap_name == "func_decl":
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                handlers[name] = node
+                continue
+
+            if cap_name == "var_decl":
+                name_node = node.child_by_field_name("name")
+                value_node = node.child_by_field_name("value")
+                if name_node is None or value_node is None:
+                    continue
+                if value_node.type not in {
+                    "arrow_function",
+                    "function",
+                    "function_expression",
+                }:
+                    continue
+                name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                handlers[name] = value_node
+        return handlers
 
     def _extract_controller_prefix(self, source_bytes: bytes, method_node: Any) -> str:
         class_node = _find_ancestor(method_node, {"class_declaration"})
@@ -162,13 +332,32 @@ class NodejsTypescriptAdapter(FrameAdapter):
 
         return []
 
-    def _parse_call_routes(self, call_text: str, call_node: Any) -> list[tuple[str, str, Any]]:
+    def _parse_call_routes(
+        self,
+        call_text: str,
+        call_node: Any,
+        handler_index: dict[str, Any],
+    ) -> list[tuple[str, str, Any]]:
         routes: list[tuple[str, str, Any]] = []
         for hit in _CALL_ROUTE_RE.finditer(call_text):
             method = hit.group("verb").upper()
             path = normalize_path(hit.group("path"))
+
+            handler_node = None
+            open_paren = call_text.find("(")
+            close_paren = call_text.rfind(")")
+            if open_paren >= 0 and close_paren > open_paren:
+                args_text = call_text[open_paren + 1 : close_paren]
+                args = _split_top_level_args(args_text)
+                if len(args) >= 2:
+                    candidate = args[1].strip()
+                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
+                        handler_node = handler_index.get(candidate)
+
             snippet_node = call_node
-            if call_node.parent is not None and call_node.parent.type in {
+            if handler_node is not None:
+                snippet_node = handler_node
+            elif call_node.parent is not None and call_node.parent.type in {
                 "expression_statement",
                 "lexical_declaration",
                 "variable_declaration",
@@ -177,6 +366,25 @@ class NodejsTypescriptAdapter(FrameAdapter):
                 snippet_node = call_node.parent
             routes.append((method, path, snippet_node))
         return routes
+
+    def _parse_imperative_if_routes(
+        self,
+        if_text: str,
+        if_node: Any,
+        handler_index: dict[str, Any],
+    ) -> list[tuple[str, str, Any]]:
+        condition = _extract_if_condition(if_text)
+        methods = _extract_methods_from_condition(condition)
+        path = _extract_path_from_condition(condition)
+        if not methods or not path:
+            return []
+
+        body = if_text[if_text.find(")") + 1 :] if ")" in if_text else if_text
+        handler_name = _extract_first_handler_call(body)
+        handler_node = handler_index.get(handler_name) if handler_name else None
+        snippet_node = handler_node or if_node
+
+        return [(method, path, snippet_node) for method in methods]
 
     def _extract_routes_from_tree(
         self,
@@ -188,6 +396,7 @@ class NodejsTypescriptAdapter(FrameAdapter):
         _ = root_node
 
         snippets: list[RouteSnippet] = []
+        handler_index = self._build_handler_index(source_bytes, captures)
 
         for node, cap_name in captures:
             if cap_name == "decorator":
@@ -213,7 +422,30 @@ class NodejsTypescriptAdapter(FrameAdapter):
                 call_text = source_bytes[node.start_byte : node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
-                for method, path, snippet_node in self._parse_call_routes(call_text, node):
+                for method, path, snippet_node in self._parse_call_routes(
+                    call_text,
+                    node,
+                    handler_index,
+                ):
+                    snippets.append(
+                        self._make_snippet(
+                            method=method,
+                            path=path,
+                            source_file=source_file,
+                            source_bytes=source_bytes,
+                            node=snippet_node,
+                        )
+                    )
+
+            elif cap_name == "if_stmt":
+                if_text = source_bytes[node.start_byte : node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                for method, path, snippet_node in self._parse_imperative_if_routes(
+                    if_text,
+                    node,
+                    handler_index,
+                ):
                     snippets.append(
                         self._make_snippet(
                             method=method,

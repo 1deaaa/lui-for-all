@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.discovery.adapters.base import FrameAdapter, join_paths, normalize_path
+from app.discovery.adapters.paradigms import AST_PARADIGM_DECORATOR_METADATA
 
 
 _HTTP_MAPPING_RE = re.compile(
@@ -39,6 +40,8 @@ class JavaSpringAdapter(FrameAdapter):
     NAME = "java_spring"
     LANGUAGES = [".java"]
     TREE_SITTER_LANGUAGES = ["java"]
+    AST_PARADIGMS = [AST_PARADIGM_DECORATOR_METADATA]
+    SUPPORTED_FRAMEWORKS = ["spring-boot", "spring-mvc"]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:

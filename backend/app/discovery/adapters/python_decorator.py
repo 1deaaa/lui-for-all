@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
+from app.discovery.adapters.paradigms import AST_PARADIGM_DECORATOR_METADATA
 
 
 _KNOWN_FRAMEWORKS = frozenset(
@@ -21,9 +22,7 @@ _KNOWN_FRAMEWORKS = frozenset(
         "sanic",
         "starlette",
         "litestar",
-        "falcon",
         "aiohttp",
-        "tornado",
         "bottle",
         "quart",
     }
@@ -105,6 +104,17 @@ class PythonDecoratorAdapter(FrameAdapter):
     NAME = "python_decorator"
     LANGUAGES = [".py"]
     TREE_SITTER_LANGUAGES = ["python"]
+    AST_PARADIGMS = [AST_PARADIGM_DECORATOR_METADATA]
+    SUPPORTED_FRAMEWORKS = [
+        "fastapi",
+        "flask",
+        "sanic",
+        "starlette",
+        "litestar",
+        "aiohttp",
+        "bottle",
+        "quart",
+    ]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:

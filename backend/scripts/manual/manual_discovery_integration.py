@@ -6,22 +6,20 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 # 将应用路径加入 sys.path
-backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if backend_path not in sys.path:
-    sys.path.append(backend_path)
+backend_path = Path(__file__).resolve().parents[2]
+if str(backend_path) not in sys.path:
+    sys.path.append(str(backend_path))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-# 强行设置环境变量，保证 config.py 能拉取到带 LUI_ 前缀的测试凭证
-os.environ["LUI_LLM_API_KEY"] = "GENERIC_OPENAI_STYLE_KEY_REDACTED"
-os.environ["LUI_LLM_API_BASE"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-os.environ["LUI_LLM_MODEL_ID"] = "qwen3.5-plus"
+if not os.getenv("LUI_LLM_API_KEY"):
+    raise RuntimeError("请先设置环境变量 LUI_LLM_API_KEY")
 
 from app.db import Base
-from app.models.project import Project, CapabilityRecord
 from app.schemas.route_map import RouteMap, RouteInfo, HttpMethod
 from app.discovery.capability_builder import build_capability_graph
 

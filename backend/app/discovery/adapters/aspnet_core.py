@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from app.discovery.adapters.base import FrameAdapter, join_paths, normalize_path
+from app.discovery.adapters.paradigms import (
+    AST_PARADIGM_CALL_REGISTRATION,
+    AST_PARADIGM_DECORATOR_METADATA,
+)
 
 
 _HTTP_ATTR_RE = re.compile(
@@ -38,6 +42,8 @@ class AspNetCoreAdapter(FrameAdapter):
     NAME = "aspnet_core"
     LANGUAGES = [".cs"]
     TREE_SITTER_LANGUAGES = ["c_sharp", "csharp", "c-sharp"]
+    AST_PARADIGMS = [AST_PARADIGM_DECORATOR_METADATA, AST_PARADIGM_CALL_REGISTRATION]
+    SUPPORTED_FRAMEWORKS = ["aspnet-core-controller", "aspnet-core-minimal-api"]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:

@@ -61,6 +61,18 @@ class RouteExtractor:
         """返回当前使用的适配器名称，未匹配时为 None"""
         return self._adapter.NAME if self._adapter else None
 
+    @property
+    def adapter_metadata(self) -> dict | None:
+        """返回当前适配器元数据，便于调试与诊断。"""
+        return self._adapter.metadata() if self._adapter else None
+
+    @property
+    def adapter_ast_paradigms(self) -> list[str]:
+        """返回当前适配器声明的 AST 路由范式。"""
+        if not self._adapter:
+            return []
+        return list(self._adapter.metadata().get("ast_paradigms", []))
+
     def extract_route(self, method: str, path: str) -> "RouteSnippet | None":
         """
         提取单条路由的完整函数体。

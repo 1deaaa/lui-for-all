@@ -43,20 +43,32 @@ LUI: [Understand intent -> call existing APIs -> render table + highlights]
 
 The repository now includes 7 representative backend samples with validated two-level extraction (route discovery + handler/function implementation extraction).
 
-| Representative sample | Route style family | Verified coverage (current adapters) | Theoretical transfer (requires adapter extension) |
+| Representative sample | Route style family | Current adapter coverage target (same family) | Theoretical transfer (requires adapter extension) |
 |---|---|---|---|
-| `fastapi_sample` | Python decorator routes (`@router.get`, `@app.post`) | FastAPI, Flask, Sanic, Starlette, Litestar, Falcon, aiohttp, Tornado, Bottle, Quart | Ruby Sinatra/Grape, PHP Slim |
-| `node_sample` | Node call-chain routing (`app.get()`, `router.post()`) | Express, Fastify, Koa Router, Hono, Elysia, Restify, hapi | PHP Laravel/Lumen/Slim, Ruby Hanami |
+| `fastapi_sample` | Python decorator routes (`@router.get`, `@app.post`) | FastAPI, Flask, Sanic, Starlette, Litestar, aiohttp, Bottle, Quart | Ruby Sinatra/Grape, PHP Slim |
+| `node_sample` | Node call-chain routing (`app.get()`, `router.post()`) | Express, Fastify, Koa Router, Hono, Elysia, Restify | PHP Laravel/Lumen/Slim, Ruby Hanami |
 | `django_sample` | Central URLConf (`path/re_path/include`) | Django, Django REST Framework | Ruby on Rails (`routes.rb`), PHP Laravel (`routes/web.php`) |
 | `springboot_sample` | Controller annotations (class prefix + method mapping) | Java Spring Boot, Spring MVC | C# ASP.NET Core attribute controllers, PHP Symfony attribute routes |
 | `aspnetcore_sample` | Minimal API mapping (`MapGet/MapPost/MapMethods`) | ASP.NET Core Minimal API | Java Javalin/Spark, Go net/http + mux |
 | `go_gin_sample` | Grouped chain registration (`Group + METHOD(path, handler)`) | Gin, Echo, Fiber, Chi | Rust Actix/Axum, PHP Slim |
-| `node_native_sample` | No-framework manual routing table (method/path -> handler) | Node.js built-in http | Python wsgiref/werkzeug manual routing, Ruby Rack, PHP Swoole native dispatch |
+| `node_native_sample` | No-framework imperative dispatch (`if (method && path)`) | Node.js built-in http | Python wsgiref/werkzeug imperative dispatch, Ruby Rack, PHP Swoole native dispatch |
 
 Notes:
 
-- "Verified coverage" corresponds to repository tests in `backend/test/test_route_extractor_representative_samples.py`.
+- "Current adapter coverage target" means frameworks that share the same AST routing pattern and are covered by the implemented extractor logic.
+- The repository has direct test validation for the 7 representative samples themselves: `backend/test/test_route_extractor_representative_samples.py`.
 - "Theoretical transfer" means the syntax pattern is highly similar and is expected to be extractable once a dedicated adapter is added.
+
+### AST Four-Paradigm Normalization
+
+Discovery is now normalized into 4 AST routing paradigms. The 7 samples are framework representatives, not new paradigm types:
+
+- `decorator_metadata`: annotation/decorator routes (FastAPI, Spring, ASP.NET controllers)
+- `call_registration`: call-based registration (Express/Fastify, Gin/Echo/Fiber/Chi, ASP.NET Minimal API)
+- `route_table`: centralized route table declarations (Django URLConf)
+- `imperative_dispatch`: imperative control flow dispatch (Node native `if/switch`)
+
+All four paradigms are emitted as the same `RouteSnippet` structure and go through the same chunking + LLM context flow (same A/B downstream path).
 
 3. Strict declarative UI whitelist
 - Model output is JSON blocks only, not raw HTML/JS/CSS

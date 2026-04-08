@@ -4,19 +4,20 @@
 
 ## 代表性样例矩阵
 
-| 代表样例 | 路由风格派系 | 已实测覆盖（当前适配器） | 理论可迁移（需新增适配器） |
+| 代表样例 | 路由风格派系 | 当前适配器覆盖目标（同派系） | 理论可迁移（需新增适配器） |
 |---|---|---|---|
-| fastapi_sample | Python 装饰器路由（`@router.get` / `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、Falcon、aiohttp、Tornado、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim（同类“方法 + 路径 + 处理器”模式） |
-| node_sample | Node 路由调用链（`app.get()` / `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify、hapi | PHP Laravel/Lumen/Slim、Ruby Hanami（同类调用式路由 DSL） |
+| fastapi_sample | Python 装饰器路由（`@router.get` / `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim（同类“方法 + 路径 + 处理器”模式） |
+| node_sample | Node 路由调用链（`app.get()` / `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify | PHP Laravel/Lumen/Slim、Ruby Hanami（同类调用式路由 DSL） |
 | django_sample | URLConf 集中声明（`path/re_path/include`） | Django、Django REST Framework | Ruby on Rails (`routes.rb`)、PHP Laravel (`routes/web.php`) |
 | springboot_sample | 控制器注解路由（类前缀 + 方法注解） | Java Spring Boot、Spring MVC | C# ASP.NET Core Attribute Controller、PHP Symfony Attribute Route |
 | aspnetcore_sample | Minimal API 映射（`MapGet/MapPost/MapMethods`） | ASP.NET Core Minimal API | Java Javalin/Spark、Go net/http + mux（同类“代码注册路由”） |
 | go_gin_sample | 分组链式注册（`Group + METHOD(path, handler)`） | Gin、Echo、Fiber、Chi | Rust Actix/Axum、PHP Slim（分组 + 方法调用） |
-| node_native_sample | 无框架手写路由表（method/path 到 handler 映射） | Node.js built-in http | Python wsgiref/werkzeug 手写路由、Ruby Rack、PHP Swoole 原生分发 |
+| node_native_sample | 无框架命令式分发（`if (method && path)`） | Node.js built-in http | Python wsgiref/werkzeug 命令式分发、Ruby Rack、PHP Swoole 原生分发 |
 
 补充说明：
 
-- 上表“已实测覆盖”对应当前仓库适配器 + 代表样例测试。
+- 上表“当前适配器覆盖目标”表示该适配器按 AST 语法模式可覆盖的同派系框架。
+- 当前仓库已实测的是 7 个代表样例本身（见 `backend/test/test_route_extractor_representative_samples.py`）。
 - 上表“理论可迁移”表示语法结构高度相似，原则上可提取，但需要新增或扩展对应适配器后再算正式支持。
 
 ## 覆盖目标

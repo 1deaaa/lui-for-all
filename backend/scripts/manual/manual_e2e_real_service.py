@@ -8,16 +8,17 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 
-# 注入环境变量，确保使用真实 API 密钥
-backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if backend_path not in sys.path:
-    sys.path.append(backend_path)
+# 注入运行路径并读取环境变量
+backend_path = Path(__file__).resolve().parents[2]
+if str(backend_path) not in sys.path:
+    sys.path.append(str(backend_path))
 
-os.environ["LUI_LLM_API_KEY"] = "GENERIC_OPENAI_STYLE_KEY_REDACTED"
-os.environ["LUI_LLM_API_BASE"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-os.environ["LUI_LLM_MODEL_ID"] = "qwen3.5-plus"
-os.environ["LUI_DB_PATH"] = "workspace/lui.db"
+if not os.getenv("LUI_LLM_API_KEY"):
+    raise RuntimeError("请先设置环境变量 LUI_LLM_API_KEY")
+
+os.environ.setdefault("LUI_DB_PATH", "workspace/lui.db")
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -28,7 +29,7 @@ from app.graph.graph import graph_app
 
 async def main():
     print("🔥 准备环境与数据库...")
-    engine = create_async_engine(f"sqlite+aiosqlite:///{os.path.join(backend_path, 'workspace', 'lui.db')}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{backend_path / 'workspace' / 'lui.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async_session_maker = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

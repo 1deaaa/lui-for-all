@@ -1,16 +1,17 @@
 """
 数据修复脚本：修复历史消息中 http_calls.method/url 为空的问题。
 问题原因：旧代码错误地从 a.get("artifact") 取字段，而实际字段在顶层。
-运行方式：d:\APP\conda\envs\llm\python.exe fix_http_calls_metadata.py
+运行方式：python backend/scripts/maintenance/fix_http_calls_metadata.py
 """
 import asyncio
-import json
 from urllib.parse import urlparse
 
-# 使用绝对路径导入
 import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db import async_session
 from app.models.session import Message

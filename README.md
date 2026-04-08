@@ -61,20 +61,32 @@ LUI：[自动识别意图 → 调用现有接口 → 渲染数据表 + 高亮标
 
 当前仓库已增加 7 个代表测试样例，并通过两级提取测试（路由发现 + 函数实现提取）。
 
-| 代表样例 | 路由风格派系 | 已实测覆盖（当前适配器） | 理论可迁移（需新增适配器） |
+| 代表样例 | 路由风格派系 | 当前适配器覆盖目标（同派系） | 理论可迁移（需新增适配器） |
 |---|---|---|---|
-| `fastapi_sample` | Python 装饰器路由（`@router.get` / `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、Falcon、aiohttp、Tornado、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim |
-| `node_sample` | Node 路由调用链（`app.get()` / `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify、hapi | PHP Laravel/Lumen/Slim、Ruby Hanami |
+| `fastapi_sample` | Python 装饰器路由（`@router.get` / `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim |
+| `node_sample` | Node 路由调用链（`app.get()` / `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify | PHP Laravel/Lumen/Slim、Ruby Hanami |
 | `django_sample` | URLConf 集中声明（`path/re_path/include`） | Django、Django REST Framework | Ruby on Rails (`routes.rb`)、PHP Laravel (`routes/web.php`) |
 | `springboot_sample` | 控制器注解路由（类前缀 + 方法注解） | Java Spring Boot、Spring MVC | C# ASP.NET Core Attribute Controller、PHP Symfony Attribute Route |
 | `aspnetcore_sample` | Minimal API 映射（`MapGet/MapPost/MapMethods`） | ASP.NET Core Minimal API | Java Javalin/Spark、Go net/http + mux |
 | `go_gin_sample` | 分组链式注册（`Group + METHOD(path, handler)`） | Gin、Echo、Fiber、Chi | Rust Actix/Axum、PHP Slim |
-| `node_native_sample` | 无框架手写路由表（method/path 到 handler 映射） | Node.js built-in http | Python wsgiref/werkzeug 手写路由、Ruby Rack、PHP Swoole 原生分发 |
+| `node_native_sample` | 无框架命令式分发（`if (method && path)`） | Node.js built-in http | Python wsgiref/werkzeug 命令式分发、Ruby Rack、PHP Swoole 原生分发 |
 
 说明：
 
-- “已实测覆盖”对应仓库中的代表样例测试：`backend/test/test_route_extractor_representative_samples.py`。
+- “当前适配器覆盖目标”表示该适配器按 AST 语法模式可覆盖的同派系框架。
+- 当前仓库已实测的是 7 个代表样例本身：`backend/test/test_route_extractor_representative_samples.py`。
 - “理论可迁移”表示语法结构高度相似，原则上可提取，但需新增或扩展对应适配器后才算正式支持。
+
+#### 2.2 AST 四范式归一（对应外部评审建议）
+
+当前发现链路已统一到 4 个 AST 路由范式，7 个代表样例只是“框架语法代表”，不是新增范式：
+
+- `decorator_metadata`: 注解/装饰器元数据路由（FastAPI、Spring、ASP.NET Controller）
+- `call_registration`: 调用式注册路由（Express/Fastify、Gin/Echo/Fiber/Chi、ASP.NET Minimal API）
+- `route_table`: 集中式路由表（Django URLConf）
+- `imperative_dispatch`: 命令式控制流分发（Node native `if/switch`）
+
+这 4 类最终都会统一输出同一 `RouteSnippet` 结构，再进入同一代码切片与 LLM 上下文注入流程（A/B 链路保持一致）。
 
 ### 3. 8 种白名单 UI 组件，从根源杜绝渲染注入
 

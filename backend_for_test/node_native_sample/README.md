@@ -5,5 +5,5 @@ It is only for AST route and function extraction tests.
 It is not wired into docker-compose or frontend import presets.
 
 Coverage:
-- custom router registration with method calls
+- imperative dispatch with method/path conditions (`if (req.method && req.url)`)
 - methods: GET POST PUT PATCH DELETE HEAD OPTIONS

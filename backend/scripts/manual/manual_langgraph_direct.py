@@ -2,10 +2,13 @@
 import asyncio
 import sys
 import os
+from pathlib import Path
 
 # 切换到 backend 目录以正确加载 .env 配置
-os.chdir('d:/Desktop/talk-to-interface/backend')
-sys.path.insert(0, 'd:/Desktop/talk-to-interface/backend')
+backend_dir = Path(__file__).resolve().parents[2]
+os.chdir(backend_dir)
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 from app.graph.graph import graph_app
 from app.models.project import CapabilityRecord

@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
+from app.discovery.adapters.paradigms import (
+    AST_PARADIGM_DECORATOR_METADATA,
+    AST_PARADIGM_ROUTE_TABLE,
+)
 
 
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -246,6 +250,8 @@ class DjangoUrlconfAdapter(FrameAdapter):
     NAME = "django_urlconf"
     LANGUAGES = [".py"]
     TREE_SITTER_LANGUAGES = ["python"]
+    AST_PARADIGMS = [AST_PARADIGM_ROUTE_TABLE, AST_PARADIGM_DECORATOR_METADATA]
+    SUPPORTED_FRAMEWORKS = ["django", "django-rest-framework"]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:

@@ -29,6 +29,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "fastapi_sample",
         "adapter": "python_decorator",
+        "paradigms": ["decorator_metadata"],
         "path": REPO_ROOT / "backend_for_test" / "fastapi_sample",
         "expected": [
             "GET:/health",
@@ -44,6 +45,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "node_sample",
         "adapter": "nodejs_typescript",
+        "paradigms": ["call_registration"],
         "path": REPO_ROOT / "backend_for_test" / "node_sample",
         "expected": [
             "GET:/health",
@@ -59,6 +61,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "django_sample",
         "adapter": "django_urlconf",
+        "paradigms": ["route_table"],
         "path": REPO_ROOT / "backend_for_test" / "django_sample",
         "expected": [
             "GET:/api/items",
@@ -80,6 +83,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "springboot_sample",
         "adapter": "java_spring",
+        "paradigms": ["decorator_metadata"],
         "path": REPO_ROOT / "backend_for_test" / "springboot_sample",
         "expected": [
             "GET:/api/items",
@@ -94,6 +98,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "aspnetcore_sample",
         "adapter": "aspnet_core",
+        "paradigms": ["call_registration", "decorator_metadata"],
         "path": REPO_ROOT / "backend_for_test" / "aspnetcore_sample",
         "expected": [
             "GET:/api/items",
@@ -108,6 +113,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "go_gin_sample",
         "adapter": "go_web",
+        "paradigms": ["call_registration"],
         "path": REPO_ROOT / "backend_for_test" / "go_gin_sample",
         "expected": [
             "GET:/api/items",
@@ -122,6 +128,7 @@ REPRESENTATIVE_CASES = [
     {
         "name": "node_native_sample",
         "adapter": "nodejs_typescript",
+        "paradigms": ["imperative_dispatch"],
         "path": REPO_ROOT / "backend_for_test" / "node_native_sample",
         "expected": [
             "GET:/api/items",
@@ -154,6 +161,19 @@ def test_representative_extract_all_routes(case: dict):
         f"Missing route ids for {case['name']}: {missing}. "
         f"Discovered sample: {sorted(list(discovered_ids))[:30]}"
     )
+
+
+@pytest.mark.parametrize("case", REPRESENTATIVE_CASES, ids=[c["name"] for c in REPRESENTATIVE_CASES])
+def test_representative_adapter_ast_paradigms(case: dict):
+    extractor = RouteExtractor(str(case["path"]))
+    assert extractor.adapter_name == case["adapter"]
+
+    paradigms = set(extractor.adapter_ast_paradigms)
+    for expected_paradigm in case["paradigms"]:
+        assert expected_paradigm in paradigms, (
+            f"Adapter {case['adapter']} missing AST paradigm {expected_paradigm}; "
+            f"actual={sorted(paradigms)}"
+        )
 
 
 @pytest.mark.parametrize("case", REPRESENTATIVE_CASES, ids=[c["name"] for c in REPRESENTATIVE_CASES])

@@ -3,10 +3,13 @@ import asyncio
 import httpx
 import sys
 import os
+from pathlib import Path
 
 # 添加后端路径
-sys.path.insert(0, 'd:/Desktop/talk-to-interface/backend')
-os.chdir('d:/Desktop/talk-to-interface/backend')
+backend_dir = Path(__file__).resolve().parents[2]
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+os.chdir(backend_dir)
 
 async def test():
     async with httpx.AsyncClient(timeout=120.0) as client:

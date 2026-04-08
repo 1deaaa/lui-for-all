@@ -21,6 +21,8 @@ import importlib
 from pathlib import Path
 from typing import Any, Iterator
 
+from app.discovery.adapters.paradigms import normalize_ast_paradigms
+
 try:
     _ts_module = importlib.import_module("tree_sitter_languages")
     get_language = getattr(_ts_module, "get_language")
@@ -202,6 +204,8 @@ class FrameAdapter(ABC):
     NAME: str = "base"
     LANGUAGES: list[str] = []
     TREE_SITTER_LANGUAGES: list[str] = []
+    AST_PARADIGMS: list[str] = []
+    SUPPORTED_FRAMEWORKS: list[str] = []
 
     EXCLUDE_DIRS = {
         "__pycache__",
@@ -226,6 +230,18 @@ class FrameAdapter(ABC):
 
     def __init__(self, source_path: str):
         self.source_path = Path(source_path)
+
+    @classmethod
+    def metadata(cls) -> dict[str, Any]:
+        """Structured adapter metadata for diagnostics and docs."""
+        return {
+            "name": cls.NAME,
+            "languages": list(cls.LANGUAGES),
+            "tree_sitter_languages": list(cls.TREE_SITTER_LANGUAGES),
+            "ast_paradigms": normalize_ast_paradigms(cls.AST_PARADIGMS),
+            "supported_frameworks": list(cls.SUPPORTED_FRAMEWORKS),
+            "class": cls.__name__,
+        }
 
     @classmethod
     @abstractmethod
