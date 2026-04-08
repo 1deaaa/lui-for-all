@@ -8,7 +8,7 @@
 
     1. 在 adapters/ 目录下新建文件，继承 FrameAdapter
     2. 在下方 _REGISTRY 列表末尾追加你的类
-    3. 详细步骤见 adapters/CONTRIBUTING.md
+    3. 详细步骤见仓库根目录 CONTRIBUTING.md
 
 已注册适配器（按检测优先级排序）：
 

@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.discovery.adapters.base import FrameAdapter, join_paths, normalize_path
+from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
 from app.discovery.adapters.paradigms import (
     AST_PARADIGM_CALL_REGISTRATION,
     AST_PARADIGM_IMPERATIVE_DISPATCH,
@@ -104,6 +104,54 @@ def _split_method_and_path_pattern(raw: str) -> tuple[str | None, str]:
     return None, normalize_path(text)
 
 
+def _split_top_level_args(text: str) -> list[str]:
+    args: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == quote:
+                quote = None
+            continue
+
+        if ch in {'"', "'", "`"}:
+            quote = ch
+            buf.append(ch)
+            continue
+
+        if ch in "([{" :
+            depth += 1
+            buf.append(ch)
+            continue
+
+        if ch in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+
+        if ch == "," and depth == 0:
+            args.append("".join(buf).strip())
+            buf = []
+            continue
+
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
 def _extract_first_handler_call(body: str) -> str | None:
     for hit in _GO_HANDLER_CALL_RE.finditer(body):
         name = hit.group("handler")
@@ -111,6 +159,57 @@ def _extract_first_handler_call(body: str) -> str | None:
             continue
         return name
     return None
+
+
+def _find_matching_go_brace(text: str, open_brace_index: int) -> int:
+    depth = 0
+    for idx in range(open_brace_index, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return -1
+
+
+def _extract_go_function_snippet(
+    source_text: str,
+    source_file: Path,
+    method: str,
+    path: str,
+    function_name: str,
+) -> RouteSnippet | None:
+    pattern = re.compile(rf"(?m)^\s*func\s+{re.escape(function_name)}\s*\(")
+    match = pattern.search(source_text)
+    if not match:
+        return None
+
+    open_brace_index = source_text.find("{", match.end())
+    if open_brace_index < 0:
+        return None
+
+    close_brace_index = _find_matching_go_brace(source_text, open_brace_index)
+    if close_brace_index < 0:
+        return None
+
+    start_offset = match.start()
+    end_offset = close_brace_index + 1
+    code = source_text[start_offset:end_offset]
+    start_line = source_text.count("\n", 0, start_offset) + 1
+    end_line = source_text.count("\n", 0, end_offset) + 1
+
+    return RouteSnippet(
+        route_id=f"{method.upper()}:{normalize_path(path)}",
+        file_path=source_file.name,
+        start_line=start_line,
+        end_line=end_line,
+        code=code,
+        adapter_name="go_web",
+        method=method,
+        path=path,
+    )
 
 
 class GoWebAdapter(FrameAdapter):
@@ -187,7 +286,7 @@ class GoWebAdapter(FrameAdapter):
         function_nodes: dict[str, Any] = {}
 
         for node, cap_name in captures:
-            if cap_name != "function":
+            if cap_name not in {"function", "func_decl"}:
                 continue
             name_node = node.child_by_field_name("name")
             if name_node is None:
@@ -204,6 +303,12 @@ class GoWebAdapter(FrameAdapter):
             call_text = source_bytes[node.start_byte : node.end_byte].decode(
                 "utf-8", errors="replace"
             )
+            call_args_text = ""
+            open_paren = call_text.find("(")
+            close_paren = call_text.rfind(")")
+            if open_paren >= 0 and close_paren > open_paren:
+                call_args_text = call_text[open_paren + 1 : close_paren]
+            call_args = _split_top_level_args(call_args_text) if call_args_text else []
 
             for hit in _ROUTE_CALL_RE.finditer(call_text):
                 method = hit.group("verb").upper()
@@ -211,6 +316,24 @@ class GoWebAdapter(FrameAdapter):
                 path = normalize_path(hit.group("path"))
                 if obj_name in group_prefixes:
                     path = join_paths(group_prefixes[obj_name], path)
+
+                handler_name = None
+                if len(call_args) >= 2:
+                    candidate = call_args[1].strip()
+                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
+                        handler_name = candidate
+
+                if handler_name:
+                    source_snippet = _extract_go_function_snippet(
+                        file_text,
+                        source_file,
+                        method=method,
+                        path=path,
+                        function_name=handler_name,
+                    )
+                    if source_snippet is not None:
+                        snippets.append(source_snippet)
+                        continue
 
                 node_for_snippet = node.parent if node.parent is not None else node
                 snippets.append(
@@ -228,6 +351,32 @@ class GoWebAdapter(FrameAdapter):
                 handler_name = hit.group("handler")
                 method_from_pattern, path = _split_method_and_path_pattern(pattern)
                 methods = [method_from_pattern] if method_from_pattern else ["GET"]
+
+                source_snippet = _extract_go_function_snippet(
+                    file_text,
+                    source_file,
+                    method=methods[0],
+                    path=path,
+                    function_name=handler_name,
+                )
+                if source_snippet is not None:
+                    for method in methods:
+                        if method == methods[0]:
+                            snippets.append(source_snippet)
+                        else:
+                            snippets.append(
+                                RouteSnippet(
+                                    route_id=f"{method.upper()}:{normalize_path(path)}",
+                                    file_path=source_snippet.file_path,
+                                    start_line=source_snippet.start_line,
+                                    end_line=source_snippet.end_line,
+                                    code=source_snippet.code,
+                                    adapter_name=source_snippet.adapter_name,
+                                    method=method,
+                                    path=path,
+                                )
+                            )
+                    continue
 
                 node_for_snippet = (
                     function_nodes.get(handler_name)

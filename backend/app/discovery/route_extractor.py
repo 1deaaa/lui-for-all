@@ -35,7 +35,7 @@ class RouteExtractor:
     上游的 capability_builder.py 将自动降级为规则推断模式。
 
     支持的框架由 adapters/_REGISTRY 决定，添加新框架无需
-    修改本文件，详见 adapters/CONTRIBUTING.md。
+    修改本文件，详见仓库根目录 CONTRIBUTING.md。
     """
 
     def __init__(self, source_path: str):
