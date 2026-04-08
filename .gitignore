@@ -182,6 +182,20 @@ workspace/
 sse_debug.log
 *.log
 
+# backend_for_test sample runtime/build artifacts (do not sync)
+backend_for_test/**/.env
+backend_for_test/**/.env.*
+backend_for_test/**/obj/
+backend_for_test/**/bin/
+backend_for_test/**/.nuget/
+backend_for_test/**/packages/
+backend_for_test/**/node_modules/
+backend_for_test/**/vendor/
+backend_for_test/**/.bundle/
+backend_for_test/**/.vs/
+backend_for_test/**/.vscode/
+backend_for_test/**/.idea/
+
 # OS
 .DS_Store
 Thumbs.db
