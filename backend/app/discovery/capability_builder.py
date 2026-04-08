@@ -99,12 +99,14 @@ class CapabilityGraphBuilder:
         progress_callback: ProgressCallback | None = None,
         source_path: str | None = None,
         global_context: str | None = None,
+        pre_extracted_snippets: dict[str, RouteSnippet] | None = None,
     ):
         self.route_map = route_map
         self.routes = route_map.routes
         self.progress_callback = progress_callback
         self.source_path = source_path  # 目标项目本地源码路径
         self.global_context = global_context
+        self.pre_extracted_snippets = dict(pre_extracted_snippets or {})
 
     async def _report_progress(self, percent: int, message: str):
         if self.progress_callback:
@@ -221,15 +223,41 @@ class CapabilityGraphBuilder:
         await self._report_progress(30, f"正在从 {source_path} 提取路由函数体...")
         print(f"\n[CapabilityBuilder] 🔧 开始精准提取 {len(self.routes)} 条路由的函数源码...")
 
-        # 1. 提取源码
-        try:
-            extractor = RouteExtractor(source_path)
-        except ValueError as e:
-            print(f"[CapabilityBuilder] 源码路径无效: {e}，降级为规则推断")
-            return {}
-
         route_pairs = [(r.method.value, r.path) for r in self.routes]
-        snippets = extractor.extract_batch(route_pairs)
+        snippets: dict[str, RouteSnippet | None] = {}
+
+        if self.pre_extracted_snippets:
+            for route in self.routes:
+                snippets[route.route_id] = self.pre_extracted_snippets.get(route.route_id)
+
+            missing_pairs = [
+                (route.method.value, route.path)
+                for route in self.routes
+                if snippets.get(route.route_id) is None
+            ]
+
+            cache_hit = len(self.routes) - len(missing_pairs)
+            print(
+                "[CapabilityBuilder] ♻️ 复用 AST 发现阶段片段缓存："
+                f"{cache_hit}/{len(self.routes)} 条命中"
+            )
+
+            if missing_pairs:
+                # 仅在缓存缺失时补扫，避免 AST fallback 后重复全量扫描。
+                try:
+                    extractor = RouteExtractor(source_path)
+                except ValueError as e:
+                    print(f"[CapabilityBuilder] 源码路径无效: {e}，降级为规则推断")
+                    return {}
+                snippets.update(extractor.extract_batch(missing_pairs))
+        else:
+            # 常规路径：直接走一次批量提取。
+            try:
+                extractor = RouteExtractor(source_path)
+            except ValueError as e:
+                print(f"[CapabilityBuilder] 源码路径无效: {e}，降级为规则推断")
+                return {}
+            snippets = extractor.extract_batch(route_pairs)
 
         found = sum(1 for s in snippets.values() if s is not None)
         print(f"[CapabilityBuilder] ✅ 函数源码提取完成：{found}/{len(self.routes)} 条路由找到具体实现代码")
@@ -406,6 +434,7 @@ async def build_capability_graph(
     progress_callback: ProgressCallback | None = None,
     source_path: str | None = None,
     global_context: str | None = None,
+    pre_extracted_snippets: dict[str, RouteSnippet] | None = None,
 ) -> CapabilityGraph:
     """便捷函数：从路由地图异步构建能力图谱"""
     builder = CapabilityGraphBuilder(
@@ -413,5 +442,6 @@ async def build_capability_graph(
         progress_callback=progress_callback,
         source_path=source_path,
         global_context=global_context,
+        pre_extracted_snippets=pre_extracted_snippets,
     )
     return await builder.build()

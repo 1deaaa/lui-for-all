@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.discovery.capability_builder import build_capability_graph
 from app.discovery.enrichers.project_context import generate_project_context
 from app.discovery.openapi_ingestor import ingest_openapi
-from app.discovery.semantic_ingestor import ingest_semantic_routes
+from app.discovery.semantic_ingestor import ingest_semantic_routes_with_snippets
+from app.discovery.route_extractor import RouteSnippet
 from app.models.project import CapabilityRecord, Project, RouteMapRecord
 from app.schemas.capability import CapabilityGraph
 from app.schemas.route_map import RouteMap
@@ -38,6 +39,7 @@ class DiscoveryService:
                 await progress_callback(percent, message)
 
         route_source_label = "OpenAPI"
+        pre_extracted_snippets: dict[str, RouteSnippet] | None = None
 
         # 1. 优先摄取 OpenAPI，失败时自动降级为 AST 语义发现
         try:
@@ -53,7 +55,12 @@ class DiscoveryService:
                 12,
                 f"OpenAPI 不可用，切换到 AST 语义发现：{type(openapi_error).__name__}",
             )
-            route_map = await ingest_semantic_routes(source_path=source_path, base_url=base_url)
+            semantic_result = await ingest_semantic_routes_with_snippets(
+                source_path=source_path,
+                base_url=base_url,
+            )
+            route_map = semantic_result.route_map
+            pre_extracted_snippets = semantic_result.route_snippets_by_route_id
             route_source_label = "AST"
             await report(20, f"AST 路由发现完成，共发现 {len(route_map.routes)} 条路由")
 
@@ -69,6 +76,7 @@ class DiscoveryService:
             progress_callback=report,
             source_path=source_path,
             global_context=global_context,
+            pre_extracted_snippets=pre_extracted_snippets,
         )
 
         await report(90, "能力图谱已生成，正在写入数据库")

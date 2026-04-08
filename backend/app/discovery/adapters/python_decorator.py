@@ -156,11 +156,6 @@ class PythonDecoratorAdapter(FrameAdapter):
     (decorator) @decorator
     definition: (function_definition) @handler) @decorated
 )
-(
-  (decorated_definition
-    (decorator) @decorator
-    definition: (async_function_definition) @handler) @decorated
-)
 """
 
     def _parse_decorator_routes(

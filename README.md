@@ -77,7 +77,7 @@ LUI：[自动识别意图 → 调用现有接口 → 渲染数据表 + 高亮标
 - 当前仓库已实测的是 7 个代表样例本身：`backend/test/test_route_extractor_representative_samples.py`。
 - “理论可迁移”表示语法结构高度相似，原则上可提取，但需新增或扩展对应适配器后才算正式支持。
 
-#### 2.2 AST 四范式归一（对应外部评审建议）
+#### 2.2 AST 四范式归一
 
 当前发现链路已统一到 4 个 AST 路由范式，7 个代表样例只是“框架语法代表”，不是新增范式：
 
@@ -86,7 +86,63 @@ LUI：[自动识别意图 → 调用现有接口 → 渲染数据表 + 高亮标
 - `route_table`: 集中式路由表（Django URLConf）
 - `imperative_dispatch`: 命令式控制流分发（Node native `if/switch`）
 
-这 4 类最终都会统一输出同一 `RouteSnippet` 结构，再进入同一代码切片与 LLM 上下文注入流程（A/B 链路保持一致）。
+这 4 类最终都会统一输出同一 `RouteSnippet` 结构，再进入同一代码切片与 LLM 上下文注入流程。
+
+#### 2.3 探索层完整流程图（含条件分支）
+
+```mermaid
+flowchart TD
+    A[discover_project project_id, base_url, openapi_path, source_path] --> B{OpenAPI 摄取成功?}
+    B -- 是 --> C[ingest_openapi 生成 RouteMap source=openapi]
+    B -- 否 --> D{提供 source_path?}
+    D -- 否 --> E[发现失败 直接返回 OpenAPI 错误]
+    D -- 是 --> F[ingest_semantic_routes 走 AST 语义发现 生成 RouteMap source=ast]
+
+    C --> G[generate_project_context]
+    F --> G
+    G --> H[build_capability_graph]
+
+    H --> I{提供 source_path?}
+    I -- 否 --> J[跳过源码精准提取 全量走规则兜底]
+    I -- 是 --> K[RouteExtractor.extract_batch route_pairs]
+
+    K --> L{检测到适配器?}
+    L -- 否 --> M[全部路由 snippet=None]
+    L -- 是 --> N[Adapter.extract_all_routes]
+
+    N --> O{Tree-sitter 与 Query 可用?}
+    O -- 否 --> P[fallback_extract_all_routes]
+    O -- 是 --> Q[遍历源码 AST Query captures 转 RouteSnippet]
+
+    P --> R[按目标路由逐条匹配]
+    Q --> R
+
+    R --> S{route_id 精确命中?}
+    S -- 是 --> T[选择候选中 code 最长片段]
+    S -- 否 --> U{path_matches 模糊命中?}
+    U -- 是 --> T
+    U -- 否 --> V[该路由 snippet=None]
+
+    T --> W[命中片段按约 32K 分块]
+    V --> W
+    M --> W
+
+    J --> X[组装能力图谱]
+    W --> Y{存在可分析分块?}
+    Y -- 否 --> Z[analysis_map 为空]
+    Y -- 是 --> AA[并发 LLM 分析每个分块]
+    AA --> AB[合并 analysis_map]
+    Z --> X
+    AB --> X
+
+    X --> AC{该路由有 AI 结果?}
+    AC -- 是 --> AD[使用 AI 域 安全 摘要]
+    AC -- 否 --> AE[按 HTTP Method 规则兜底]
+
+    AD --> AF[写入 RouteMap Capability 与 Project 状态]
+    AE --> AF
+    AF --> AG[discover 完成]
+```
 
 ### 3. 8 种白名单 UI 组件，从根源杜绝渲染注入
 

@@ -173,6 +173,130 @@ def _extract_routes_from_source(source_path: str) -> list[dict[str, str]]:
     return routes
 
 
+def _build_openapi_probe_url(base_url: str, openapi_url: str | None) -> str:
+    """构建 OpenAPI 探测地址，兼容绝对/相对路径。"""
+    base = base_url.rstrip("/")
+    if openapi_url:
+        if openapi_url.startswith("http"):
+            return openapi_url
+        suffix = openapi_url if openapi_url.startswith("/") else f"/{openapi_url}"
+        return f"{base}{suffix}"
+    return f"{base}/openapi.json"
+
+
+def _extract_routes_from_openapi_spec(spec: dict) -> list[dict[str, str]]:
+    """将 OpenAPI paths 转为标准路由列表。"""
+    routes: list[dict[str, str]] = []
+    for path, methods in spec.get("paths", {}).items():
+        for method, op in methods.items():
+            if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+                summary = op.get("summary") or op.get("operationId") or ""
+                routes.append(
+                    {
+                        "route_id": f"{method.upper()}:{path}",
+                        "method": method.upper(),
+                        "path": path,
+                        "summary": summary,
+                    }
+                )
+    return routes
+
+
+async def _resolve_import_routes_openapi_first(
+    base_url: str,
+    openapi_url: str | None,
+    source_path: str | None,
+    timeout: float = 10.0,
+) -> dict[str, object]:
+    """导入链路统一路由发现：优先 OpenAPI，失败时按需回退 AST。"""
+    import httpx
+
+    test_url = _build_openapi_probe_url(base_url, openapi_url)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            response = await client.get(test_url)
+            response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type:
+            if source_path:
+                ast_routes = _extract_routes_from_source(source_path)
+                return {
+                    "status": "warning",
+                    "message": f"OpenAPI 地址返回非 JSON ({content_type})，已切换 AST 语义发现。",
+                    "routes": ast_routes,
+                    "source": "ast",
+                }
+            return {
+                "status": "warning",
+                "message": f"连接成功，但地址返回的不是 JSON ({content_type})。",
+                "routes": [],
+                "source": "openapi",
+            }
+
+        try:
+            spec = response.json()
+        except Exception as parse_error:
+            if source_path:
+                ast_routes = _extract_routes_from_source(source_path)
+                return {
+                    "status": "warning",
+                    "message": f"OpenAPI JSON 解析失败，已切换 AST 语义发现: {type(parse_error).__name__}",
+                    "routes": ast_routes,
+                    "source": "ast",
+                }
+            raise HTTPException(status_code=400, detail=f"OpenAPI JSON 解析失败: {parse_error}")
+
+        return {
+            "status": "success",
+            "message": "连接与 OpenAPI 探索可用",
+            "routes": _extract_routes_from_openapi_spec(spec),
+            "source": "openapi",
+        }
+    except httpx.TimeoutException:
+        if source_path:
+            ast_routes = _extract_routes_from_source(source_path)
+            return {
+                "status": "warning",
+                "message": f"目标服务连接超时 ({test_url})，已切换 AST 语义发现。",
+                "routes": ast_routes,
+                "source": "ast",
+            }
+        raise HTTPException(status_code=408, detail=f"目标服务连接超时 ({test_url})。请查证地址是否可达或服务是否启动。")
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if source_path:
+            ast_routes = _extract_routes_from_source(source_path)
+            return {
+                "status": "warning",
+                "message": f"OpenAPI 拉取失败 (HTTP {status})，已切换 AST 语义发现。",
+                "routes": ast_routes,
+                "source": "ast",
+            }
+
+        if status in (401, 403):
+            return {
+                "status": "warning",
+                "message": f"接口存在授权拦截 (HTTP {status})。",
+                "routes": [],
+                "source": "openapi",
+            }
+        raise HTTPException(status_code=status, detail=f"访问目标时遭到了错误状态码: HTTP {status} ({test_url})")
+    except HTTPException:
+        raise
+    except Exception as e:
+        if source_path:
+            ast_routes = _extract_routes_from_source(source_path)
+            return {
+                "status": "warning",
+                "message": f"OpenAPI 连通失败，已切换 AST 语义发现: {type(e).__name__}",
+                "routes": ast_routes,
+                "source": "ast",
+            }
+        raise HTTPException(status_code=500, detail=f"连接失败或服务未启动: {str(e)}")
+
+
 def _build_sample_import_presets() -> list[ProjectImportPreset]:
     """构建示例项目导入预置，自动探测当前运行环境下可用路径。"""
     repo_sample_root = PROJECT_ROOT / "backend_for_test"
@@ -342,51 +466,25 @@ async def import_project(
 @router.post("/fetch-routes")
 async def fetch_routes(request: FetchRoutesRequest):
     """从 OpenAPI 地址拉取路由列表，供前端选择登录接口"""
-    import httpx
-
-    base = request.base_url.rstrip("/")
-    if request.openapi_url:
-        if request.openapi_url.startswith("http"):
-            url = request.openapi_url
-        else:
-            suffix = request.openapi_url if request.openapi_url.startswith("/") else f"/{request.openapi_url}"
-            url = f"{base}{suffix}"
-    else:
-        url = f"{base}/openapi.json"
-
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            spec = resp.json()
+        result = await _resolve_import_routes_openapi_first(
+            base_url=request.base_url,
+            openapi_url=request.openapi_url,
+            source_path=request.source_path,
+            timeout=10.0,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        if request.source_path:
-            try:
-                routes = _extract_routes_from_source(request.source_path)
-                return {
-                    "routes": routes,
-                    "source": "ast",
-                    "warning": f"OpenAPI 不可用，已切换 AST 语义发现: {type(e).__name__}",
-                }
-            except Exception as ast_error:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"无法获取 OpenAPI 文档，且 AST 语义发现失败: {ast_error}",
-                )
-        raise HTTPException(status_code=400, detail=f"无法获取 OpenAPI 文档: {e}")
+        raise HTTPException(status_code=400, detail=f"无法获取路由列表: {e}")
 
-    routes = []
-    for path, methods in spec.get("paths", {}).items():
-        for method, op in methods.items():
-            if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-                summary = op.get("summary") or op.get("operationId") or ""
-                routes.append({
-                    "route_id": f"{method.upper()}:{path}",
-                    "method": method.upper(),
-                    "path": path,
-                    "summary": summary,
-                })
-    return {"routes": routes, "source": "openapi"}
+    payload = {
+        "routes": result.get("routes", []),
+        "source": result.get("source", "openapi"),
+    }
+    if result.get("source") == "ast":
+        payload["warning"] = result.get("message", "OpenAPI 不可用，已切换 AST 语义发现")
+    return payload
 
 
 @router.post("/verify-login")
@@ -434,112 +532,22 @@ async def verify_login(request: VerifyLoginRequest):
 @router.post("/test-connection")
 async def test_connection(request: TestConnectionRequest):
     """测试指定基地址或 OpenApiURL 的连通性"""
-    import httpx
-
-    test_url = request.base_url.rstrip("/")
-    if request.openapi_url:
-        if request.openapi_url.startswith("http"):
-            test_url = request.openapi_url
-        else:
-            suffix = request.openapi_url if request.openapi_url.startswith("/") else f"/{request.openapi_url}"
-            test_url = f"{test_url}{suffix}"
-    else:
-        test_url = f"{test_url}/openapi.json"
-
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-            response = await client.get(test_url)
-            response.raise_for_status()
-
-            content_type = response.headers.get("content-type", "")
-            if "application/json" not in content_type:
-                if request.source_path:
-                    try:
-                        ast_routes = _extract_routes_from_source(request.source_path)
-                    except Exception:
-                        ast_routes = []
-                    return {
-                        "status": "warning",
-                        "message": f"连接成功，但地址返回的不是 JSON ({content_type})。已尝试 AST 路由发现。",
-                        "routes": ast_routes,
-                        "source": "ast" if ast_routes else "openapi",
-                    }
-                return {
-                    "status": "warning",
-                    "message": f"连接成功，但地址返回的不是一个 JSON ({content_type})",
-                    "routes": [],
-                    "source": "openapi",
-                }
-
-            # 顺带解析路由列表，避免前端再发一次相同请求
-            routes = []
-            try:
-                spec = response.json()
-                for path, methods in spec.get("paths", {}).items():
-                    for method, op in methods.items():
-                        if method.upper() in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-                            summary = op.get("summary") or op.get("operationId") or ""
-                            routes.append({
-                                "route_id": f"{method.upper()}:{path}",
-                                "method": method.upper(),
-                                "path": path,
-                                "summary": summary,
-                            })
-            except Exception:
-                pass
-
-            return {
-                "status": "success",
-                "message": "连接与 OpenAPI 探索可用",
-                "routes": routes,
-                "source": "openapi",
-            }
-    except httpx.TimeoutException:
-        if request.source_path:
-            try:
-                ast_routes = _extract_routes_from_source(request.source_path)
-                return {
-                    "status": "warning",
-                    "message": f"目标服务连接超时 ({test_url})，但已从源码提取 {len(ast_routes)} 条路由。",
-                    "routes": ast_routes,
-                    "source": "ast",
-                }
-            except Exception:
-                pass
-        raise HTTPException(status_code=408, detail=f"目标服务连接超时 ({test_url})。请查证地址是否可达或服务是否启动。")
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if status in (401, 403):
-            if request.source_path:
-                try:
-                    ast_routes = _extract_routes_from_source(request.source_path)
-                    return {
-                        "status": "warning",
-                        "message": f"接口被授权阻断 (状态码: {status})，已从源码提取路由。",
-                        "routes": ast_routes,
-                        "source": "ast",
-                    }
-                except Exception:
-                    pass
-            return {
-                "status": "warning",
-                "message": f"接口存在跨域拦截或强制授权阻断 (状态码: {status})。确认这是否符合预期。",
-                "routes": [],
-                "source": "openapi",
-            }
-        raise HTTPException(status_code=status, detail=f"访问目标时遭到了错误状态码: HTTP {status} ({test_url})")
+        result = await _resolve_import_routes_openapi_first(
+            base_url=request.base_url,
+            openapi_url=request.openapi_url,
+            source_path=request.source_path,
+            timeout=10.0,
+        )
+        return {
+            "status": result.get("status", "success"),
+            "message": result.get("message", "连接与 OpenAPI 探索可用"),
+            "routes": result.get("routes", []),
+            "source": result.get("source", "openapi"),
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        if request.source_path:
-            try:
-                ast_routes = _extract_routes_from_source(request.source_path)
-                return {
-                    "status": "warning",
-                    "message": f"OpenAPI 连通失败，已切换 AST 语义发现: {type(e).__name__}",
-                    "routes": ast_routes,
-                    "source": "ast",
-                }
-            except Exception:
-                pass
         raise HTTPException(status_code=500, detail=f"连接失败或服务未启动: {str(e)}")
 
 

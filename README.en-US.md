@@ -68,7 +68,63 @@ Discovery is now normalized into 4 AST routing paradigms. The 7 samples are fram
 - `route_table`: centralized route table declarations (Django URLConf)
 - `imperative_dispatch`: imperative control flow dispatch (Node native `if/switch`)
 
-All four paradigms are emitted as the same `RouteSnippet` structure and go through the same chunking + LLM context flow (same A/B downstream path).
+All four paradigms are emitted as the same `RouteSnippet` structure and go through the same chunking + LLM context flow .
+
+### Discovery Layer Full Flow (with Branches)
+
+```mermaid
+flowchart TD
+     A[discover_project project_id, base_url, openapi_path, source_path] --> B{OpenAPI ingestion succeeds?}
+     B -- Yes --> C[ingest_openapi build RouteMap source=openapi]
+     B -- No --> D{source_path provided?}
+     D -- No --> E[Discovery fails return OpenAPI error]
+     D -- Yes --> F[ingest_semantic_routes AST semantic discovery build RouteMap source=ast]
+
+     C --> G[generate_project_context]
+     F --> G
+     G --> H[build_capability_graph]
+
+     H --> I{source_path provided?}
+     I -- No --> J[Skip precise code extraction use rule fallback for all routes]
+     I -- Yes --> K[RouteExtractor.extract_batch route_pairs]
+
+     K --> L{Adapter detected?}
+     L -- No --> M[All routes snippet=None]
+     L -- Yes --> N[Adapter.extract_all_routes]
+
+     N --> O{Tree-sitter and Query available?}
+     O -- No --> P[fallback_extract_all_routes]
+     O -- Yes --> Q[Traverse files AST Query captures to RouteSnippet]
+
+     P --> R[Match each target route]
+     Q --> R
+
+     R --> S{Exact route_id hit?}
+     S -- Yes --> T[Pick longest candidate code]
+     S -- No --> U{Fuzzy path_matches hit?}
+     U -- Yes --> T
+     U -- No --> V[This route snippet=None]
+
+     T --> W[Chunk matched snippets around 32K]
+     V --> W
+     M --> W
+
+     J --> X[Assemble capability graph]
+     W --> Y{Any analyzable chunks?}
+     Y -- No --> Z[analysis_map empty]
+     Y -- Yes --> AA[Concurrent LLM analysis per chunk]
+     AA --> AB[Merge analysis_map]
+     Z --> X
+     AB --> X
+
+     X --> AC{Route has AI analysis?}
+     AC -- Yes --> AD[Use AI domain safety summary]
+     AC -- No --> AE[HTTP method based fallback]
+
+     AD --> AF[Persist RouteMap Capability Project status]
+     AE --> AF
+     AF --> AG[Discovery completed]
+```
 
 3. Strict declarative UI whitelist
 - Model output is JSON blocks only, not raw HTML/JS/CSS

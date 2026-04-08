@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from app.discovery.route_extractor import RouteExtractor
+from app.discovery.route_extractor import RouteExtractor, RouteSnippet
 from app.schemas.route_map import HttpMethod, RouteInfo, RouteMap
 
 
@@ -32,6 +33,14 @@ def _summary_from_method_path(method: str, path: str) -> str:
     return f"{action}{tail}"
 
 
+@dataclass
+class SemanticIngestResult:
+    """AST 语义摄取结果：路由地图 + 可复用源码片段。"""
+
+    route_map: RouteMap
+    route_snippets_by_route_id: dict[str, RouteSnippet]
+
+
 class SemanticRouteIngestor:
     """基于 AST 的路由摄取器。"""
 
@@ -40,6 +49,10 @@ class SemanticRouteIngestor:
         self.base_url = (base_url or "").rstrip("/")
 
     async def ingest(self) -> RouteMap:
+        result = await self.ingest_with_snippets()
+        return result.route_map
+
+    async def ingest_with_snippets(self) -> SemanticIngestResult:
         extractor = RouteExtractor(self.source_path)
         snippets = extractor.extract_all_routes()
 
@@ -50,6 +63,7 @@ class SemanticRouteIngestor:
 
         routes: list[RouteInfo] = []
         seen_route_ids: set[str] = set()
+        snippet_index: dict[str, RouteSnippet] = {}
 
         for snippet in snippets:
             method = snippet.method.upper()
@@ -59,6 +73,11 @@ class SemanticRouteIngestor:
                 continue
 
             route_id = f"{method}:{snippet.path}"
+
+            best_snippet = snippet_index.get(route_id)
+            if best_snippet is None or len(snippet.code) > len(best_snippet.code):
+                snippet_index[route_id] = snippet
+
             if route_id in seen_route_ids:
                 continue
             seen_route_ids.add(route_id)
@@ -86,7 +105,7 @@ class SemanticRouteIngestor:
             )
 
         version = f"ast-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
-        return RouteMap(
+        route_map = RouteMap(
             project_id=str(uuid.uuid4()),
             version=version,
             base_url=self.base_url,
@@ -95,9 +114,22 @@ class SemanticRouteIngestor:
             discovered_at=datetime.now(UTC).isoformat(),
             source="ast",
         )
+        return SemanticIngestResult(
+            route_map=route_map,
+            route_snippets_by_route_id=snippet_index,
+        )
 
 
 async def ingest_semantic_routes(source_path: str, base_url: str = "") -> RouteMap:
     """便捷函数：执行 AST 语义路由摄取。"""
     ingestor = SemanticRouteIngestor(source_path=source_path, base_url=base_url)
     return await ingestor.ingest()
+
+
+async def ingest_semantic_routes_with_snippets(
+    source_path: str,
+    base_url: str = "",
+) -> SemanticIngestResult:
+    """便捷函数：执行 AST 语义路由摄取并返回可复用片段缓存。"""
+    ingestor = SemanticRouteIngestor(source_path=source_path, base_url=base_url)
+    return await ingestor.ingest_with_snippets()

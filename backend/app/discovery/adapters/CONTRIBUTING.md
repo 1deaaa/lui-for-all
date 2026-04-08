@@ -29,6 +29,62 @@
 
 每种风格都需要专门的适配器来识别和提取。
 
+### 1.1 当前探索层完整流程（含条件分支）
+
+```mermaid
+flowchart TD
+    A[discover_project project_id, base_url, openapi_path, source_path] --> B{OpenAPI 摄取成功?}
+    B -- 是 --> C[ingest_openapi 生成 RouteMap source=openapi]
+    B -- 否 --> D{提供 source_path?}
+    D -- 否 --> E[发现失败 直接返回 OpenAPI 错误]
+    D -- 是 --> F[ingest_semantic_routes 走 AST 语义发现 生成 RouteMap source=ast]
+
+    C --> G[generate_project_context]
+    F --> G
+    G --> H[build_capability_graph]
+
+    H --> I{提供 source_path?}
+    I -- 否 --> J[跳过源码精准提取 全量走规则兜底]
+    I -- 是 --> K[RouteExtractor.extract_batch route_pairs]
+
+    K --> L{检测到适配器?}
+    L -- 否 --> M[全部路由 snippet=None]
+    L -- 是 --> N[Adapter.extract_all_routes]
+
+    N --> O{Tree-sitter 与 Query 可用?}
+    O -- 否 --> P[fallback_extract_all_routes]
+    O -- 是 --> Q[遍历源码 AST Query captures 转 RouteSnippet]
+
+    P --> R[按目标路由逐条匹配]
+    Q --> R
+
+    R --> S{route_id 精确命中?}
+    S -- 是 --> T[选择候选中 code 最长片段]
+    S -- 否 --> U{path_matches 模糊命中?}
+    U -- 是 --> T
+    U -- 否 --> V[该路由 snippet=None]
+
+    T --> W[命中片段按约 32K 分块]
+    V --> W
+    M --> W
+
+    J --> X[组装能力图谱]
+    W --> Y{存在可分析分块?}
+    Y -- 否 --> Z[analysis_map 为空]
+    Y -- 是 --> AA[并发 LLM 分析每个分块]
+    AA --> AB[合并 analysis_map]
+    Z --> X
+    AB --> X
+
+    X --> AC{该路由有 AI 结果?}
+    AC -- 是 --> AD[使用 AI 域 安全 摘要]
+    AC -- 否 --> AE[按 HTTP Method 规则兜底]
+
+    AD --> AF[写入 RouteMap Capability 与 Project 状态]
+    AE --> AF
+    AF --> AG[discover 完成]
+```
+
 ---
 
 ## 2. 快速开始（5 步完成一个适配器）
@@ -46,24 +102,41 @@ adapters/
 └── ...
 ```
 
-### 步骤 2：继承 FrameAdapter
+### 步骤 2：继承 FrameAdapter（Tree-sitter 协议）
 
 ```python
 from pathlib import Path
-from app.discovery.adapters.base import FrameAdapter, RouteSnippet, path_matches
+from typing import Any
+
+from app.discovery.adapters.base import FrameAdapter, RouteSnippet
+from app.discovery.adapters.paradigms import AST_PARADIGM_DECORATOR_METADATA
 
 class SpringBootAdapter(FrameAdapter):
-    NAME = "spring_boot"          # 全局唯一标识，全小写
-    LANGUAGES = [".java"]         # 支持的文件后缀
+    NAME = "spring_boot"  # 全局唯一标识，全小写
+    LANGUAGES = [".java"]
+    TREE_SITTER_LANGUAGES = ["java"]
+    AST_PARADIGMS = [AST_PARADIGM_DECORATOR_METADATA]
+    SUPPORTED_FRAMEWORKS = ["spring-boot", "spring-mvc"]
 
     @classmethod
     def can_handle(cls, source_path: Path) -> bool:
-        # 判断该目录是否是 Spring Boot 项目
-        # 建议检测：pom.xml / build.gradle 中包含 spring-boot
+        # 判断该目录是否是 Spring 项目
         ...
 
-    def extract_route(self, method: str, path: str) -> RouteSnippet | None:
-        # 定位对应路由的函数/方法体
+    def get_tree_sitter_query(self) -> str:
+        # 返回本适配器的 Query
+        return """
+        (marker_annotation name: (identifier) @route.decorator)
+        """
+
+    def _extract_routes_from_tree(
+        self,
+        source_file: Path,
+        source_bytes: bytes,
+        root_node: Any,
+        captures: list[tuple[Any, str]],
+    ) -> list[RouteSnippet]:
+        # 从 captures 组装 RouteSnippet
         ...
 ```
 
@@ -93,16 +166,21 @@ print(adapter)
 
 ### 步骤 5：验证路由提取
 
-对已知路由做一次试提取，确认返回的 `code` 字段包含正确的实现代码：
+优先验证批量提取（更贴近生产路径），确认返回 `RouteSnippet.code` 包含正确实现：
 
 ```python
-snippet = adapter.extract_route("GET", "/api/users")
-print(snippet.code)
+result = adapter.extract_batch([
+    ("GET", "/api/users"),
+    ("POST", "/api/users"),
+])
+
+snippet = result["GET:/api/users"]
+print(snippet.code if snippet else "not found")
 ```
 
 ---
 
-## 3. FrameAdapter 接口详解
+## 3. FrameAdapter 接口详解（当前实现）
 
 ### 3.1 must-have：`can_handle(source_path)`
 
@@ -137,50 +215,42 @@ def can_handle(cls, source_path: Path) -> bool:
 
 ---
 
-### 3.2 must-have：`extract_route(method, path)`
+### 3.2 must-have：`get_tree_sitter_query()`
 
-**作用**：从源码中定位并提取指定路由的实现代码。
+**作用**：声明适配器的 Tree-sitter Query，用于抓取候选路由节点。
 
-- `method`：大写 HTTP 方法，如 `"GET"`、`"POST"`
-- `path`：OpenAPI 全路径，如 `"/api/v1/users/{id}"`
-
-**你的实现需要做到**：
-1. 遍历源码文件（推荐使用 `iter_source_files()`）
-2. 识别每个文件中匹配 (method, path) 的路由定义
-3. 提取完整的函数/方法体（包括注释、装饰器等上下文）
-4. 返回 `RouteSnippet` 对象
-
-**返回示例**：
-
-```python
-return RouteSnippet(
-    route_id=f"{method.upper()}:{path}",
-    file_path="src/UserController.java",
-    start_line=42,
-    end_line=58,
-    code="@GetMapping(\"/users/{id}\")\npublic ResponseEntity<User> getUser(...) { ... }",
-    adapter_name=self.NAME,
-)
-```
+建议：
+1. Query 尽量只抓“路由相关节点”，避免抓太大范围导致误报
+2. capture 命名语义化，如 `@route.decorator`、`@route.call`、`@route.path`
 
 ---
 
-### 3.3 optional：`extract_batch(routes)`
+### 3.3 must-have：`_extract_routes_from_tree(...)`
 
-默认实现逐条调用 `extract_route()`，已足够大多数场景。
+**作用**：将 Query captures 还原成标准 `RouteSnippet` 列表。
 
-如果你的语言可以更高效地批量扫描（如一次遍历文件同时匹配多条路由），
-可以覆盖此方法提升性能：
+你需要完成：
+1. 从 captures 中解析 method/path/handler 节点
+2. 用 `self._make_snippet(...)` 统一生成 `RouteSnippet`
+3. 返回本文件中识别到的所有路由片段
 
-```python
-def extract_batch(
-    self, routes: list[tuple[str, str]]
-) -> dict[str, RouteSnippet | None]:
-    results = {f"{m.upper()}:{p}": None for m, p in routes}
-    for source_file in iter_source_files(self.source_path, {".java"}):
-        # 批量匹配逻辑 ...
-    return results
-```
+说明：
+- 生产路径默认先 `extract_all_routes()`，再由基类 `extract_batch()` 做精确/模糊匹配。
+- 你通常不需要自己实现 `extract_route()`。
+
+---
+
+### 3.4 optional：`_fallback_extract_all_routes()`
+
+当 Tree-sitter 不可用或 Query 编译失败时，基类会调用该降级方法。
+默认返回空列表；如有必要可提供轻量 regex 降级实现。
+
+---
+
+### 3.5 optional：`extract_batch(routes)`
+
+基类默认实现已经是“单次全量发现 + route_id 精确匹配 + path_matches 模糊匹配”。
+仅在你确认可以显著优化性能时再覆盖。
 
 ---
 
@@ -237,7 +307,7 @@ normalize_param_to_regex("/users/:id/posts")   # → r"/users/[^/]+/posts"
 | FastAPI | `@router.get("/path")` | ⭐ 已实现 |
 | Flask | `@app.route("/path", methods=["GET"])` | ⭐ 已实现 |
 | Sanic | `@app.get("/path")` | ⭐ 已实现（同装饰器适配器）|
-| Django | `path("users/", views.user_list)` in `urls.py` | ⭐⭐⭐ 待贡献 |
+| Django | `path("users/", views.user_list)` in `urls.py` | ⭐⭐⭐ 已实现 |
 
 ### TypeScript / JavaScript
 
@@ -248,13 +318,13 @@ normalize_param_to_regex("/users/:id/posts")   # → r"/users/[^/]+/posts"
 | Fastify | `fastify.get('/path', handler)` | ⭐ 已实现 |
 | Hono | `app.get('/path', handler)` | ⭐ 同 Express 适配器可兼容 |
 | Koa + @koa/router | `router.get('/path', ctx => {...})` | ⭐ 同 Express 适配器可兼容 |
-| 原生 Node.js HTTP | `if (req.url === '/path' && req.method === 'GET')` | ⭐⭐⭐ 待贡献 |
+| 原生 Node.js HTTP | `if (req.url === '/path' && req.method === 'GET')` | ⭐⭐ 已实现（imperative_dispatch） |
 
 ### Java
 
 | 框架 | 路由定义 | 提取难度 |
 |------|---------|--------|
-| Spring Boot | `@GetMapping("/path")` on method | ⭐⭐ 待贡献 |
+| Spring Boot | `@GetMapping("/path")` on method | ⭐⭐ 已实现 |
 | Quarkus | `@GET @Path("/path")` | ⭐⭐ 待贡献 |
 | Micronaut | `@Get("/path")` | ⭐⭐ 待贡献 |
 
@@ -262,18 +332,18 @@ normalize_param_to_regex("/users/:id/posts")   # → r"/users/[^/]+/posts"
 
 | 框架 | 路由定义 | 提取难度 |
 |------|---------|--------|
-| Gin | `r.GET("/path", handler)` | ⭐⭐ 待贡献 |
-| Echo | `e.GET("/path", handler)` | ⭐⭐ 待贡献 |
-| Fiber | `app.Get("/path", handler)` | ⭐⭐ 待贡献 |
-| chi | `r.Get("/path", handler)` | ⭐⭐ 待贡献 |
+| Gin | `r.GET("/path", handler)` | ⭐⭐ 已实现 |
+| Echo | `e.GET("/path", handler)` | ⭐⭐ 已实现 |
+| Fiber | `app.Get("/path", handler)` | ⭐⭐ 已实现 |
+| chi | `r.Get("/path", handler)` | ⭐⭐ 已实现 |
 | 原生 `net/http` | `http.HandleFunc("/path", handler)` | ⭐ 待贡献 |
 
 ### C# / .NET
 
 | 框架 | 路由定义 | 提取难度 |
 |------|---------|--------|
-| ASP.NET Core | `[HttpGet("/path")]` | ⭐⭐ 待贡献 |
-| Minimal API | `app.MapGet("/path", handler)` | ⭐ 待贡献 |
+| ASP.NET Core | `[HttpGet("/path")]` | ⭐⭐ 已实现 |
+| Minimal API | `app.MapGet("/path", handler)` | ⭐ 已实现 |
 
 ### Ruby
 
@@ -328,6 +398,6 @@ ROUTES = {
 - ⭐⭐ **中等**：路由和实现分两层（装饰器+类方法、注解+方法），需向前/向后窗口扫描
 - ⭐⭐⭐ **复杂**：路由注册与实现在不同文件（如 Django urls.py），需要跨文件解析
 
-对于 ⭐⭐⭐ 难度的框架，建议先实现 `can_handle()` 和骨架，即使
-`extract_route()` 暂时返回 `None`，也能让系统识别框架类型并在日志中
-给出明确提示，等待后续完善。
+对于 ⭐⭐⭐ 难度的框架，建议先实现 `can_handle()`、`get_tree_sitter_query()` 与
+`_extract_routes_from_tree()` 的最小骨架，即使暂时无法完整覆盖所有路由，
+也能让系统识别框架类型并给出可诊断日志，便于后续迭代完善。
