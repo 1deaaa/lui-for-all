@@ -6,6 +6,7 @@ LangGraph 节点实现（精简版）
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from app.graph.llm_client import llm_client
 from app.graph.state import GraphState
-from app.llm.prompts import DIRECT_ANSWER_PROMPT, SUMMARY_PROMPT
+from app.llm.prompts import AGENT_ENTRY_PROMPT, SUMMARY_PROMPT
 from app.runtime import get_runtime_emitter
 from app.schemas.task import ExecutionArtifact
 
@@ -33,7 +34,7 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
     - agentic → 进入多轮工具调用循环
     """
     try:
-        strategy = "agentic"
+        strategy: str | None = None
         reply_content = ""
         user_message = str(state.get("user_message") or "")
 
@@ -46,56 +47,68 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
             cap_list_lines.append(f"- {cap_id}: {summary}")
         capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
 
+        project_description = state.get("project_description") or "未知"
         response_language = state.get("response_language") or "简体中文"
 
         emit_runtime_event("task_progress", node_name="agent_entry", progress=0.05, message="AI 正在判断请求类型")
 
-        # 第一阶段：仅做路由判定，避免把正文与策略混在同一流里造成前端“假流式”观感。
-        decision_prompt = (
-            "你是请求路由判定器。\n"
-            "如果用户只是闲聊、打招呼、询问系统能力介绍，输出 direct。\n"
-            "如果用户要求查询数据、调用接口、执行任务，输出 agentic。\n"
-            "只允许输出一个词：direct 或 agentic。\n\n"
-            f"用户输入：{user_message}"
-        )
+        # 单次流式：同一轮同时完成策略判定与 direct 正文输出，避免 direct 走两次模型推理。
+        entry_messages: list[dict[str, str]] = [{
+            "role": "system",
+            "content": AGENT_ENTRY_PROMPT.format(
+                capability_list=capability_list,
+                project_description=project_description,
+                user_message=user_message,
+                response_language=response_language,
+            ),
+        }]
+        for msg in state.get("chat_history", []):
+            role = str(msg.get("role") or "")
+            if role in ("user", "assistant"):
+                entry_messages.append({"role": role, "content": str(msg.get("content") or "")})
+        entry_messages.append({"role": "user", "content": user_message})
 
-        decision_raw = await llm_client.simple_completion(
-            prompt=decision_prompt,
-            temperature=0.0,
-            max_tokens=8,
-        )
-        decision_text = str(decision_raw or "").strip().lower()
-        if "direct" in decision_text and "agentic" not in decision_text:
-            strategy = "direct"
+        strategy_prefix_buffer = ""
+        strategy_pattern = re.compile(r"<strategy>\s*(direct|agentic)\s*</strategy>", re.IGNORECASE)
 
-        # 第二阶段：direct 分支单独发起云端流式回答，token 原样透传。
-        if strategy == "direct":
-            direct_system_prompt = (
-                DIRECT_ANSWER_PROMPT.format(
-                    capability_list=capability_list,
-                    user_message=user_message,
-                )
-                + f"\n\n补充要求：优先使用 {response_language} 输出。"
-            )
-            direct_messages: list[dict[str, str]] = [{"role": "system", "content": direct_system_prompt}]
-            for msg in state.get("chat_history", []):
-                role = str(msg.get("role") or "")
-                if role in ("user", "assistant"):
-                    direct_messages.append({"role": role, "content": str(msg.get("content") or "")})
-            direct_messages.append({"role": "user", "content": user_message})
+        async for chunk_type, token in llm_client.stream_chat_completion(
+            messages=entry_messages,
+            temperature=0.3,
+        ):
+            if chunk_type == "reasoning":
+                emit_runtime_event("thought_emitted", token=token)
+                continue
 
-            async for chunk_type, token in llm_client.stream_chat_completion(
-                messages=direct_messages,
-                temperature=0.4,
-            ):
-                if chunk_type == "reasoning":
-                    emit_runtime_event("thought_emitted", token=token)
-                else:
-                    token_text = str(token or "")
-                    if not token_text:
-                        continue
-                    reply_content += token_text
-                    emit_runtime_event("token_emitted", token=token_text)
+            token_text = str(token or "")
+            if not token_text:
+                continue
+
+            if strategy is None:
+                strategy_prefix_buffer += token_text
+                match = strategy_pattern.search(strategy_prefix_buffer)
+                if not match:
+                    # 防止异常输出导致缓冲无限增长；判定失败时降级走 agentic。
+                    if len(strategy_prefix_buffer) > 2048:
+                        logger.warning("[agent_entry] 未检测到策略标签，降级为 agentic")
+                        strategy = "agentic"
+                    continue
+
+                strategy = match.group(1).strip().lower()
+                remainder = strategy_prefix_buffer[match.end():]
+                strategy_prefix_buffer = ""
+
+                if strategy == "direct" and remainder:
+                    reply_content += remainder
+                    emit_runtime_event("token_emitted", token=remainder)
+                continue
+
+            if strategy == "direct":
+                reply_content += token_text
+                emit_runtime_event("token_emitted", token=token_text)
+
+        if strategy not in ("direct", "agentic"):
+            logger.warning("[agent_entry] 策略判定失败，降级为 agentic")
+            strategy = "agentic"
 
         logger.debug(f"[agent_entry] 决策策略: {strategy}")
 
