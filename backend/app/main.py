@@ -4,6 +4,8 @@ LUI-for-all FastAPI 主入口
 """
 
 import logging
+import os
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -48,6 +50,50 @@ logging.getLogger("fakeredis").setLevel(logging.WARNING)
 logging.getLogger("fastmcp").setLevel(logging.WARNING)
 logging.getLogger("sse_starlette").setLevel(logging.WARNING)
 logging.getLogger("sse_starlette.sse").setLevel(logging.WARNING)
+
+
+def _resolve_matchbox_home_from_settings() -> Path:
+    """基于主数据库路径推导 Matchbox 持久化目录。"""
+    db_path = Path(settings.db_path).expanduser()
+    if not db_path.is_absolute():
+        db_path = (Path.cwd() / db_path).resolve()
+    return db_path.parent / "agent_matchbox"
+
+
+def _ensure_matchbox_home() -> Path:
+    """确保 Matchbox 使用稳定可持久化目录，并兼容历史目录迁移。"""
+    raw_home = (os.environ.get("AGENT_MATCHBOX_HOME") or "").strip()
+    if raw_home:
+        target_home = Path(raw_home).expanduser()
+        if not target_home.is_absolute():
+            target_home = (Path.cwd() / target_home).resolve()
+    else:
+        target_home = _resolve_matchbox_home_from_settings()
+        os.environ["AGENT_MATCHBOX_HOME"] = str(target_home)
+
+    target_home.mkdir(parents=True, exist_ok=True)
+
+    package_home = Path(__file__).resolve().parent / "llm" / "agent_matchbox"
+    migrate_files = (
+        "llm_config.db",
+        "llm_mgr_state.json",
+        "llm_mgr_cfg.yaml",
+        ".env",
+    )
+
+    for file_name in migrate_files:
+        source = package_home / file_name
+        destination = target_home / file_name
+        if not source.exists() or destination.exists():
+            continue
+        try:
+            shutil.copy2(source, destination)
+            logger.info(f"✅ 已迁移 Matchbox 文件到持久化目录: {destination}")
+        except Exception as ex:
+            logger.warning(f"⚠️ Matchbox 文件迁移失败，跳过 {source} -> {destination}: {ex}")
+
+    logger.info(f"📁 Matchbox 数据目录: {target_home}")
+    return target_home
 
 
 def init_telemetry():
@@ -107,6 +153,7 @@ async def lifespan(app: FastAPI):
 
     # 初始化 agent-matchbox LLM 网关
     try:
+        _ensure_matchbox_home()
         from app.llm.agent_matchbox import initialize_matchbox
         initialize_matchbox(ensure_defaults=True)
         logger.info("✅ agent-matchbox 初始化完成")

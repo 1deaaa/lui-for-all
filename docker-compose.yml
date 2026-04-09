@@ -10,6 +10,7 @@ services:
       LUI_DB_PATH: /app/workspace/lui.db
       LUI_MCP_API_TOKEN: ${LUI_MCP_API_TOKEN:-}
       LLM_KEY: ${LLM_KEY:-test-master-key}
+      AGENT_MATCHBOX_HOME: /app/workspace/agent_matchbox
     volumes:
       - lui_workspace:/app/workspace
     ports:

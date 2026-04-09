@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { getLocale, setLocale, SUPPORTED_LOCALES, type AppLocale } from '@/i18n'
 
 type SafetyDefaultAction = 'allow' | 'confirm' | 'block'
+type LlmManagerDialogMode = 'create' | 'edit'
 
 interface SettingsForm {
   safety_default_action: SafetyDefaultAction
@@ -46,6 +47,13 @@ interface LLMManagerSnapshot {
   platforms: ManagedPlatform[]
 }
 
+interface PlatformDialogForm {
+  name: string
+  base_url: string
+  api_key: string
+  clear_api_key: boolean
+}
+
 const settings = ref<SettingsForm>({
   safety_default_action: 'confirm',
   mcp_api_token: '',
@@ -72,6 +80,16 @@ const managerSnapshot = ref<LLMManagerSnapshot>({
   platforms: [],
 })
 const selectedPlatformId = ref<number | null>(null)
+
+const platformDialogVisible = ref(false)
+const platformDialogMode = ref<LlmManagerDialogMode>('create')
+const platformDialogSaving = ref(false)
+const platformForm = ref<PlatformDialogForm>({
+  name: '',
+  base_url: '',
+  api_key: '',
+  clear_api_key: false,
+})
 
 let syncingPlatformSelection = false
 
@@ -106,6 +124,13 @@ const currentMainSelectionText = computed(() => {
     platform: currentPlatform.name,
     model: modelText,
   })
+})
+
+const platformDialogTitle = computed(() => {
+  if (platformDialogMode.value === 'create') {
+    return t('settings.llm.platformDialogCreateTitle')
+  }
+  return t('settings.llm.platformDialogEditTitle')
 })
 
 watch(selectedPlatformId, (nextPlatformId) => {
@@ -273,6 +298,129 @@ function formatPlatformLabel(platform: ManagedPlatform): string {
     ? t('settings.llm.apiKeyConfigured')
     : t('settings.llm.apiKeyMissing')
   return `${platform.name} · ${keyStatus}`
+}
+
+function openCreatePlatformDialog() {
+  platformDialogMode.value = 'create'
+  platformForm.value = {
+    name: '',
+    base_url: '',
+    api_key: '',
+    clear_api_key: false,
+  }
+  platformDialogVisible.value = true
+}
+
+function openEditPlatformDialog() {
+  if (!selectedPlatform.value) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  platformDialogMode.value = 'edit'
+  platformForm.value = {
+    name: selectedPlatform.value.name,
+    base_url: selectedPlatform.value.base_url,
+    api_key: '',
+    clear_api_key: false,
+  }
+  platformDialogVisible.value = true
+}
+
+async function submitPlatformDialog() {
+  const name = platformForm.value.name.trim()
+  const baseUrl = platformForm.value.base_url.trim()
+
+  if (!name) {
+    ElMessage.warning(t('settings.llm.platformNameLabel'))
+    return
+  }
+  if (!baseUrl) {
+    ElMessage.warning(t('settings.llm.platformBaseUrlLabel'))
+    return
+  }
+
+  platformDialogSaving.value = true
+  try {
+    let response
+    if (platformDialogMode.value === 'create') {
+      response = await axios.post<LLMManagerSnapshot>('/api/llm-status/manager/platforms', {
+        name,
+        base_url: baseUrl,
+        api_key: platformForm.value.api_key.trim(),
+      })
+      ElMessage.success(t('settings.messages.platformCreated'))
+    } else {
+      if (selectedPlatformId.value === null) {
+        throw new Error(t('settings.messages.platformRequired'))
+      }
+
+      const shouldUpdateApiKey =
+        platformForm.value.clear_api_key || platformForm.value.api_key.trim().length > 0
+
+      const updatePayload: {
+        name: string
+        base_url: string
+        update_api_key: boolean
+        api_key?: string
+      } = {
+        name,
+        base_url: baseUrl,
+        update_api_key: shouldUpdateApiKey,
+      }
+
+      if (shouldUpdateApiKey) {
+        updatePayload.api_key = platformForm.value.clear_api_key ? '' : platformForm.value.api_key.trim()
+      }
+
+      response = await axios.put<LLMManagerSnapshot>(
+        `/api/llm-status/manager/platforms/${selectedPlatformId.value}`,
+        updatePayload,
+      )
+      ElMessage.success(t('settings.messages.platformUpdated'))
+    }
+
+    applyManagerSnapshot(response.data)
+    platformDialogVisible.value = false
+    await loadMainModelConfig(false)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    platformDialogSaving.value = false
+  }
+}
+
+async function deleteCurrentPlatform() {
+  if (!selectedPlatform.value) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      t('settings.messages.confirmDeletePlatform', { name: selectedPlatform.value.name }),
+      t('settings.llm.deletePlatform'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+
+    managerOperating.value = true
+    const response = await axios.delete<LLMManagerSnapshot>(
+      `/api/llm-status/manager/platforms/${selectedPlatform.value.platform_id}`,
+    )
+    applyManagerSnapshot(response.data)
+    await loadMainModelConfig(false)
+    ElMessage.success(t('settings.messages.platformDeleted'))
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+    }
+  } finally {
+    managerOperating.value = false
+  }
 }
 
 async function switchPlatformAsMain(platformId: number) {
@@ -618,6 +766,21 @@ onMounted(loadSettings)
                 </el-select>
               </el-form-item>
 
+              <div class="manager-actions">
+                <el-button plain @click="openCreatePlatformDialog">
+                  <Icon icon="lucide:plus-circle" class="btn-icon" />
+                  {{ t('settings.llm.addPlatform') }}
+                </el-button>
+                <el-button plain :disabled="!selectedPlatform" @click="openEditPlatformDialog">
+                  <Icon icon="lucide:pen-square" class="btn-icon" />
+                  {{ t('settings.llm.editPlatform') }}
+                </el-button>
+                <el-button plain type="danger" :disabled="!selectedPlatform" @click="deleteCurrentPlatform">
+                  <Icon icon="lucide:trash-2" class="btn-icon" />
+                  {{ t('settings.llm.deletePlatform') }}
+                </el-button>
+              </div>
+
               <div class="manager-main-binding">{{ currentMainSelectionText }}</div>
               <div v-if="selectedPlatform" class="manager-platform-state">
                 <Icon icon="lucide:key-round" />
@@ -740,6 +903,46 @@ onMounted(loadSettings)
           </el-card>
         </div>
       </el-form>
+
+      <el-dialog v-model="platformDialogVisible" :title="platformDialogTitle" width="560px" destroy-on-close>
+        <el-form :model="platformForm" label-position="top" class="dialog-form" @submit.prevent>
+          <el-form-item :label="t('settings.llm.platformNameLabel')" required>
+            <el-input
+              v-model="platformForm.name"
+              :placeholder="t('settings.llm.platformNamePlaceholder')"
+              autocomplete="off"
+            />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.platformBaseUrlLabel')" required>
+            <el-input
+              v-model="platformForm.base_url"
+              :placeholder="t('settings.llm.platformBaseUrlPlaceholder')"
+              autocomplete="off"
+            />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.platformApiKeyLabel')">
+            <el-input
+              v-model="platformForm.api_key"
+              type="password"
+              show-password
+              :placeholder="t('settings.llm.platformApiKeyPlaceholder')"
+              autocomplete="off"
+            />
+            <el-checkbox v-model="platformForm.clear_api_key" class="dialog-checkbox">
+              {{ t('settings.llm.clearPlatformApiKey') }}
+            </el-checkbox>
+          </el-form-item>
+        </el-form>
+
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="platformDialogVisible = false">{{ t('common.cancel') }}</el-button>
+            <el-button type="primary" :loading="platformDialogSaving" @click="submitPlatformDialog">
+              {{ t('common.submit') }}
+            </el-button>
+          </div>
+        </template>
+      </el-dialog>
 
     </div>
   </div>
@@ -923,6 +1126,14 @@ onMounted(loadSettings)
   width: 100%;
 }
 
+.manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .manager-main-binding {
   font-size: 12px;
   color: var(--el-text-color-secondary);
@@ -941,6 +1152,20 @@ onMounted(loadSettings)
   margin-top: 10px;
   font-size: 12px;
   color: var(--el-color-warning);
+}
+
+.dialog-form {
+  padding-top: 4px;
+}
+
+.dialog-checkbox {
+  margin-top: 10px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .flex-option {
@@ -1068,6 +1293,11 @@ onMounted(loadSettings)
 
   .model-select-wrap {
     flex-direction: column;
+  }
+
+  .manager-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .manager-main-binding {
