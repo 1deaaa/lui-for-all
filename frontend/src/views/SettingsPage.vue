@@ -47,6 +47,12 @@ interface LLMManagerSnapshot {
   platforms: ManagedPlatform[]
 }
 
+interface PlatformProbeSyncResponse {
+  snapshot: LLMManagerSnapshot
+  probed: number
+  created: number
+}
+
 interface PlatformDialogForm {
   name: string
   base_url: string
@@ -424,25 +430,44 @@ async function deleteCurrentPlatform() {
 }
 
 async function switchPlatformAsMain(platformId: number) {
-  const platform = platformOptions.value.find((item) => item.platform_id === platformId)
-  if (!platform) {
-    return
-  }
-
-  const preferredModelId =
-    platform.models.find((model) => model.model_id === managerSnapshot.value.selected_model_id)?.model_id ??
-    platform.models[0]?.model_id
-
-  if (!preferredModelId) {
-    ElMessage.warning(t('settings.llm.noModelsHint'))
-    syncingPlatformSelection = true
-    selectedPlatformId.value = managerSnapshot.value.selected_platform_id
-    syncingPlatformSelection = false
-    return
-  }
-
   managerOperating.value = true
   try {
+    let currentPlatform = platformOptions.value.find((item) => item.platform_id === platformId)
+    if (!currentPlatform) {
+      return
+    }
+
+    let preferredModelId: number | null =
+      currentPlatform.models.find((model) => model.model_id === managerSnapshot.value.selected_model_id)?.model_id ??
+      currentPlatform.models[0]?.model_id ??
+      null
+
+    if (preferredModelId === null) {
+      const probeResponse = await axios.post<PlatformProbeSyncResponse>(
+        `/api/llm-status/manager/platforms/${platformId}/probe-and-sync`,
+      )
+      applyManagerSnapshot(probeResponse.data.snapshot)
+
+      currentPlatform = probeResponse.data.snapshot.platforms.find((item) => item.platform_id === platformId)
+      preferredModelId =
+        currentPlatform?.models.find((model) => model.model_id === probeResponse.data.snapshot.selected_model_id)
+          ?.model_id ??
+        currentPlatform?.models[0]?.model_id ??
+        null
+
+      if (preferredModelId === null) {
+        ElMessage.warning(t('settings.llm.noModelsHint'))
+        syncingPlatformSelection = true
+        selectedPlatformId.value = managerSnapshot.value.selected_platform_id
+        syncingPlatformSelection = false
+        return
+      }
+
+      if (probeResponse.data.created > 0) {
+        ElMessage.success(t('settings.messages.modelsProbed', { count: probeResponse.data.created }))
+      }
+    }
+
     const response = await axios.post<LLMManagerSnapshot>('/api/llm-status/manager/main-selection', {
       platform_id: platformId,
       model_id: preferredModelId,

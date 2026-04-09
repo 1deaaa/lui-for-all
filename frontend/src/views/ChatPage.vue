@@ -353,7 +353,13 @@ function getProjectStatusLabel(status: string): string {
                   <span>{{ t('chat.message.thoughtProcess') }}</span>
                   <el-icon class="thought-toggle" :class="{ expanded: thoughtExpanded[msg.id] }"><ArrowDown /></el-icon>
                 </div>
-                <div class="thought-body" :class="{ expanded: thoughtExpanded[msg.id] || (sessionStore.isStreaming && !msg.content) }">
+                <div
+                  class="thought-body"
+                  :class="{
+                    expanded: thoughtExpanded[msg.id],
+                    streaming: sessionStore.isStreaming && !msg.content && !thoughtExpanded[msg.id],
+                  }"
+                >
                   <div class="thought-content">
                     <MarkdownRenderer :content="msg.thought" />
                   </div>
@@ -1151,7 +1157,8 @@ function getProjectStatusLabel(status: string): string {
   transition: grid-template-rows 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s;
   padding: 0 14px;
 }
-.thought-body.expanded {
+.thought-body.expanded,
+.thought-body.streaming {
   grid-template-rows: 1fr;
   opacity: 1;
   padding: 0 14px 10px;
@@ -1162,6 +1169,18 @@ function getProjectStatusLabel(status: string): string {
   overflow: hidden;
   font-size: 13px !important;
   color: #8c8c8c !important;
+}
+
+.thought-body.streaming .thought-content {
+  max-height: calc(1.6em * 5);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.thought-body.expanded .thought-content {
+  max-height: none;
+  overflow: visible;
 }
 .thought-content :deep(.markdown-renderer),
 .thought-content :deep(.rendered-content),

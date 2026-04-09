@@ -160,6 +160,22 @@ flowchart TD
 - Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 8 UI block types
 - Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
 
+10. MCP integration with OpenClaw (multi-channel execution gateway)
+OpenClaw's biggest value is fully automated, unattended execution from natural language. You give it a task, and it keeps working across its own computer, accounts, and channels without needing a human to click through every step.
+
+The combined value with LUI-for-All is more practical:
+
+- OpenClaw handles unattended natural-language automation, while LUI-for-All pushes actions into a specific private project
+- Users can send tasks inside OpenClaw and use LUI's MCP interface to reach deep into project pages, APIs, and workflows
+- We keep safety levels, human confirmation, SSE progress, and HTTP call logs, so the flow stays hands-off but still traceable
+
+Quick integration steps:
+
+1. Start OpenClaw and let it run as the natural-language automation entry point
+2. Register LUI-for-All as an MCP tool on the OpenClaw side, or bridge OpenClaw sessions to MCP clients
+3. Configure the LUI-for-All MCP token and gateway URL so OpenClaw can reach your private project
+4. Start with one read-only capability, then add approval-based business actions gradually
+
 ## Quick Start
 
 ### Requirements

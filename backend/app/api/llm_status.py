@@ -72,6 +72,12 @@ class ModelUpdatePayload(BaseModel):
     extra_body: Optional[str] = None
 
 
+class PlatformProbeSyncResult(BaseModel):
+    snapshot: LLMManagerSnapshot
+    probed: int = 0
+    created: int = 0
+
+
 def _require_matchbox():
     mgr = matchbox(required=False)
     if not mgr:
@@ -537,6 +543,67 @@ async def delete_model(model_id: int):
     try:
         mgr.disable_model(model_id=model_id, admin_mode=True)
         return _build_manager_snapshot(mgr)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/manager/platforms/{platform_id}/probe-and-sync", response_model=PlatformProbeSyncResult)
+async def probe_and_sync_platform_models(platform_id: int):
+    mgr = _require_matchbox()
+
+    try:
+        with mgr.Session() as session:
+            from app.llm.agent_matchbox.models import LLMPlatform, LLModels
+
+            platform = session.query(LLMPlatform).filter_by(id=platform_id, is_sys=1, disable=0).first()
+            if not platform:
+                raise HTTPException(status_code=404, detail="平台不存在或已禁用")
+
+            existing_model_names = {
+                str(model.model_name).strip()
+                for model in session.query(LLModels).filter_by(
+                    platform_id=platform_id,
+                    is_embedding=0,
+                    disable=0,
+                )
+                if model.model_name
+            }
+
+        probed_names: List[str] = []
+        seen_names = set()
+        for raw_name in mgr.proxy_list_models(SYSTEM_USER_ID, platform_id):
+            model_name = str(raw_name or "").strip()
+            if not model_name or model_name in seen_names:
+                continue
+            seen_names.add(model_name)
+            probed_names.append(model_name)
+
+        created = 0
+        for model_name in probed_names:
+            if model_name in existing_model_names:
+                continue
+            try:
+                mgr.add_model(
+                    platform_id=platform_id,
+                    model_name=model_name,
+                    display_name=model_name,
+                    admin_mode=True,
+                )
+                existing_model_names.add(model_name)
+                created += 1
+            except ValueError:
+                # 显示名冲突或并发写入等场景下跳过该条，继续其余模型。
+                continue
+
+        return PlatformProbeSyncResult(
+            snapshot=_build_manager_snapshot(mgr),
+            probed=len(probed_names),
+            created=created,
+        )
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
