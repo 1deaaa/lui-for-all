@@ -1,0 +1,22 @@
+<svg width="512" height="512" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100" height="100" fill="#171717" />
+  <defs>
+    <mask id="lui-glow-mask">
+      <rect width="100" height="100" fill="white" />
+      <circle cx="50" cy="50" r="24" fill="black" />
+    </mask>
+  </defs>
+  
+  <polygon points="50,6 88,28 88,72 50,94 12,72 12,28" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linejoin="round" />
+  
+  <g mask="url(#lui-glow-mask)">
+    <line x1="50" y1="50" x2="50" y2="6" stroke="#FFFFFF" stroke-width="1.2" opacity="0.22" stroke-dasharray="3,4" />
+    <line x1="50" y1="50" x2="88" y2="72" stroke="#FFFFFF" stroke-width="1.2" opacity="0.22" stroke-dasharray="3,4" />
+    <line x1="50" y1="50" x2="12" y2="72" stroke="#FFFFFF" stroke-width="1.2" opacity="0.22" stroke-dasharray="3,4" />
+    <line x1="50" y1="50" x2="88" y2="28" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" />
+    <line x1="50" y1="50" x2="50" y2="94" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" />
+    <line x1="50" y1="50" x2="12" y2="28" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" />
+  </g>
+
+  <path d="M 50 28 C 46 46, 46 46, 28 50 C 46 54, 46 54, 50 72 C 54 54, 54 54, 72 50 C 54 46, 54 46, 50 28 Z" fill="#FFFFFF" />
+</svg>
