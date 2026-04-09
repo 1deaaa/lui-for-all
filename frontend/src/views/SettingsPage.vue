@@ -1,20 +1,75 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { getLocale, setLocale, SUPPORTED_LOCALES, type AppLocale } from '@/i18n'
 
-const settings = ref({
-  // 安全与扩展配置
+type SafetyDefaultAction = 'allow' | 'confirm' | 'block'
+type LlmManagerDialogMode = 'create' | 'edit'
+
+interface SettingsForm {
+  safety_default_action: SafetyDefaultAction
+  mcp_api_token: string
+  llm_api_base: string
+  llm_api_key: string
+  llm_model_id: string
+  llm_extra_body: string
+}
+
+interface SettingsResponse {
+  safety_default_action?: string
+  mcp_api_token?: string
+}
+
+interface MainModelConfigResponse {
+  llm_api_base?: string
+  llm_api_key?: string
+  llm_model_id?: string
+  llm_extra_body?: string
+}
+
+interface ManagedModel {
+  model_id: number
+  model_name: string
+  display_name: string
+  extra_body: string
+}
+
+interface ManagedPlatform {
+  platform_id: number
+  name: string
+  base_url: string
+  api_key_set: boolean
+  models: ManagedModel[]
+}
+
+interface LLMManagerSnapshot {
+  selected_platform_id: number | null
+  selected_model_id: number | null
+  platforms: ManagedPlatform[]
+}
+
+interface PlatformDialogForm {
+  name: string
+  base_url: string
+  api_key: string
+  clear_api_key: boolean
+}
+
+interface ModelDialogForm {
+  model_name: string
+  display_name: string
+  extra_body: string
+}
+
+const settings = ref<SettingsForm>({
   safety_default_action: 'confirm',
   mcp_api_token: '',
-  
-  // 主模型配置
   llm_api_base: '',
   llm_api_key: '',
   llm_model_id: '',
-  llm_extra_body: ''
+  llm_extra_body: '',
 })
 const { t } = useI18n()
 
@@ -25,6 +80,35 @@ const fetchingModels = ref(false)
 const testStatus = ref<'success' | 'error' | null>(null)
 const availableModels = ref<string[]>([])
 const currentLocale = ref<AppLocale>(getLocale())
+
+const managerLoading = ref(false)
+const managerOperating = ref(false)
+const managerSnapshot = ref<LLMManagerSnapshot>({
+  selected_platform_id: null,
+  selected_model_id: null,
+  platforms: [],
+})
+const selectedPlatformId = ref<number | null>(null)
+const selectedModelId = ref<number | null>(null)
+
+const platformDialogVisible = ref(false)
+const platformDialogMode = ref<LlmManagerDialogMode>('create')
+const platformDialogSaving = ref(false)
+const platformForm = ref<PlatformDialogForm>({
+  name: '',
+  base_url: '',
+  api_key: '',
+  clear_api_key: false,
+})
+
+const modelDialogVisible = ref(false)
+const modelDialogMode = ref<LlmManagerDialogMode>('create')
+const modelDialogSaving = ref(false)
+const modelForm = ref<ModelDialogForm>({
+  model_name: '',
+  display_name: '',
+  extra_body: '',
+})
 
 const localeLabelKeyMap: Record<AppLocale, string> = {
   'zh-CN': 'language.options.zhCN',
@@ -39,6 +123,123 @@ const localeOptions = computed(() =>
   })),
 )
 
+const platformOptions = computed(() => managerSnapshot.value.platforms)
+const selectedPlatform = computed(() =>
+  platformOptions.value.find((platform) => platform.platform_id === selectedPlatformId.value) ?? null,
+)
+const modelOptions = computed(() => selectedPlatform.value?.models ?? [])
+const selectedModel = computed(() =>
+  modelOptions.value.find((model) => model.model_id === selectedModelId.value) ?? null,
+)
+
+const mainSelectionDirty = computed(() => {
+  return (
+    selectedPlatformId.value !== managerSnapshot.value.selected_platform_id ||
+    selectedModelId.value !== managerSnapshot.value.selected_model_id
+  )
+})
+
+const currentMainSelectionText = computed(() => {
+  const currentPlatform = platformOptions.value.find(
+    (platform) => platform.platform_id === managerSnapshot.value.selected_platform_id,
+  )
+  if (!currentPlatform) {
+    return t('settings.llm.mainBindingUnset')
+  }
+
+  const currentModel = currentPlatform.models.find(
+    (model) => model.model_id === managerSnapshot.value.selected_model_id,
+  )
+  if (!currentModel) {
+    return t('settings.llm.mainBindingUnset')
+  }
+
+  const modelLabel = currentModel.display_name || currentModel.model_name
+  return t('settings.llm.mainBindingValue', {
+    platform: currentPlatform.name,
+    model: modelLabel,
+  })
+})
+
+const platformDialogTitle = computed(() => {
+  if (platformDialogMode.value === 'create') {
+    return t('settings.llm.platformDialogCreateTitle')
+  }
+  return t('settings.llm.platformDialogEditTitle')
+})
+
+const modelDialogTitle = computed(() => {
+  if (modelDialogMode.value === 'create') {
+    return t('settings.llm.modelDialogCreateTitle')
+  }
+  return t('settings.llm.modelDialogEditTitle')
+})
+
+watch(selectedPlatformId, (nextPlatformId) => {
+  const currentPlatform = platformOptions.value.find((platform) => platform.platform_id === nextPlatformId)
+  if (!currentPlatform) {
+    selectedModelId.value = null
+    return
+  }
+
+  const hasSelectedModel = currentPlatform.models.some((model) => model.model_id === selectedModelId.value)
+  if (!hasSelectedModel) {
+    selectedModelId.value = currentPlatform.models[0]?.model_id ?? null
+  }
+})
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail
+    }
+    if (typeof error.message === 'string' && error.message.trim()) {
+      return error.message
+    }
+    return fallback
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return fallback
+}
+
+function normalizeSafetyAction(value: string | undefined): SafetyDefaultAction {
+  if (value === 'allow' || value === 'block') {
+    return value
+  }
+  return 'confirm'
+}
+
+function applyMainModelConfig(config: MainModelConfigResponse) {
+  settings.value.llm_api_base = config.llm_api_base || ''
+  settings.value.llm_api_key = config.llm_api_key || ''
+  settings.value.llm_model_id = config.llm_model_id || ''
+  settings.value.llm_extra_body = config.llm_extra_body || ''
+}
+
+function applyManagerSnapshot(snapshot: LLMManagerSnapshot) {
+  managerSnapshot.value = snapshot
+
+  const preferredPlatformId = snapshot.selected_platform_id ?? snapshot.platforms[0]?.platform_id ?? null
+  selectedPlatformId.value = preferredPlatformId
+
+  const platform = snapshot.platforms.find((item) => item.platform_id === preferredPlatformId) ?? null
+  const hasPreferredModel =
+    platform &&
+    snapshot.selected_model_id !== null &&
+    platform.models.some((item) => item.model_id === snapshot.selected_model_id)
+
+  if (hasPreferredModel) {
+    selectedModelId.value = snapshot.selected_model_id
+    return
+  }
+
+  selectedModelId.value = platform?.models[0]?.model_id ?? null
+}
+
 function handleLocaleChange(nextLocale: string | number | boolean) {
   const locale = nextLocale as AppLocale
   setLocale(locale)
@@ -46,123 +247,165 @@ function handleLocaleChange(nextLocale: string | number | boolean) {
   ElMessage.success(t('settings.messages.languageUpdated', { label: t(localeLabelKeyMap[locale]) }))
 }
 
+async function loadMainModelConfig(showError = true) {
+  try {
+    const response = await axios.get<MainModelConfigResponse>('/api/llm-status/main')
+    applyMainModelConfig(response.data)
+  } catch (error: unknown) {
+    if (showError) {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.loadFailed')))
+    }
+  }
+}
+
+async function refreshManagerSnapshot(showError = true) {
+  managerLoading.value = true
+  try {
+    const response = await axios.get<LLMManagerSnapshot>('/api/llm-status/manager')
+    applyManagerSnapshot(response.data)
+    return true
+  } catch (error: unknown) {
+    if (showError) {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.managerLoadFailed')))
+    }
+    return false
+  } finally {
+    managerLoading.value = false
+  }
+}
+
 async function loadSettings() {
   loading.value = true
   try {
-    const [settingsRes, llmRes] = await Promise.all([
-      axios.get('/api/settings'),
-      axios.get('/api/llm-status/main')
+    const [settingsRes, llmRes, managerRes] = await Promise.all([
+      axios.get<SettingsResponse>('/api/settings'),
+      axios.get<MainModelConfigResponse>('/api/llm-status/main'),
+      axios.get<LLMManagerSnapshot>('/api/llm-status/manager'),
     ])
-    
-    settings.value = {
-      safety_default_action: settingsRes.data.safety_default_action || 'confirm',
-      mcp_api_token: settingsRes.data.mcp_api_token || '',
-      llm_api_base: llmRes.data.llm_api_base || '',
-      llm_api_key: llmRes.data.llm_api_key || '',
-      llm_model_id: llmRes.data.llm_model_id || '',
-      llm_extra_body: llmRes.data.llm_extra_body || ''
-    }
-    
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.loadFailed'))
+
+    settings.value.safety_default_action = normalizeSafetyAction(settingsRes.data.safety_default_action)
+    settings.value.mcp_api_token = settingsRes.data.mcp_api_token || ''
+    applyMainModelConfig(llmRes.data)
+    applyManagerSnapshot(managerRes.data)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.loadFailed')))
   } finally {
     loading.value = false
   }
 }
 
-// 保存设置
 async function saveSettings(silent = false) {
-  if (loading.value) return // 防止初始加载触发
+  if (loading.value) return
+
   saving.value = true
   try {
     formatApiBase()
-    formatExtraBody() // 保存前格式化
-    
+    formatExtraBody()
+
     await Promise.all([
       axios.put('/api/settings', {
         safety_default_action: settings.value.safety_default_action,
-        mcp_api_token: settings.value.mcp_api_token
+        mcp_api_token: settings.value.mcp_api_token,
       }),
       axios.put('/api/llm-status/main', {
         llm_api_base: settings.value.llm_api_base,
         llm_api_key: settings.value.llm_api_key,
         llm_model_id: settings.value.llm_model_id,
-        llm_extra_body: settings.value.llm_extra_body
-      })
+        llm_extra_body: settings.value.llm_extra_body,
+      }),
     ])
+
     if (!silent) {
       ElMessage.success(t('settings.messages.saved'))
     }
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.saveFailed'))
+    await refreshManagerSnapshot(false)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
   } finally {
     saving.value = false
   }
 }
 
-// 自动格式化 API Endpoint
 function formatApiBase() {
   let url = settings.value.llm_api_base.trim()
   if (!url) return
   url = url.replace(/\/+$/, '')
   if (!url.endsWith('/v1')) {
-    url = url + '/v1'
+    url = `${url}/v1`
   }
   settings.value.llm_api_base = url
 }
 
-// 自动修复并格式化 JSON
 function formatExtraBody() {
   let body = settings.value.llm_extra_body.trim()
   if (!body) return
-  if (!body.startsWith('{')) body = '{' + body
-  if (!body.endsWith('}')) body = body + '}'
+  if (!body.startsWith('{')) body = `{${body}`
+  if (!body.endsWith('}')) body = `${body}}`
   try {
     const parsed = JSON.parse(body)
     settings.value.llm_extra_body = JSON.stringify(parsed, null, 2)
-  } catch (e) {
+  } catch {
     ElMessage.warning(t('settings.messages.formatJsonWarning'))
     settings.value.llm_extra_body = body
   }
 }
 
-// 测试连接
+function normalizeManagerExtraBody(text: string): string {
+  const normalized = text.trim()
+  if (!normalized) {
+    return ''
+  }
+
+  const parsed = JSON.parse(normalized)
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    throw new Error(t('settings.messages.extraBodyObjectRequired'))
+  }
+  return JSON.stringify(parsed, null, 2)
+}
+
+function formatPlatformLabel(platform: ManagedPlatform): string {
+  const keyStatus = platform.api_key_set
+    ? t('settings.llm.apiKeyConfigured')
+    : t('settings.llm.apiKeyMissing')
+  return `${platform.name} · ${keyStatus}`
+}
+
 async function testConnection() {
   formatApiBase()
   formatExtraBody()
   testing.value = true
   testStatus.value = null
   try {
-    const response = await axios.post('/api/llm-status/test', {
+    const response = await axios.post<{ reply?: string }>('/api/llm-status/test', {
       llm_api_base: settings.value.llm_api_base,
       llm_api_key: settings.value.llm_api_key,
       llm_model_id: settings.value.llm_model_id,
-      llm_extra_body: settings.value.llm_extra_body
+      llm_extra_body: settings.value.llm_extra_body,
     })
-    ElMessage.success(t('settings.messages.testSuccess', { reply: response.data.reply }))
+    ElMessage.success(t('settings.messages.testSuccess', { reply: response.data.reply || '' }))
     testStatus.value = 'success'
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.testFailed'))
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.testFailed')))
     testStatus.value = 'error'
   } finally {
     testing.value = false
   }
 }
 
-// 获取模型列表
 async function fetchModels() {
   if (!settings.value.llm_api_base) {
     ElMessage.warning(t('settings.messages.apiBaseRequired'))
     return
   }
+
   formatApiBase()
   fetchingModels.value = true
   try {
-    const response = await axios.post('/api/llm-status/probe', {
+    const response = await axios.post<{ models?: string[] }>('/api/llm-status/probe', {
       llm_api_base: settings.value.llm_api_base,
       llm_api_key: settings.value.llm_api_key,
       llm_model_id: '',
-      llm_extra_body: ''
+      llm_extra_body: '',
     })
     availableModels.value = response.data.models || []
     if (availableModels.value.length === 0) {
@@ -170,8 +413,8 @@ async function fetchModels() {
     } else {
       ElMessage.success(t('settings.messages.modelsProbed', { count: availableModels.value.length }))
     }
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error.message || t('settings.messages.probeFailed'))
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.probeFailed')))
   } finally {
     fetchingModels.value = false
   }
@@ -183,7 +426,273 @@ function handleModelSelectVisible(visible: boolean) {
   }
 }
 
-// 生成随机 Token 并立即保存
+async function applyMainSelection() {
+  if (selectedPlatformId.value === null || selectedModelId.value === null) {
+    ElMessage.warning(t('settings.messages.platformAndModelRequired'))
+    return
+  }
+
+  managerOperating.value = true
+  try {
+    const response = await axios.post<LLMManagerSnapshot>('/api/llm-status/manager/main-selection', {
+      platform_id: selectedPlatformId.value,
+      model_id: selectedModelId.value,
+    })
+    applyManagerSnapshot(response.data)
+    await loadMainModelConfig(false)
+    ElMessage.success(t('settings.messages.mainSelectionSaved'))
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    managerOperating.value = false
+  }
+}
+
+function openCreatePlatformDialog() {
+  platformDialogMode.value = 'create'
+  platformForm.value = {
+    name: '',
+    base_url: '',
+    api_key: '',
+    clear_api_key: false,
+  }
+  platformDialogVisible.value = true
+}
+
+function openEditPlatformDialog() {
+  if (!selectedPlatform.value) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  platformDialogMode.value = 'edit'
+  platformForm.value = {
+    name: selectedPlatform.value.name,
+    base_url: selectedPlatform.value.base_url,
+    api_key: '',
+    clear_api_key: false,
+  }
+  platformDialogVisible.value = true
+}
+
+async function submitPlatformDialog() {
+  const name = platformForm.value.name.trim()
+  const baseUrl = platformForm.value.base_url.trim()
+
+  if (!name) {
+    ElMessage.warning(t('settings.llm.platformNameLabel'))
+    return
+  }
+  if (!baseUrl) {
+    ElMessage.warning(t('settings.llm.platformBaseUrlLabel'))
+    return
+  }
+
+  platformDialogSaving.value = true
+  try {
+    let response
+    if (platformDialogMode.value === 'create') {
+      response = await axios.post<LLMManagerSnapshot>('/api/llm-status/manager/platforms', {
+        name,
+        base_url: baseUrl,
+        api_key: platformForm.value.api_key.trim(),
+      })
+      ElMessage.success(t('settings.messages.platformCreated'))
+    } else {
+      if (selectedPlatformId.value === null) {
+        throw new Error(t('settings.messages.platformRequired'))
+      }
+
+      const shouldUpdateApiKey =
+        platformForm.value.clear_api_key || platformForm.value.api_key.trim().length > 0
+
+      const updatePayload: {
+        name: string
+        base_url: string
+        update_api_key: boolean
+        api_key?: string
+      } = {
+        name,
+        base_url: baseUrl,
+        update_api_key: shouldUpdateApiKey,
+      }
+
+      if (shouldUpdateApiKey) {
+        updatePayload.api_key = platformForm.value.clear_api_key ? '' : platformForm.value.api_key.trim()
+      }
+
+      response = await axios.put<LLMManagerSnapshot>(
+        `/api/llm-status/manager/platforms/${selectedPlatformId.value}`,
+        updatePayload,
+      )
+      ElMessage.success(t('settings.messages.platformUpdated'))
+    }
+
+    applyManagerSnapshot(response.data)
+    platformDialogVisible.value = false
+    await loadMainModelConfig(false)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    platformDialogSaving.value = false
+  }
+}
+
+async function deleteCurrentPlatform() {
+  if (!selectedPlatform.value) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      t('settings.messages.confirmDeletePlatform', { name: selectedPlatform.value.name }),
+      t('settings.llm.deletePlatform'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+
+    managerOperating.value = true
+    const response = await axios.delete<LLMManagerSnapshot>(
+      `/api/llm-status/manager/platforms/${selectedPlatform.value.platform_id}`,
+    )
+    applyManagerSnapshot(response.data)
+    await loadMainModelConfig(false)
+    ElMessage.success(t('settings.messages.platformDeleted'))
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+    }
+  } finally {
+    managerOperating.value = false
+  }
+}
+
+function openCreateModelDialog() {
+  if (selectedPlatformId.value === null) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  modelDialogMode.value = 'create'
+  modelForm.value = {
+    model_name: '',
+    display_name: '',
+    extra_body: '',
+  }
+  modelDialogVisible.value = true
+}
+
+function openEditModelDialog() {
+  if (!selectedModel.value) {
+    ElMessage.warning(t('settings.messages.modelRequired'))
+    return
+  }
+
+  modelDialogMode.value = 'edit'
+  modelForm.value = {
+    model_name: selectedModel.value.model_name,
+    display_name: selectedModel.value.display_name || selectedModel.value.model_name,
+    extra_body: selectedModel.value.extra_body || '',
+  }
+  modelDialogVisible.value = true
+}
+
+async function submitModelDialog() {
+  if (selectedPlatformId.value === null) {
+    ElMessage.warning(t('settings.messages.platformRequired'))
+    return
+  }
+
+  const modelName = modelForm.value.model_name.trim()
+  const displayName = modelForm.value.display_name.trim() || modelName
+  if (!modelName) {
+    ElMessage.warning(t('settings.llm.modelIdLabel'))
+    return
+  }
+
+  let normalizedExtraBody = ''
+  try {
+    normalizedExtraBody = normalizeManagerExtraBody(modelForm.value.extra_body)
+  } catch (error: unknown) {
+    ElMessage.warning(getErrorMessage(error, t('settings.messages.formatJsonWarning')))
+    return
+  }
+
+  modelDialogSaving.value = true
+  try {
+    let response
+    if (modelDialogMode.value === 'create') {
+      response = await axios.post<LLMManagerSnapshot>(
+        `/api/llm-status/manager/platforms/${selectedPlatformId.value}/models`,
+        {
+          model_name: modelName,
+          display_name: displayName,
+          extra_body: normalizedExtraBody,
+        },
+      )
+      ElMessage.success(t('settings.messages.modelCreated'))
+    } else {
+      if (selectedModelId.value === null) {
+        throw new Error(t('settings.messages.modelRequired'))
+      }
+
+      response = await axios.put<LLMManagerSnapshot>(`/api/llm-status/manager/models/${selectedModelId.value}`, {
+        model_name: modelName,
+        display_name: displayName,
+        extra_body: normalizedExtraBody,
+      })
+      ElMessage.success(t('settings.messages.modelUpdated'))
+    }
+
+    applyManagerSnapshot(response.data)
+    modelDialogVisible.value = false
+    await loadMainModelConfig(false)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    modelDialogSaving.value = false
+  }
+}
+
+async function deleteCurrentModel() {
+  if (!selectedModel.value) {
+    ElMessage.warning(t('settings.messages.modelRequired'))
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      t('settings.messages.confirmDeleteModel', {
+        name: selectedModel.value.display_name || selectedModel.value.model_name,
+      }),
+      t('settings.llm.deleteModel'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+
+    managerOperating.value = true
+    const response = await axios.delete<LLMManagerSnapshot>(
+      `/api/llm-status/manager/models/${selectedModel.value.model_id}`,
+    )
+    applyManagerSnapshot(response.data)
+    await loadMainModelConfig(false)
+    ElMessage.success(t('settings.messages.modelDeleted'))
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+    }
+  } finally {
+    managerOperating.value = false
+  }
+}
+
 async function generateMcpToken() {
   settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
   await saveSettings(true)
@@ -193,16 +702,16 @@ async function generateMcpToken() {
 async function handleSafetyActionChange(val: string) {
   if (val === 'allow') {
     try {
-      await ElMessageBox.confirm(
-        t('settings.dialogs.allowConfirmMessage'),
-        t('settings.dialogs.allowConfirmTitle'),
-        { type: 'warning', confirmButtonText: t('settings.dialogs.allowConfirmButton'), cancelButtonText: t('common.cancel') }
-      )
-      await ElMessageBox.confirm(
-        t('settings.dialogs.finalConfirmMessage'),
-        t('settings.dialogs.finalConfirmTitle'),
-        { type: 'error', confirmButtonText: t('settings.dialogs.finalConfirmButton'), cancelButtonText: t('settings.dialogs.finalCancelButton') }
-      )
+      await ElMessageBox.confirm(t('settings.dialogs.allowConfirmMessage'), t('settings.dialogs.allowConfirmTitle'), {
+        type: 'warning',
+        confirmButtonText: t('settings.dialogs.allowConfirmButton'),
+        cancelButtonText: t('common.cancel'),
+      })
+      await ElMessageBox.confirm(t('settings.dialogs.finalConfirmMessage'), t('settings.dialogs.finalConfirmTitle'), {
+        type: 'error',
+        confirmButtonText: t('settings.dialogs.finalConfirmButton'),
+        cancelButtonText: t('settings.dialogs.finalCancelButton'),
+      })
     } catch {
       settings.value.safety_default_action = 'confirm'
     }
@@ -224,26 +733,29 @@ const mcpGatewayUrl = computed(() => `${mcpGatewayOrigin.value}/mcp/`)
 const mcpJsonExample = computed(() => {
   const token = settings.value.mcp_api_token || t('settings.mcp.tokenFillHint')
   const url = mcpGatewayUrl.value
-  
-  // 提供标准的 Streamable HTTP 连接 JSON
-  return JSON.stringify({
-    "mcpServers": {
-      "lui-for-all-remote": {
-        "type": "streamable-http",
-        "url": url,
-        "headers": {
-          "Authorization": `Bearer ${token}`
-        }
-      }
-    }
-  }, null, 2)
+
+  return JSON.stringify(
+    {
+      mcpServers: {
+        'lui-for-all-remote': {
+          type: 'streamable-http',
+          url,
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  )
 })
 
 async function copyMcpJson() {
   try {
     await navigator.clipboard.writeText(mcpJsonExample.value)
     ElMessage.success(t('settings.messages.jsonCopied'))
-  } catch (e) {
+  } catch {
     ElMessage.error(t('settings.messages.copyFailed'))
   }
 }
@@ -412,6 +924,97 @@ onMounted(loadSettings)
                 </el-form-item>
               </el-col>
             </el-row>
+
+            <el-divider class="manager-divider" content-position="left">
+              {{ t('settings.llm.managerSectionTitle') }}
+            </el-divider>
+            <p class="manager-hint">{{ t('settings.llm.managerSectionDesc') }}</p>
+
+            <div class="manager-panel" v-loading="managerLoading">
+              <el-row :gutter="16">
+                <el-col :span="24" :md="12">
+                  <el-form-item :label="t('settings.llm.platformLabel')" class="manager-form-item">
+                    <el-select
+                      v-model="selectedPlatformId"
+                      class="manager-select"
+                      :placeholder="t('settings.llm.platformPlaceholder')"
+                      :disabled="platformOptions.length === 0"
+                    >
+                      <el-option
+                        v-for="platform in platformOptions"
+                        :key="platform.platform_id"
+                        :label="formatPlatformLabel(platform)"
+                        :value="platform.platform_id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+                <el-col :span="24" :md="12">
+                  <el-form-item :label="t('settings.llm.modelLabel')" class="manager-form-item">
+                    <el-select
+                      v-model="selectedModelId"
+                      class="manager-select"
+                      :placeholder="t('settings.llm.modelPlaceholder')"
+                      :disabled="selectedPlatformId === null || modelOptions.length === 0"
+                    >
+                      <el-option
+                        v-for="model in modelOptions"
+                        :key="model.model_id"
+                        :label="model.display_name || model.model_name"
+                        :value="model.model_id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <div class="manager-actions manager-actions-primary">
+                <el-button
+                  type="primary"
+                  :loading="managerOperating"
+                  :disabled="selectedPlatformId === null || selectedModelId === null || !mainSelectionDirty"
+                  @click="applyMainSelection"
+                >
+                  <Icon icon="lucide:check-check" class="btn-icon" />
+                  {{ t('settings.llm.applyMainSelection') }}
+                </el-button>
+                <span class="manager-main-binding">{{ currentMainSelectionText }}</span>
+              </div>
+
+              <div class="manager-actions">
+                <el-button plain @click="openCreatePlatformDialog">
+                  <Icon icon="lucide:plus-circle" class="btn-icon" />
+                  {{ t('settings.llm.addPlatform') }}
+                </el-button>
+                <el-button plain :disabled="!selectedPlatform" @click="openEditPlatformDialog">
+                  <Icon icon="lucide:pen-square" class="btn-icon" />
+                  {{ t('settings.llm.editPlatform') }}
+                </el-button>
+                <el-button plain type="danger" :disabled="!selectedPlatform" @click="deleteCurrentPlatform">
+                  <Icon icon="lucide:trash-2" class="btn-icon" />
+                  {{ t('settings.llm.deletePlatform') }}
+                </el-button>
+              </div>
+
+              <div class="manager-actions">
+                <el-button plain :disabled="selectedPlatformId === null" @click="openCreateModelDialog">
+                  <Icon icon="lucide:plus" class="btn-icon" />
+                  {{ t('settings.llm.addModel') }}
+                </el-button>
+                <el-button plain :disabled="!selectedModel" @click="openEditModelDialog">
+                  <Icon icon="lucide:pencil" class="btn-icon" />
+                  {{ t('settings.llm.editModel') }}
+                </el-button>
+                <el-button plain type="danger" :disabled="!selectedModel" @click="deleteCurrentModel">
+                  <Icon icon="lucide:trash" class="btn-icon" />
+                  {{ t('settings.llm.deleteModel') }}
+                </el-button>
+              </div>
+
+              <div v-if="selectedPlatformId !== null && modelOptions.length === 0" class="manager-empty-hint">
+                {{ t('settings.llm.noModelsHint') }}
+              </div>
+            </div>
           </el-card>
 
           <!-- Safety Config Card -->
@@ -526,6 +1129,65 @@ onMounted(loadSettings)
           </el-card>
         </div>
       </el-form>
+
+      <el-dialog v-model="platformDialogVisible" :title="platformDialogTitle" width="560px" destroy-on-close>
+        <el-form :model="platformForm" label-position="top" class="dialog-form" @submit.prevent>
+          <el-form-item :label="t('settings.llm.platformNameLabel')" required>
+            <el-input v-model="platformForm.name" :placeholder="t('settings.llm.platformNamePlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.platformBaseUrlLabel')" required>
+            <el-input v-model="platformForm.base_url" :placeholder="t('settings.llm.platformBaseUrlPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.platformApiKeyLabel')">
+            <el-input
+              v-model="platformForm.api_key"
+              type="password"
+              show-password
+              :placeholder="t('settings.llm.platformApiKeyPlaceholder')"
+            />
+            <el-checkbox v-model="platformForm.clear_api_key" class="dialog-checkbox">
+              {{ t('settings.llm.clearPlatformApiKey') }}
+            </el-checkbox>
+          </el-form-item>
+        </el-form>
+
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="platformDialogVisible = false">{{ t('common.cancel') }}</el-button>
+            <el-button type="primary" :loading="platformDialogSaving" @click="submitPlatformDialog">
+              {{ t('common.submit') }}
+            </el-button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="modelDialogVisible" :title="modelDialogTitle" width="620px" destroy-on-close>
+        <el-form :model="modelForm" label-position="top" class="dialog-form" @submit.prevent>
+          <el-form-item :label="t('settings.llm.modelIdLabel')" required>
+            <el-input v-model="modelForm.model_name" :placeholder="t('settings.llm.modelIdPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.modelDisplayNameLabel')">
+            <el-input v-model="modelForm.display_name" :placeholder="t('settings.llm.modelDisplayNamePlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('settings.llm.modelExtraBodyLabel')">
+            <el-input
+              v-model="modelForm.extra_body"
+              type="textarea"
+              :rows="6"
+              :placeholder="t('settings.llm.modelExtraBodyPlaceholder')"
+            />
+          </el-form-item>
+        </el-form>
+
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="modelDialogVisible = false">{{ t('common.cancel') }}</el-button>
+            <el-button type="primary" :loading="modelDialogSaving" @click="submitModelDialog">
+              {{ t('common.submit') }}
+            </el-button>
+          </div>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -683,6 +1345,68 @@ onMounted(loadSettings)
   flex-grow: 1;
 }
 
+.manager-divider {
+  margin: 8px 0 12px;
+}
+
+.manager-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.manager-panel {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 16px;
+  background: linear-gradient(180deg, #fcfcfc 0%, #ffffff 100%);
+}
+
+.manager-form-item {
+  margin-bottom: 12px;
+}
+
+.manager-select {
+  width: 100%;
+}
+
+.manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.manager-actions-primary {
+  margin-top: 4px;
+}
+
+.manager-main-binding {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.manager-empty-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--el-color-warning);
+}
+
+.dialog-form {
+  padding-top: 4px;
+}
+
+.dialog-checkbox {
+  margin-top: 10px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .flex-option {
   display: flex;
   align-items: center;
@@ -808,6 +1532,15 @@ onMounted(loadSettings)
 
   .model-select-wrap {
     flex-direction: column;
+  }
+
+  .manager-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .manager-main-binding {
+    line-height: 1.5;
   }
 }
 </style>
