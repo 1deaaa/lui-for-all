@@ -96,12 +96,19 @@ def _merge_parameter_hints(
     if not backed_by_routes:
         return merged
 
-    existing_names: set[str] = set()
-    for key, value in merged.items():
-        if isinstance(value, dict) and value.get("name"):
-            existing_names.add(str(value.get("name")))
+    def _hint_identity(hint_key: str, hint_val: Any) -> str:
+        if isinstance(hint_val, dict):
+            name = str(hint_val.get("name") or str(hint_key).split("@", 1)[0])
+            location = str(hint_val.get("location") or "")
         else:
-            existing_names.add(str(key).split("@", 1)[0])
+            name = str(hint_key).split("@", 1)[0]
+            location = ""
+        return f"{name}@{location}" if location else name
+
+    existing_identities: set[str] = {
+        _hint_identity(str(key), value)
+        for key, value in merged.items()
+    }
 
     for route in backed_by_routes:
         if not isinstance(route, dict):
@@ -112,15 +119,11 @@ def _merge_parameter_hints(
 
         route_hints = route_hints_by_route_id.get(str(route_id), {})
         for hint_key, hint_val in route_hints.items():
-            hint_name = (
-                str(hint_val.get("name"))
-                if isinstance(hint_val, dict) and hint_val.get("name")
-                else str(hint_key).split("@", 1)[0]
-            )
-            if hint_name in existing_names:
+            identity = _hint_identity(str(hint_key), hint_val)
+            if identity in existing_identities:
                 continue
             merged[hint_key] = hint_val
-            existing_names.add(hint_name)
+            existing_identities.add(identity)
 
     return merged
 
@@ -575,11 +578,13 @@ async def chat(
         "chat_history": chat_history,
         "user_message": message,
         "available_capabilities": available_capabilities,
+        "route_hints_by_route_id": route_hints_by_route_id,
         "agentic_history": [],
         "agentic_done": False,
         "agentic_iterations": 0,
         "pending_writes": [],
         "execution_artifacts": [],
+        "final_answer_draft": None,
         "summary_text": None,
         "ui_blocks": [],
         "error": None,
@@ -607,6 +612,8 @@ async def chat(
             stream_mode=["custom", "updates"],
         ):
             if stream_type == "custom":
+                if not isinstance(payload, dict):
+                    continue
                 ev = payload.get("event", "")
 
                 if ev == "task_progress":
@@ -646,6 +653,8 @@ async def chat(
                         await ctx.warning(f"⚠️ 写入操作需人工审批（MCP 模式已跳过）：{rid}  {reason}")
 
             elif stream_type == "updates":
+                if not isinstance(payload, dict):
+                    continue
                 for node_name, node_update in payload.items():
                     if isinstance(node_update, dict):
                         for k, v in node_update.items():
@@ -675,6 +684,8 @@ async def chat(
                 stream_mode=["custom", "updates"],
             ):
                 if stream_type == "updates":
+                    if not isinstance(payload, dict):
+                        continue
                     for node_name, node_update in payload.items():
                         if isinstance(node_update, dict):
                             for k, v in node_update.items():
@@ -685,6 +696,8 @@ async def chat(
                                 else:
                                     final_state[k] = v
                 elif stream_type == "custom":
+                    if not isinstance(payload, dict):
+                        continue
                     ev = payload.get("event", "")
                     if ev == "task_progress":
                         pct = int(payload.get("progress", 0) * 100)

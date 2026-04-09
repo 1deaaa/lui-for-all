@@ -35,8 +35,20 @@ _GO_METHOD_CONST_RE = re.compile(r"http\.Method(?P<name>Get|Post|Put|Delete|Patc
 _GO_PATH_COMPARE_RE = re.compile(
     r"(?:r|req)\.URL\.Path\s*==\s*\"(?P<left>/[^\"]*)\"|\"(?P<right>/[^\"]*)\"\s*==\s*(?:r|req)\.URL\.Path"
 )
-_GO_HANDLER_CALL_RE = re.compile(r"(?:return\s+)?(?P<handler>[A-Za-z_]\w*)\s*\(")
+_GO_HANDLER_CALL_RE = re.compile(
+    r"(?:return\s+)?(?P<handler>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\("
+)
 _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+
+def _normalize_handler_name(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    name = re.sub(r"\s+", "", raw.strip())
+    name = name.replace("?.", ".")
+    if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", name):
+        return None
+    return name.rsplit(".", 1)[-1]
 
 
 def _extract_if_condition(if_text: str) -> str:
@@ -154,7 +166,9 @@ def _split_top_level_args(text: str) -> list[str]:
 
 def _extract_first_handler_call(body: str) -> str | None:
     for hit in _GO_HANDLER_CALL_RE.finditer(body):
-        name = hit.group("handler")
+        name = _normalize_handler_name(hit.group("handler"))
+        if not name:
+            continue
         if name in {"if", "switch", "for", "func", "return"}:
             continue
         return name
@@ -181,7 +195,9 @@ def _extract_go_function_snippet(
     path: str,
     function_name: str,
 ) -> RouteSnippet | None:
-    pattern = re.compile(rf"(?m)^\s*func\s+{re.escape(function_name)}\s*\(")
+    pattern = re.compile(
+        rf"(?m)^\s*func(?:\s*\([^)]*\))?\s+{re.escape(function_name)}\s*\("
+    )
     match = pattern.search(source_text)
     if not match:
         return None
@@ -320,8 +336,7 @@ class GoWebAdapter(FrameAdapter):
                 handler_name = None
                 if len(call_args) >= 2:
                     candidate = call_args[1].strip()
-                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
-                        handler_name = candidate
+                    handler_name = _normalize_handler_name(candidate)
 
                 if handler_name:
                     source_snippet = _extract_go_function_snippet(

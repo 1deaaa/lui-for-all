@@ -445,13 +445,21 @@ export const useSessionStore = defineStore('session', () => {
         const httpCallsSnapshot = pendingHttpCalls.value?.length ? [...pendingHttpCalls.value] : undefined
         pendingHttpCalls.value = []
         if (event.summary) {
+          let summaryRendered = false
           if (streamingMessageId.value) {
             const idx = messages.value.findIndex(m => m.id === streamingMessageId.value)
-            if (idx !== -1 && httpCallsSnapshot) {
+            if (idx !== -1) {
               const old = messages.value[idx]
-              messages.value.splice(idx, 1, { ...old, metadata: { http_calls: httpCallsSnapshot } })
+              messages.value.splice(idx, 1, {
+                ...old,
+                content: old.content || event.summary,
+                metadata: httpCallsSnapshot ? { http_calls: httpCallsSnapshot } : old.metadata,
+              })
+              summaryRendered = true
             }
-          } else if (!streamingThoughtId.value) {
+          }
+
+          if (!summaryRendered) {
             messages.value.push({
               id: `assistant-${Date.now()}`,
               role: 'assistant',

@@ -740,4 +740,60 @@ onMounted(() => {
 :deep(.compact-desc .el-descriptions__content) {
   font-size: 12px;
 }
+
+/* ================= 移动端适配 (断点 768px) ================= */
+@media (max-width: 768px) {
+  .audit-page {
+    padding: 16px 5%; /* 使用百分比进行适配 */
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .audit-tabs {
+    flex: 1;
+  }
+
+  .filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .filter-input {
+    width: 100%;
+  }
+
+  .filter-select {
+    width: 100%;
+  }
+
+  .filter-count {
+    align-self: flex-end;
+  }
+
+  .detail-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .detail-header-right {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .detail-time {
+    margin-left: 0 !important;
+  }
+
+  :deep(.el-table__body-wrapper) {
+    overflow-x: auto;
+  }
+}
 </style>

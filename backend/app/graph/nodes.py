@@ -34,10 +34,9 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
     - agentic → 进入多轮工具调用循环
     """
     try:
-        full_content = ""
-        strategy = None
+        strategy: str | None = None
         reply_content = ""
-        strategy_pattern = re.compile(r"<strategy>(.*?)</strategy>")
+        user_message = str(state.get("user_message") or "")
 
         # 构建能力列表（简短摘要，供入口决策参考）
         available_capabilities = state.get("available_capabilities", [])
@@ -48,64 +47,68 @@ async def agent_entry_node(state: GraphState) -> dict[str, Any]:
             cap_list_lines.append(f"- {cap_id}: {summary}")
         capability_list = "\n".join(cap_list_lines) if cap_list_lines else "（当前项目没有任何导入的能力）"
 
-        # 项目全局描述
         project_description = state.get("project_description") or "未知"
         response_language = state.get("response_language") or "简体中文"
 
         emit_runtime_event("task_progress", node_name="agent_entry", progress=0.05, message="AI 正在判断请求类型")
 
-        # 构建上下文消息
-        messages = [{"role": "system", "content": AGENT_ENTRY_PROMPT.format(
-            capability_list=capability_list,
-            project_description=project_description,
-            user_message=state["user_message"],
-            response_language=response_language,
-        )}]
+        # 单次流式：同一轮同时完成策略判定与 direct 正文输出，避免 direct 走两次模型推理。
+        entry_messages: list[dict[str, str]] = [{
+            "role": "system",
+            "content": AGENT_ENTRY_PROMPT.format(
+                capability_list=capability_list,
+                project_description=project_description,
+                user_message=user_message,
+                response_language=response_language,
+            ),
+        }]
         for msg in state.get("chat_history", []):
-            messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append({"role": "user", "content": state["user_message"]})
+            role = str(msg.get("role") or "")
+            if role in ("user", "assistant"):
+                entry_messages.append({"role": role, "content": str(msg.get("content") or "")})
+        entry_messages.append({"role": "user", "content": user_message})
 
-        # 流式调用 LLM 进行决策
+        strategy_prefix_buffer = ""
+        strategy_pattern = re.compile(r"<strategy>\s*(direct|agentic)\s*</strategy>", re.IGNORECASE)
+
         async for chunk_type, token in llm_client.stream_chat_completion(
-            messages=messages,
+            messages=entry_messages,
             temperature=0.3,
         ):
             if chunk_type == "reasoning":
                 emit_runtime_event("thought_emitted", token=token)
-            else:
-                full_content += token
-                if strategy is None:
-                    if "</strategy>" in full_content:
-                        match = strategy_pattern.search(full_content)
-                        if match:
-                            strategy_val = match.group(1).strip().lower()
-                            # 只接受 direct / agentic 两种策略
-                            if strategy_val in ("direct", "agentic"):
-                                strategy = strategy_val
-                            else:
-                                strategy = "agentic"  # 兜底走工具调用
-                            rest_text = full_content[match.end():]
-                            if strategy == "direct" and rest_text:
-                                reply_content += rest_text
-                                emit_runtime_event("token_emitted", token=rest_text)
-                else:
-                    if strategy == "direct":
-                        reply_content += token
-                        emit_runtime_event("token_emitted", token=token)
+                continue
 
-        logger.debug(f"[agent_entry] AI 原始回复: {full_content}")
-        # 兜底：未解析出策略，尝试从文本长度和内容特征推断
-        if strategy is None:
-            clean_reply = full_content.strip()
-            greeting_keywords = ["你好", "您好", "hello", "hi", "助手", "功能", "做些什么"]
-            is_simple_greeting = any(k in clean_reply.lower() for k in greeting_keywords)
+            token_text = str(token or "")
+            if not token_text:
+                continue
 
-            if is_simple_greeting or (len(clean_reply) > 0 and not clean_reply.startswith("{") and not clean_reply.startswith("```")):
-                strategy = "direct"
-                reply_content = clean_reply
-                emit_runtime_event("token_emitted", token=reply_content)
-            else:
-                strategy = "agentic"
+            if strategy is None:
+                strategy_prefix_buffer += token_text
+                match = strategy_pattern.search(strategy_prefix_buffer)
+                if not match:
+                    # 防止异常输出导致缓冲无限增长；判定失败时降级走 agentic。
+                    if len(strategy_prefix_buffer) > 2048:
+                        logger.warning("[agent_entry] 未检测到策略标签，降级为 agentic")
+                        strategy = "agentic"
+                    continue
+
+                strategy = match.group(1).strip().lower()
+                remainder = strategy_prefix_buffer[match.end():]
+                strategy_prefix_buffer = ""
+
+                if strategy == "direct" and remainder:
+                    reply_content += remainder
+                    emit_runtime_event("token_emitted", token=remainder)
+                continue
+
+            if strategy == "direct":
+                reply_content += token_text
+                emit_runtime_event("token_emitted", token=token_text)
+
+        if strategy not in ("direct", "agentic"):
+            logger.warning("[agent_entry] 策略判定失败，降级为 agentic")
+            strategy = "agentic"
 
         logger.debug(f"[agent_entry] 决策策略: {strategy}")
 
@@ -145,11 +148,37 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
         return {"current_node": "summarize"}
 
     artifacts = state.get("execution_artifacts", [])
+    final_answer_draft = str(state.get("final_answer_draft") or "").strip()
     response_language = state.get("response_language") or "简体中文"
     response_locale = (state.get("response_locale") or "zh-CN").lower()
     emit_runtime_event("task_progress", node_name="summarize", progress=0.90, message="正在整理执行结果并生成总结")
 
     if not artifacts:
+        if final_answer_draft:
+            prompt = (
+                "你是结果整理助手。请将下面的任务结论整理为给用户的最终回复，"
+                "保留事实，不要新增臆测，使用 Markdown，语言优先使用 "
+                f"{response_language}。\n\n"
+                f"用户原始请求:\n{state['user_message']}\n\n"
+                f"任务结论草稿:\n{final_answer_draft}\n"
+            )
+
+            full_summary = ""
+            async for chunk_type, token in llm_client.stream_chat_completion(
+                [{"role": "user", "content": prompt}],
+                temperature=0.3,
+            ):
+                if chunk_type == "reasoning":
+                    emit_runtime_event("thought_emitted", token=token)
+                else:
+                    token_text = str(token or "")
+                    if not token_text:
+                        continue
+                    full_summary += token_text
+                    emit_runtime_event("token_emitted", token=token_text)
+
+            return {"summary_text": full_summary or final_answer_draft, "current_node": "summarize"}
+
         if response_locale.startswith("en"):
             no_result_summary = "No operation was executed."
         elif response_locale.startswith("ja"):
@@ -177,8 +206,11 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
             if chunk_type == "reasoning":
                 emit_runtime_event("thought_emitted", token=token)
             else:
-                full_summary += token
-                emit_runtime_event("token_emitted", token=token)
+                token_text = str(token or "")
+                if not token_text:
+                    continue
+                full_summary += token_text
+                emit_runtime_event("token_emitted", token=token_text)
 
         return {"summary_text": full_summary, "current_node": "summarize"}
 

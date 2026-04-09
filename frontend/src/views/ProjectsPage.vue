@@ -952,34 +952,91 @@ function getStatusText(status: string): string {
   font-size: 11px;
 }
 
+/* ================= 移动端适配 (断点 768px) ================= */
 @media (max-width: 768px) {
   .projects-page {
-    padding: 20px 16px 24px;
+    padding: 16px 5%; /* 使用百分比适配窄屏幕 */
   }
 
   .page-header {
-    margin-bottom: 20px;
-    padding-bottom: 12px;
-  }
-
-  .page-header h2 {
-    font-size: 18px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 24px;
   }
 
   .project-grid {
-    grid-template-columns: 1fr;
-    gap: 14px;
-    padding-bottom: 20px;
+    grid-template-columns: 1fr; /* 单列显示 */
+    gap: 16px;
+  }
+
+  .project-card {
+    min-height: auto; /* 移除最小高度，内容自适应 */
+    width: 100%;
+    box-sizing: border-box; /* 确保不溢出 */
   }
 
   .project-actions {
+    flex-direction: column;
     gap: 8px;
-    flex-wrap: wrap;
   }
 
-  .project-actions :deep(.el-button) {
-    flex: 1 1 calc(50% - 4px);
-    min-width: 0;
+  .project-actions .el-button {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+
+  /* 修复弹窗溢出 */
+  :deep(.el-dialog) {
+    width: 90% !important;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  :deep(.el-dialog__body) {
+    padding: 16px 5%;
+  }
+
+  /* 修复表单显示不全，转换为列布局 */
+  :deep(.el-form-item) {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 16px;
+  }
+
+  :deep(.el-form-item__label) {
+    width: 100% !important;
+    text-align: left;
+    margin-bottom: 8px;
+    line-height: 1.2;
+    float: none; /* 清除默认浮动 */
+  }
+
+  :deep(.el-form-item__content) {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+
+  /* 底部按钮自适应 */
+  .dialog-footer-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .dialog-footer-actions {
+    margin-left: 0;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .dialog-footer-actions .el-button {
+    flex: 1;
+    margin-left: 8px;
+  }
+
+  .dialog-footer-actions .el-button:first-child {
+    margin-left: 0;
   }
 }
 </style>

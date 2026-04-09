@@ -34,6 +34,85 @@ _MAP_METHODS_RE = re.compile(
     r"\.MapMethods\s*\(\s*\"(?P<path>[^\"]+)\"\s*,\s*new\s*\[\]\s*\{(?P<methods>[^\}]*)\}",
     re.IGNORECASE | re.DOTALL,
 )
+_HANDLER_CANDIDATE_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+
+
+def _split_top_level_args(text: str) -> list[str]:
+    args: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == quote:
+                quote = None
+            continue
+
+        if ch in {'"', "'"}:
+            quote = ch
+            buf.append(ch)
+            continue
+
+        if ch in "([{":
+            depth += 1
+            buf.append(ch)
+            continue
+
+        if ch in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+
+        if ch == "," and depth == 0:
+            part = "".join(buf).strip()
+            if part:
+                args.append(part)
+            buf = []
+            continue
+
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _normalize_handler_candidate(candidate: str | None) -> str | None:
+    if not candidate:
+        return None
+
+    text = candidate.strip().replace("?.", ".")
+    text = re.sub(r"\s+", "", text)
+    if not _HANDLER_CANDIDATE_RE.fullmatch(text):
+        return None
+    return text
+
+
+def _resolve_handler_node(handler_index: dict[str, Any], candidate: str | None) -> Any | None:
+    normalized = _normalize_handler_candidate(candidate)
+    if not normalized:
+        return None
+
+    direct = handler_index.get(normalized)
+    if direct is not None:
+        return direct
+
+    if normalized.startswith("this."):
+        direct = handler_index.get(normalized[5:])
+        if direct is not None:
+            return direct
+
+    return handler_index.get(normalized.rsplit(".", 1)[-1])
 
 
 class AspNetCoreAdapter(FrameAdapter):
@@ -53,7 +132,12 @@ class AspNetCoreAdapter(FrameAdapter):
             except Exception:
                 continue
             lowered = text.lower()
-            if "microsoft.aspnetcore" in lowered or "web sdk" in lowered:
+            if (
+                "microsoft.aspnetcore" in lowered
+                or "web sdk" in lowered
+                or "microsoft.net.sdk.web" in lowered
+                or "sdk.web" in lowered
+            ):
                 return True
 
         scanned = 0
@@ -74,6 +158,7 @@ class AspNetCoreAdapter(FrameAdapter):
         return """
 (class_declaration) @class
 (method_declaration) @method
+(local_function_statement) @local_func
 (invocation_expression) @call
 """
 
@@ -107,7 +192,25 @@ class AspNetCoreAdapter(FrameAdapter):
 
         class_nodes = [node for node, name in captures if name == "class"]
         method_nodes = [node for node, name in captures if name == "method"]
+        local_function_nodes = [node for node, name in captures if name == "local_func"]
         call_nodes = [node for node, name in captures if name == "call"]
+
+        handler_index: dict[str, Any] = {}
+
+        def _register_handler(node: Any):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                "utf-8", errors="replace"
+            )
+            if name and name not in handler_index:
+                handler_index[name] = node
+
+        for node in method_nodes:
+            _register_handler(node)
+        for node in local_function_nodes:
+            _register_handler(node)
 
         class_prefix_cache: dict[tuple[int, int], str] = {}
         for class_node in class_nodes:
@@ -163,7 +266,18 @@ class AspNetCoreAdapter(FrameAdapter):
             for hit in _MAP_CALL_RE.finditer(call_text):
                 method = hit.group("verb").upper()
                 path = normalize_path(hit.group("path"))
-                node_for_snippet = call_node.parent if call_node.parent is not None else call_node
+
+                node_for_snippet = None
+                open_paren = call_text.find("(")
+                close_paren = call_text.rfind(")")
+                if open_paren >= 0 and close_paren > open_paren:
+                    args = _split_top_level_args(call_text[open_paren + 1 : close_paren])
+                    if len(args) >= 2:
+                        node_for_snippet = _resolve_handler_node(handler_index, args[1])
+
+                if node_for_snippet is None:
+                    node_for_snippet = call_node.parent if call_node.parent is not None else call_node
+
                 snippets.append(
                     self._make_snippet(
                         method=method,
@@ -182,7 +296,17 @@ class AspNetCoreAdapter(FrameAdapter):
                 if not methods:
                     continue
 
-                node_for_snippet = call_node.parent if call_node.parent is not None else call_node
+                node_for_snippet = None
+                open_paren = call_text.find("(")
+                close_paren = call_text.rfind(")")
+                if open_paren >= 0 and close_paren > open_paren:
+                    args = _split_top_level_args(call_text[open_paren + 1 : close_paren])
+                    if len(args) >= 3:
+                        node_for_snippet = _resolve_handler_node(handler_index, args[2])
+
+                if node_for_snippet is None:
+                    node_for_snippet = call_node.parent if call_node.parent is not None else call_node
+
                 for method in methods:
                     snippets.append(
                         self._make_snippet(

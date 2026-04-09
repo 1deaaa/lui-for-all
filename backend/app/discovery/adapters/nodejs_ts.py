@@ -49,7 +49,9 @@ _IF_CONDITION_PATH_RE = re.compile(
     r"(?:req\.(?:url|path|pathname)|url|path|pathname)\s*[=!]==?\s*['\"`](?P<left>/[^'\"`]*)['\"`]|['\"`](?P<right>/[^'\"`]*)['\"`]\s*[=!]==?\s*(?:req\.(?:url|path|pathname)|url|path|pathname)",
     re.IGNORECASE,
 )
-_HANDLER_CALL_RE = re.compile(r"(?:return\s+)?(?P<handler>[A-Za-z_]\w*)\s*\(")
+_HANDLER_CALL_RE = re.compile(
+    r"(?:return\s+)?(?P<handler>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\("
+)
 
 _NEST_DECORATOR_RE = re.compile(
     r"@(?P<verb>Get|Post|Put|Delete|Patch|Options|Head|All)\s*\((?P<args>.*?)\)\s*$",
@@ -70,6 +72,37 @@ _STRING_RE = re.compile(r"['\"`]([^'\"`]+)['\"`]")
 _REQUEST_METHOD_RE = re.compile(r"RequestMethod\.([A-Za-z]+)")
 _HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
 _HTTP_METHOD_SET = set(_HTTP_METHODS)
+
+
+def _normalize_handler_candidate(raw: str | None) -> str | None:
+    if not raw:
+        return None
+
+    candidate = (raw or "").strip()
+    candidate = candidate.replace("?.", ".")
+    candidate = re.sub(r"\s+", "", candidate)
+
+    if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", candidate):
+        return None
+    return candidate
+
+
+def _resolve_handler_node(handler_index: dict[str, Any], candidate: str | None) -> Any | None:
+    normalized = _normalize_handler_candidate(candidate)
+    if not normalized:
+        return None
+
+    direct = handler_index.get(normalized)
+    if direct is not None:
+        return direct
+
+    if normalized.startswith("this."):
+        direct = handler_index.get(normalized[5:])
+        if direct is not None:
+            return direct
+
+    leaf = normalized.rsplit(".", 1)[-1]
+    return handler_index.get(leaf)
 
 
 def _find_ancestor(node: Any, wanted_types: set[str]) -> Any | None:
@@ -188,10 +221,12 @@ def _extract_path_from_condition(condition: str) -> str | None:
 
 def _extract_first_handler_call(body: str) -> str | None:
     for hit in _HANDLER_CALL_RE.finditer(body):
-        name = hit.group("handler")
-        if name in {"if", "switch", "for", "while", "return"}:
+        name = hit.group("handler") or ""
+        if name.rsplit(".", 1)[-1] in {"if", "switch", "for", "while", "return"}:
             continue
-        return name
+        normalized = _normalize_handler_candidate(name)
+        if normalized:
+            return normalized
     return None
 
 
@@ -255,6 +290,11 @@ class NodejsTypescriptAdapter(FrameAdapter):
         captures: list[tuple[Any, str]],
     ) -> dict[str, Any]:
         handlers: dict[str, Any] = {}
+
+        def _bind_handler(name: str, node: Any):
+            if name and name not in handlers:
+                handlers[name] = node
+
         for node, cap_name in captures:
             if cap_name == "func_decl":
                 name_node = node.child_by_field_name("name")
@@ -263,7 +303,26 @@ class NodejsTypescriptAdapter(FrameAdapter):
                 name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
-                handlers[name] = node
+                _bind_handler(name, node)
+                continue
+
+            if cap_name == "method":
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                _bind_handler(name, node)
+
+                class_node = _find_ancestor(node, {"class_declaration"})
+                if class_node is not None:
+                    class_name_node = class_node.child_by_field_name("name")
+                    if class_name_node is not None:
+                        class_name = source_bytes[
+                            class_name_node.start_byte : class_name_node.end_byte
+                        ].decode("utf-8", errors="replace")
+                        _bind_handler(f"{class_name}.{name}", node)
                 continue
 
             if cap_name == "var_decl":
@@ -280,7 +339,7 @@ class NodejsTypescriptAdapter(FrameAdapter):
                 name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
-                handlers[name] = value_node
+                _bind_handler(name, value_node)
         return handlers
 
     def _extract_controller_prefix(self, source_bytes: bytes, method_node: Any) -> str:
@@ -350,9 +409,7 @@ class NodejsTypescriptAdapter(FrameAdapter):
                 args_text = call_text[open_paren + 1 : close_paren]
                 args = _split_top_level_args(args_text)
                 if len(args) >= 2:
-                    candidate = args[1].strip()
-                    if re.fullmatch(r"[A-Za-z_]\w*", candidate):
-                        handler_node = handler_index.get(candidate)
+                    handler_node = _resolve_handler_node(handler_index, args[1].strip())
 
             snippet_node = call_node
             if handler_node is not None:
@@ -381,7 +438,7 @@ class NodejsTypescriptAdapter(FrameAdapter):
 
         body = if_text[if_text.find(")") + 1 :] if ")" in if_text else if_text
         handler_name = _extract_first_handler_call(body)
-        handler_node = handler_index.get(handler_name) if handler_name else None
+        handler_node = _resolve_handler_node(handler_index, handler_name)
         snippet_node = handler_node or if_node
 
         return [(method, path, snippet_node) for method in methods]
