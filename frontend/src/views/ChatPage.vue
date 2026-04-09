@@ -55,6 +55,10 @@ const readyProjects = computed(() =>
   projectStore.projects.filter((p) => p.discovery_status === 'completed')
 )
 
+const canSend = computed(() => {
+  return !!inputMessage.value.trim() && !!selectedProject.value && !sessionStore.isStreaming && !sessionCreating.value
+})
+
 // 快速切换项目
 async function selectProject(projectId: string) {
   const found = projectStore.projects.find((p) => p.id === projectId)
@@ -115,6 +119,8 @@ function handleNewChat() {
 
 // 发送消息
 async function handleSend() {
+  if (sessionStore.isStreaming || sessionCreating.value) return
+
   const text = inputMessage.value.trim()
   if (!text) return
 
@@ -130,6 +136,10 @@ async function handleSend() {
 
   inputMessage.value = ''
   await sessionStore.sendMessage(text)
+}
+
+async function handleStop() {
+  await sessionStore.stopCurrentTask()
 }
 
 function scrollToBottom(smooth = false) {
@@ -466,27 +476,44 @@ function getProjectStatusLabel(status: string): string {
       <!-- 输入区 -->
       <div class="input-area">
         <div class="input-wrapper">
-          <el-input
-            v-model="inputMessage"
-            type="textarea"
-            :rows="3"
-            :placeholder="selectedProject ? t('chat.input.placeholder', { name: selectedProject.name }) : t('chat.input.placeholderNoProject')"
-            :disabled="!selectedProject || sessionCreating"
-            @keydown.enter.ctrl.prevent="handleSend"
-            @keydown.enter.exact.prevent="handleSend"
-            resize="none"
-            class="chat-input"
-          />
-          <div class="input-toolbar">
+          <div class="input-main">
+            <el-input
+              v-model="inputMessage"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              :placeholder="selectedProject ? t('chat.input.placeholder', { name: selectedProject.name }) : t('chat.input.placeholderNoProject')"
+              :disabled="!selectedProject || sessionCreating"
+              @keydown.enter.ctrl.prevent="handleSend"
+              @keydown.enter.exact.prevent="handleSend"
+              resize="none"
+              class="chat-input"
+            />
+            <div class="input-actions">
+              <el-button
+                class="send-icon-btn"
+                type="primary"
+                :loading="sessionStore.loading || sessionCreating"
+                :disabled="!canSend"
+                :title="t('chat.input.send')"
+                @click="handleSend"
+              >
+                <Icon icon="solar:chat-round-line-bold-duotone" class="send-icon" />
+              </el-button>
+
+              <el-button
+                v-if="sessionStore.isStreaming || sessionStore.stopLoading"
+                class="stop-icon-btn"
+                :loading="sessionStore.stopLoading"
+                :disabled="!sessionStore.isStreaming"
+                :title="t('chat.input.stop')"
+                @click="handleStop"
+              >
+                <Icon icon="solar:shield-warning-bold-duotone" class="stop-icon" />
+              </el-button>
+            </div>
+          </div>
+          <div class="input-toolbar" v-if="!isMobile">
             <span class="input-hint">{{ t('chat.input.hint') }}</span>
-            <el-button
-              type="primary"
-              :loading="sessionStore.loading || sessionCreating"
-              :disabled="!inputMessage.trim() || !selectedProject"
-              @click="handleSend"
-            >
-              {{ t('chat.input.send') }}
-            </el-button>
           </div>
         </div>
       </div>
@@ -1263,6 +1290,17 @@ function getProjectStatusLabel(status: string): string {
   flex-direction: column;
 }
 
+.input-main {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+
+.chat-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .input-wrapper:focus-within {
   box-shadow: 0 8px 32px rgba(0,0,0,0.08);
   border-color: #a3a3a3;
@@ -1277,19 +1315,60 @@ function getProjectStatusLabel(status: string): string {
   line-height: 1.6;
   resize: none;
   background: transparent;
+  overflow-y: auto !important;
 }
 
 .input-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 10px 16px;
   background: #fdfdfd;
+  border-top: 1px solid var(--border-color-light, #e5e5e5);
 }
 
 .input-hint {
   font-size: 12px;
   color: #a3a3a3;
+}
+
+.input-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px;
+  border-left: 1px solid var(--border-color-light, #e5e5e5);
+  background: #fdfdfd;
+}
+
+.send-icon-btn,
+.stop-icon-btn {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-radius: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.send-icon,
+.stop-icon {
+  font-size: 18px;
+}
+
+.stop-icon-btn {
+  color: #b42318;
+  border-color: #fecdca;
+  background: #fef3f2;
+}
+
+.stop-icon-btn:hover,
+.stop-icon-btn:focus {
+  color: #912018;
+  border-color: #fda29b;
+  background: #fee4e2;
 }
 
 /* ============ 移动端响应式布局适配 ============ */
@@ -1314,6 +1393,23 @@ function getProjectStatusLabel(status: string): string {
 
   .input-area {
     padding: 12px 16px 16px;
+  }
+
+  .input-actions {
+    padding: 10px;
+    gap: 6px;
+  }
+
+  .send-icon-btn,
+  .stop-icon-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+  }
+
+  .send-icon,
+  .stop-icon {
+    font-size: 16px;
   }
 
   .chat-padding-mobile {

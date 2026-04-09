@@ -3,6 +3,7 @@
 处理会话创建、消息发送与 SSE 流式执行
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, UTC, timedelta
@@ -26,6 +27,22 @@ from app.repositories.task_repository import TaskRepository
 from app.schemas.event import format_sse_event
 
 router = APIRouter()
+
+
+# 运行中流任务注册表：task_run_id -> asyncio.Task
+_running_stream_tasks: dict[str, asyncio.Task[Any]] = {}
+# 停止请求集合：支持“先请求停止，后进入执行”的场景
+_stop_requested_task_runs: set[str] = set()
+
+
+def request_stop_task_run(task_run_id: str) -> bool:
+    """请求停止指定 task_run，返回是否成功触发了运行中任务 cancel。"""
+    _stop_requested_task_runs.add(task_run_id)
+    task = _running_stream_tasks.get(task_run_id)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
 
 
 def _resolve_response_language(locale: str | None) -> tuple[str, str]:
@@ -417,8 +434,25 @@ async def stream_events(
                 task_repository = TaskRepository(db)
                 task_run = await task_repository.get_by_id(task_run_id)
                 if task_run:
+                    if task_run_id in _stop_requested_task_runs:
+                        task_run.status = "cancelled"
+                        task_run.error = "任务已由用户停止"
+                        task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                        await db.commit()
+                        yield format_sse_event(
+                            ErrorEvent(
+                                session_id=session_id,
+                                task_run_id=task_run_id,
+                                error_code="TASK_CANCELLED",
+                                error_message="任务已由用户停止",
+                            )
+                        )
+                        return
                     task_run.status = "running"
                     await db.commit()
+
+            if task_run_id:
+                _running_stream_tasks[task_run_id] = asyncio.current_task()
 
             from langgraph.types import Command
             is_resume = bool(resume_write_id or resume_approved_ids is not None)
@@ -449,6 +483,8 @@ async def stream_events(
                 config,
                 stream_mode=["custom", "updates"],
             ):
+                if task_run_id in _stop_requested_task_runs:
+                    raise asyncio.CancelledError("task stop requested")
 
                 if stream_type == "custom":
                     event_type = payload.get("event")
@@ -804,6 +840,24 @@ async def stream_events(
                     summary=final_state.get("summary_text", "任务完成"),
                 )
             )
+        except asyncio.CancelledError:
+            async with async_session() as db:
+                task_run = await TaskRepository(db).get_by_id(task_run_id)
+                if task_run and task_run.status not in ("completed", "failed", "cancelled"):
+                    task_run.status = "cancelled"
+                    task_run.error = "任务已由用户停止"
+                    task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                    await db.commit()
+
+            yield format_sse_event(
+                ErrorEvent(
+                    session_id=session_id,
+                    task_run_id=task_run_id,
+                    error_code="TASK_CANCELLED",
+                    error_message="任务已由用户停止",
+                )
+            )
+            return
         except Exception as e:
             async with async_session() as db:
                 task_run = await TaskRepository(db).get_by_id(task_run_id)
@@ -820,6 +874,10 @@ async def stream_events(
                     error_message=str(e),
                 )
             )
+        finally:
+            if task_run_id:
+                _running_stream_tasks.pop(task_run_id, None)
+                _stop_requested_task_runs.discard(task_run_id)
 
     return StreamingResponse(
         event_generator(),
@@ -913,6 +971,50 @@ async def delete_session(
 
 class ApprovalActionRequest(BaseModel):
     action: str = Field(pattern="^(approve|reject)$")
+
+
+class StopTaskRunRequest(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/{session_id}/task-runs/{task_run_id}/stop")
+async def stop_task_run(
+    session_id: str,
+    task_run_id: str,
+    request: StopTaskRunRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """停止运行中的任务（实际触发流任务取消并落库状态）。"""
+    session = await SessionRepository(db).get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    task_run = await TaskRepository(db).get_by_id(task_run_id)
+    if not task_run:
+        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    if task_run.session_id != session_id:
+        raise HTTPException(status_code=400, detail="任务与会话不匹配")
+
+    if task_run.status in ("completed", "failed", "cancelled"):
+        return {
+            "status": task_run.status,
+            "task_run_id": task_run_id,
+            "stream_cancelled": False,
+            "message": "任务已结束",
+        }
+
+    stream_cancelled = request_stop_task_run(task_run_id)
+    task_run.status = "cancelled"
+    task_run.error = request.reason or "任务已由用户停止"
+    task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
+    await db.commit()
+
+    return {
+        "status": "cancelled",
+        "task_run_id": task_run_id,
+        "stream_cancelled": stream_cancelled,
+        "message": "停止请求已发送",
+    }
 
 
 @router.post("/{session_id}/approvals/{approval_id}")

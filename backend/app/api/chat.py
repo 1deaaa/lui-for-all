@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.sessions import stream_events
+from app.api.sessions import request_stop_task_run, stream_events
 from app.db import get_session as get_db_session
 from app.models.audit import Approval, HttpExecution
 from app.models.session import Message, Session
@@ -44,6 +44,13 @@ class ChatResumeRequest(BaseModel):
     decided_ids: list[str] | None = Field(default=None, description="本次审批面板涉及的全部 write_id，用于记录审批结果")
     batch_id: str | None = Field(default=None, description="审批批次 ID")
     locale: str | None = Field(default=None, description="可选，响应语言代码，例如 zh-CN/en-US/ja-JP")
+
+
+class ChatStopTaskRequest(BaseModel):
+    """停止任务请求。"""
+
+    session_id: str | None = Field(default=None, description="可选，会话 ID（用于一致性校验）")
+    reason: str | None = Field(default=None, description="停止原因")
 
 
 def _serialize_message(message: Message) -> dict:
@@ -445,4 +452,41 @@ async def chat_task_http_executions(
             for e in executions
         ],
         "total": total,
+    }
+
+
+@router.post("/task-runs/{task_run_id}/stop")
+async def chat_stop_task_run(
+    task_run_id: str,
+    request: ChatStopTaskRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """停止运行中的任务（chat 协议入口）。"""
+    task_repo = TaskRepository(db)
+    task_run = await task_repo.get_by_id(task_run_id)
+    if not task_run:
+        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+
+    if request.session_id and task_run.session_id != request.session_id:
+        raise HTTPException(status_code=400, detail="任务与会话不匹配")
+
+    if task_run.status in ("completed", "failed", "cancelled"):
+        return {
+            "status": task_run.status,
+            "task_run_id": task_run_id,
+            "stream_cancelled": False,
+            "message": "任务已结束",
+        }
+
+    stream_cancelled = request_stop_task_run(task_run_id)
+    task_run.status = "cancelled"
+    task_run.error = request.reason or "任务已由用户停止"
+    task_run.completed_at = datetime.now(UTC).replace(tzinfo=None)
+    await db.commit()
+
+    return {
+        "status": "cancelled",
+        "task_run_id": task_run_id,
+        "stream_cancelled": stream_cancelled,
+        "message": "停止请求已发送",
     }

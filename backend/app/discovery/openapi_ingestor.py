@@ -35,7 +35,48 @@ class OpenAPIIngestor:
             response.raise_for_status()
             return response.json()
 
-    def parse_parameter(self, param: dict[str, Any]) -> ParameterSchema:
+    def _resolve_component_ref(self, ref: str, component_map: dict[str, Any]) -> dict[str, Any]:
+        """解析 components 引用并返回对象副本。"""
+        if not ref:
+            return {}
+        name = ref.split("/")[-1]
+        resolved = component_map.get(name)
+        return dict(resolved) if isinstance(resolved, dict) else {}
+
+    def _resolve_parameter(self, param: dict[str, Any], parameter_components: dict[str, Any]) -> dict[str, Any]:
+        """解析参数对象（支持 $ref）。"""
+        if not isinstance(param, dict):
+            return {}
+
+        resolved = dict(param)
+        ref = resolved.get("$ref")
+        if ref:
+            base = self._resolve_component_ref(ref, parameter_components)
+            # 引用对象上可局部覆盖字段，后写覆盖前写。
+            resolved = {**base, **{k: v for k, v in resolved.items() if k != "$ref"}}
+        return resolved
+
+    def _resolve_request_body(
+        self,
+        request_body: dict[str, Any],
+        request_body_components: dict[str, Any],
+    ) -> dict[str, Any]:
+        """解析请求体对象（支持 $ref）。"""
+        if not isinstance(request_body, dict):
+            return {}
+
+        resolved = dict(request_body)
+        ref = resolved.get("$ref")
+        if ref:
+            base = self._resolve_component_ref(ref, request_body_components)
+            resolved = {**base, **{k: v for k, v in resolved.items() if k != "$ref"}}
+        return resolved
+
+    def parse_parameter(
+        self,
+        param: dict[str, Any],
+        parameter_components: dict[str, Any],
+    ) -> ParameterSchema:
         """解析参数定义"""
         location_map = {
             "path": ParameterLocation.PATH,
@@ -44,19 +85,30 @@ class OpenAPIIngestor:
             "cookie": ParameterLocation.COOKIE,
         }
 
-        schema = param.get("schema", {})
+        resolved_param = self._resolve_parameter(param, parameter_components)
+
+        schema = resolved_param.get("schema", {})
         type_hint = self._schema_type_hint(schema)
+        location = location_map.get(
+            resolved_param.get("in", "query"), ParameterLocation.QUERY
+        )
+        required = bool(resolved_param.get("required", False))
+        if location == ParameterLocation.PATH:
+            # OpenAPI 规范要求 path 参数必填；部分文档会漏写 required。
+            required = True
+
+        name = resolved_param.get("name", "")
+        if not name and resolved_param.get("$ref"):
+            name = str(resolved_param["$ref"]).split("/")[-1]
 
         return ParameterSchema(
-            name=param.get("name", ""),
-            location=location_map.get(
-                param.get("in", "query"), ParameterLocation.QUERY
-            ),
-            required=param.get("required", False),
+            name=name,
+            location=location,
+            required=required,
             type_hint=type_hint,
-            description=param.get("description"),
-            default=param.get("default"),
-            example=param.get("example"),
+            description=resolved_param.get("description"),
+            default=resolved_param.get("default", schema.get("default")),
+            example=resolved_param.get("example", schema.get("example")),
         )
 
     def _normalize_type_hint(self, raw_type: str | None) -> str:
@@ -173,11 +225,21 @@ class OpenAPIIngestor:
         return []
 
     def parse_request_body(
-        self, request_body: dict[str, Any], schemas: dict[str, Any]
+        self,
+        request_body: dict[str, Any],
+        schemas: dict[str, Any],
+        request_body_components: dict[str, Any],
     ) -> tuple[str | None, list[ParameterSchema]]:
         """解析请求体：返回 (schema_ref_name, 展开字段列表)"""
-        content = request_body.get("content", {})
+        resolved_request_body = self._resolve_request_body(request_body, request_body_components)
+
+        content = resolved_request_body.get("content", {})
+        if not isinstance(content, dict):
+            return None, []
+
         for content_type, content_schema in content.items():
+            if not isinstance(content_schema, dict):
+                continue
             if not (
                 content_type.startswith("application/json")
                 or content_type.startswith("application/x-www-form-urlencoded")
@@ -239,18 +301,32 @@ class OpenAPIIngestor:
         operation: dict[str, Any],
         path_params: list[dict[str, Any]],
         schemas: dict[str, Any],
+        parameter_components: dict[str, Any],
+        request_body_components: dict[str, Any],
     ) -> RouteInfo:
         """解析单个路由"""
-        # 合并路径参数和操作参数
-        all_params = path_params + operation.get("parameters", [])
-        parameters = [self.parse_parameter(p) for p in all_params]
+        # 合并路径参数和操作参数：operation 级定义覆盖 path 级同名参数。
+        merged_params: dict[tuple[str, str], dict[str, Any]] = {}
+        for raw_param in list(path_params) + list(operation.get("parameters", [])):
+            resolved_param = self._resolve_parameter(raw_param, parameter_components)
+            if not resolved_param:
+                continue
+            key = (str(resolved_param.get("name", "")), str(resolved_param.get("in", "query")))
+            merged_params[key] = resolved_param
+        parameters = [
+            self.parse_parameter(param, parameter_components)
+            for param in merged_params.values()
+            if param.get("name")
+        ]
 
         # 解析请求体（含字段展开）
         request_body_ref = None
         request_body_fields: list = []
         if "requestBody" in operation:
             request_body_ref, request_body_fields = self.parse_request_body(
-                operation["requestBody"], schemas
+                operation["requestBody"],
+                schemas,
+                request_body_components,
             )
 
         # 解析响应（含 SSE 检测）
@@ -279,8 +355,11 @@ class OpenAPIIngestor:
         """执行 OpenAPI 摄取"""
         openapi_doc = await self.fetch_openapi()
 
-        # 提取 schemas
-        schemas = openapi_doc.get("components", {}).get("schemas", {})
+        # 提取 components
+        components = openapi_doc.get("components", {})
+        schemas = components.get("schemas", {})
+        parameter_components = components.get("parameters", {})
+        request_body_components = components.get("requestBodies", {})
 
         # 解析路由
         routes: list[RouteInfo] = []
@@ -294,7 +373,13 @@ class OpenAPIIngestor:
             for method in ["get", "post", "put", "delete", "patch", "head", "options"]:
                 if method in path_item:
                     route = self.parse_route(
-                        path, method, path_item[method], path_params, schemas
+                        path,
+                        method,
+                        path_item[method],
+                        path_params,
+                        schemas,
+                        parameter_components,
+                        request_body_components,
                     )
                     routes.append(route)
 

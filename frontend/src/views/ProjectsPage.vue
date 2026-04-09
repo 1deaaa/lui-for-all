@@ -739,9 +739,13 @@ function getStatusText(status: string): string {
 <style scoped>
 .projects-page {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 32px 40px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .page-header {
@@ -946,5 +950,36 @@ function getStatusText(status: string): string {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .projects-page {
+    padding: 20px 16px 24px;
+  }
+
+  .page-header {
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+  }
+
+  .page-header h2 {
+    font-size: 18px;
+  }
+
+  .project-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding-bottom: 20px;
+  }
+
+  .project-actions {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .project-actions :deep(.el-button) {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
 }
 </style>

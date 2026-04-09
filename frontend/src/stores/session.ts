@@ -32,6 +32,8 @@ export const useSessionStore = defineStore('session', () => {
   const streamingMessageId = ref<string | null>(null)  // 正文消息 ID
   const streamingThoughtId = ref<string | null>(null)   // 推理消息 ID
   const currentTaskRunId = ref<string | null>(null)
+  const stopLoading = ref(false)
+  const stopRequested = ref(false)
   // 当前任务流式期间收集的 HTTP 调用记录
   const pendingHttpCalls = ref<NonNullable<import('@/vite-env.d').Message['metadata']>['http_calls']>([])
   // 滚动回调（由 ChatPage 注入）
@@ -131,6 +133,41 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function stopCurrentTask(reason?: string) {
+    const sessionId = currentSession.value?.id
+    const taskRunId = currentTaskRunId.value || currentTaskRun.value?.id || null
+
+    if (!sessionId || !taskRunId || stopLoading.value) {
+      return false
+    }
+
+    stopLoading.value = true
+    try {
+      await axios.post(`/api/sessions/${sessionId}/task-runs/${taskRunId}/stop`, {
+        reason: reason || t('sessionStore.stopByUserReason'),
+      })
+      stopRequested.value = true
+      progressMessage.value = t('sessionStore.stopRequested')
+      pushRuntimeEvent({
+        id: `stop-${Date.now()}-${Math.random()}`,
+        type: 'task_stop_requested',
+        title: t('sessionStore.stopRequested'),
+        detail: t('sessionStore.stopProcessing'),
+        status: 'running',
+        created_at: new Date().toISOString(),
+      })
+      return true
+    } catch (e: any) {
+      error.value = t('sessionStore.stopRequestFailed', {
+        reason: e?.response?.data?.detail || e?.message || t('common.unknown'),
+      })
+      stopRequested.value = false
+      return false
+    } finally {
+      stopLoading.value = false
+    }
+  }
+
   function pushRuntimeEvent(event: RuntimeEventItem) {
     runtimeEvents.value.push(event)
     if (runtimeEvents.value.length > 30) {
@@ -170,6 +207,8 @@ export const useSessionStore = defineStore('session', () => {
     
     eventSource.value = new EventSource(url)
     isStreaming.value = true
+    stopRequested.value = false
+    stopLoading.value = false
     progressPercent.value = 0
     progressMessage.value = resumeOpts ? t('sessionStore.approvedActionRunning') : t('sessionStore.requestAccepted')
     runtimeEvents.value = []
@@ -235,6 +274,13 @@ export const useSessionStore = defineStore('session', () => {
       // 如果 isStreaming 已经是 false，说明已通过 approval_pending 事件正常处理，不当作错误
       if (!isStreaming.value) return
 
+      // 主动停止任务后，SSE 被后端关闭属于正常行为
+      if (stopRequested.value) {
+        closeEventStream()
+        progressMessage.value = t('sessionStore.taskCancelled')
+        return
+      }
+
       console.error('SSE 连接错误:', e)
 
       // 检查是否是因为审批中断导致的正常关闭
@@ -277,6 +323,7 @@ export const useSessionStore = defineStore('session', () => {
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'running' }
           : currentTaskRun.value
+        stopRequested.value = false
         progressMessage.value = t('sessionStore.taskStarted')
         streamingMessageId.value = null
         break
@@ -418,6 +465,7 @@ export const useSessionStore = defineStore('session', () => {
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'completed', summary_text: event.summary }
           : currentTaskRun.value
+        stopRequested.value = false
         progressPercent.value = 100
         progressMessage.value = t('sessionStore.taskCompleted')
         isStreaming.value = false
@@ -504,6 +552,32 @@ export const useSessionStore = defineStore('session', () => {
         if ((event as any).error_code === 'APPROVAL_REQUIRED') {
             break
         }
+
+        if ((event as any).error_code === 'TASK_CANCELLED') {
+          const cancelMessage = event.error_message || t('sessionStore.taskCancelled')
+          currentTaskRun.value = currentTaskRun.value
+            ? { ...currentTaskRun.value, status: 'cancelled', error: cancelMessage }
+            : currentTaskRun.value
+          error.value = null
+          progressPercent.value = 0
+          progressMessage.value = t('sessionStore.taskCancelled')
+          stopRequested.value = false
+          isStreaming.value = false
+          streamingMessageId.value = null
+          streamingThoughtId.value = null
+          pushRuntimeEvent({
+            id: `cancelled-${Date.now()}-${Math.random()}`,
+            type: 'task_cancelled',
+            title: t('sessionStore.taskCancelled'),
+            detail: cancelMessage,
+            status: 'cancelled',
+            created_at: new Date().toISOString(),
+          })
+          closeEventStream()
+          break
+        }
+
+        stopRequested.value = false
         error.value = event.error_message || t('sessionStore.taskError')
         currentTaskRun.value = currentTaskRun.value
           ? { ...currentTaskRun.value, status: 'failed', error: error.value || undefined }
@@ -532,6 +606,7 @@ export const useSessionStore = defineStore('session', () => {
       eventSource.value = null
     }
     isStreaming.value = false
+    stopLoading.value = false
   }
 
   const HISTORY_CACHE_PREFIX = 'lui_history_'
@@ -662,6 +737,8 @@ export const useSessionStore = defineStore('session', () => {
     runtimeEvents.value = []
     runtimeEventsByTaskRun.value = {}
     currentTaskRunId.value = null
+    stopLoading.value = false
+    stopRequested.value = false
   }
 
   return {
@@ -678,6 +755,8 @@ export const useSessionStore = defineStore('session', () => {
     progressMessage,
     runtimeEvents,
     runtimeEventsByTaskRun,
+    stopLoading,
+    stopRequested,
     messageCount,
     createSession,
     sendMessage,
@@ -688,6 +767,7 @@ export const useSessionStore = defineStore('session', () => {
     clearSession,
     startEventStream,
     closeEventStream,
+    stopCurrentTask,
     markApprovalResolved,
     registerScrollFn,
   }
