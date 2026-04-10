@@ -8,6 +8,7 @@ backend/app/llm/agent_matchbox/.env
 __pycache__/
 *.py[cod]
 *$py.class
+*.sln
 
 # C extensions
 *.so
