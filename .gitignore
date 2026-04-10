@@ -1,5 +1,9 @@
 # 包含密钥文件 绝对禁止去掉此项。
 .env
+# 显式声明：后端全局配置与 Matchbox 运行密钥文件都不入库
+backend/.env
+workspace/agent_matchbox/.env
+backend/app/llm/agent_matchbox/.env
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

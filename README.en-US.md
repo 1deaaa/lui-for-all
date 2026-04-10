@@ -192,14 +192,26 @@ git clone https://github.com/your-org/lui-for-all.git
 cd lui-for-all
 ```
 
-### 2. Backend setup
+### 2. Backend setup and config
 
 ```bash
 conda create -n lui python=3.11 -y
 conda activate lui
 pip install -r backend/requirements.txt
+
+# macOS/Linux
 cp backend/.env.example backend/.env
+
+# Windows PowerShell
+# Copy-Item backend/.env.example backend/.env
 ```
+
+Important config notes:
+
+- `backend/.env` is for global LUI settings (`LUI_*`) such as `LUI_DB_PATH` and `LUI_MCP_API_TOKEN`.
+- Matchbox master key `LLM_KEY` is not read from `backend/.env`.
+- On first startup, the system creates and reads `workspace/agent_matchbox/.env` for `LLM_KEY`.
+- If you need a custom Matchbox home, set system env var `AGENT_MATCHBOX_HOME`.
 
 ### 3. Frontend setup
 
@@ -218,6 +230,16 @@ conda run -n lui uvicorn app.main:app --reload --port 6689
 # Terminal 2
 cd frontend
 pnpm dev
+```
+
+Optional health check after startup:
+
+```bash
+# macOS/Linux
+curl http://localhost:6689/health
+
+# Windows PowerShell
+Invoke-RestMethod http://localhost:6689/health
 ```
 
 ### 5. Import your first project
@@ -245,6 +267,12 @@ If your target system does not expose OpenAPI, you can still onboard by providin
 - [ ] Capability graph visual management
 - [ ] Multi-tenant permission system
 - [ ] Private deployment guide
+
+## License
+
+Licensed under the Apache License 2.0. See `LICENSE`.
+
+Copyright (c) 2026 Mournight (AIdeaStudio)
 
 <div align="center">
 

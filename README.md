@@ -299,7 +299,7 @@ git clone https://github.com/your-org/lui-for-all.git
 cd lui-for-all
 ```
 
-### 2. 后端安装
+### 2. 后端安装与配置
 
 ```bash
 # 创建并激活 Conda 环境
@@ -309,10 +309,19 @@ conda activate lui
 # 安装依赖
 pip install -r backend/requirements.txt
 
-# 复制配置文件
+# 复制配置文件（macOS/Linux）
 cp backend/.env.example backend/.env
-# 编辑 .env，填写 LLM API Key 和目标项目地址
+
+# Windows PowerShell 可用：
+# Copy-Item backend/.env.example backend/.env
 ```
+
+配置说明（重要）：
+
+- `backend/.env`：用于 LUI 全局配置（`LUI_*`），例如 `LUI_DB_PATH`、`LUI_MCP_API_TOKEN`。
+- Matchbox 主密钥 `LLM_KEY` 不在 `backend/.env` 中读取。
+- 首次启动后，系统会自动在 `workspace/agent_matchbox/.env` 生成并读取 `LLM_KEY`。
+- 如需自定义 Matchbox 目录，请在系统环境变量中设置 `AGENT_MATCHBOX_HOME`。
 
 ### 3. 前端安装
 
@@ -331,6 +340,16 @@ conda run -n lui uvicorn app.main:app --reload --port 6689
 # 终端 2：启动前端
 cd frontend
 pnpm dev
+```
+
+启动后可先做健康检查：
+
+```bash
+# macOS/Linux
+curl http://localhost:6689/health
+
+# Windows PowerShell
+Invoke-RestMethod http://localhost:6689/health
 ```
 
 ### 5. 接入你的第一个项目
@@ -426,6 +445,14 @@ lui-for-all/
 - [ ] 能力地图可视化管理界面
 - [ ] 多租户与权限体系
 - [ ] 私有化部署文档
+
+---
+
+## 开源许可
+
+本项目采用 Apache License 2.0，详见 `LICENSE`。
+
+Copyright (c) 2026 Mournight (AIdeaStudio)
 
 ---
 
