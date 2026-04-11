@@ -3,6 +3,7 @@
 负责读取与保存后端 .env 中的全局应用配置
 """
 
+import os
 from pathlib import Path
 
 from dotenv import set_key
@@ -46,18 +47,23 @@ async def get_runtime_settings():
 async def save_runtime_settings(payload: SettingsPayload):
     """保存系统设置到 backend/.env"""
     env_path = _ensure_env_file()
+    mcp_api_token = payload.mcp_api_token or ""
+    safety_default_action = payload.safety_default_action or "confirm"
+
+    os.environ["LUI_MCP_API_TOKEN"] = mcp_api_token
+    os.environ["LUI_SAFETY_DEFAULT_ACTION"] = safety_default_action
 
     set_key(
         str(env_path),
         "LUI_MCP_API_TOKEN",
-        payload.mcp_api_token or "",
+        mcp_api_token,
         quote_mode="never",
     )
 
     set_key(
         str(env_path),
         "LUI_SAFETY_DEFAULT_ACTION",
-        payload.safety_default_action or "confirm",
+        safety_default_action,
         quote_mode="never",
     )
 

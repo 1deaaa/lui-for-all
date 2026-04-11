@@ -275,6 +275,26 @@ async function saveSettings(silent = false) {
   }
 }
 
+async function saveMcpToken(silent = false) {
+  if (loading.value) return
+
+  saving.value = true
+  try {
+    await axios.put('/api/settings', {
+      safety_default_action: settings.value.safety_default_action,
+      mcp_api_token: settings.value.mcp_api_token,
+    })
+
+    if (!silent) {
+      ElMessage.success(t('settings.messages.saved'))
+    }
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    saving.value = false
+  }
+}
+
 function formatApiBase() {
   let url = settings.value.llm_api_base.trim()
   if (!url) return
@@ -543,7 +563,7 @@ function handleModelSelectVisible(visible: boolean) {
 
 async function generateMcpToken() {
   settings.value.mcp_api_token = crypto.randomUUID().replace(/-/g, '')
-  await saveSettings(true)
+  await saveMcpToken(true)
   ElMessage.success(t('settings.messages.tokenGenerated'))
 }
 
@@ -892,7 +912,7 @@ onMounted(loadSettings)
                 show-password
                 autocomplete="off"
                 :placeholder="t('settings.mcp.tokenPlaceholder')"
-                @change="() => saveSettings(false)"
+                @change="() => saveMcpToken(false)"
               >
                 <template #append>
                   <el-button @click="generateMcpToken">
