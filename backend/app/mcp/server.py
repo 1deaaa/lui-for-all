@@ -39,7 +39,9 @@ mcp = FastMCP(
         "你正在连接到 LUI-for-All 自然语言接口层。\n"
         "这个服务让你能够通过自然语言与已导入的业务系统进行交互。\n\n"
         "推荐工作流：\n"
-        "1. 先调用 list_projects 确认可用的 project_id\n"
+        "1. 在会话开始时调用一次 list_projects，确认可用的 project_id\n"
+        "   - 除非用户明确要求刷新，否则不要重复调用 list_projects\n"
+        "   - 如果 list_projects 返回空列表，请停止工具重试，并直接告知用户先导入项目\n"
         "2. 调用 chat 发送自然语言指令；系统会自动理解意图、选择接口、执行并汇总返回\n"
         "3. 若需多轮对话，将上一步返回的 session_id 传入下次 chat 调用\n"
         "4. 调用 get_session_history 可回看历史记录\n\n"
@@ -153,7 +155,8 @@ def _build_route_hints_by_route_id(routes: list[dict[str, Any]] | None) -> dict[
     description=(
         "列出所有已导入到 LUI-for-All 的项目，包含项目 ID、名称、描述和能力数量。"
         "这些项目由LUI-for-All内置的管理 AI 托管，旨在绕过复杂的 GUI，实现高效管理项目。"
-        "在调用 chat 工具前，应先调用此工具获取有效的 project_id。"
+        "在调用 chat 工具前，通常只需调用一次此工具获取有效的 project_id。"
+        "若返回空列表，应提示用户先导入项目，不要重复调用本工具。"
     ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
 )
@@ -178,6 +181,9 @@ async def list_projects() -> list[dict]:
                     "capability_count": len(caps),
                 }
             )
+        # Prefer actionable projects first so generic MCP clients don't keep retrying empty-capability entries.
+        result.sort(key=lambda item: int(item.get("capability_count") or 0), reverse=True)
+        logger.info("[mcp.list_projects] returned %d projects", len(result))
         return result
 
 
