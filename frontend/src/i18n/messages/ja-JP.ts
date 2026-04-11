@@ -363,9 +363,15 @@ const jaJP = {
       copyJson: 'JSON をコピー',
       instructions:
         'VS Code の Cline / Roo Code などでは接続タイプを streamable-http に設定し、このゲートウェイに接続してください。',
+      transportMode: 'この MCP エンドポイントは Streamable HTTP（Stream HTTP）のみ対応です。SSE は非対応です。',
+      manualFieldType: '接続タイプ：',
+      manualFieldUrl: 'URL：',
+      manualFieldHeaderName: 'ヘッダー Key：',
+      manualFieldHeaderValue: 'ヘッダー Value：',
+      manualFieldSse: 'SSE URL（非対応、404）：',
       gatewayAddress: '現在のゲートウェイ URL:',
       gatewayNote:
-        '開発モード（5173）ではバックエンドポート（既定 6689）へ接続し、デプロイ時は同一オリジンを使用します。防御トークン有効時は Bearer ヘッダーを確認してください。',
+        '必ず /mcp/（末尾スラッシュ付き）を使ってください。開発モード（5173）ではバックエンドポート（既定 6689）へ接続し、デプロイ時は同一オリジンを使用します。防御トークン有効時は Bearer ヘッダーが必須です。',
       tokenFillHint: 'ここにトークンを入力',
     },
     dialogs: {

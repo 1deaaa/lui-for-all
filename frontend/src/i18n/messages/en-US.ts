@@ -364,9 +364,15 @@ const enUS = {
       copyJson: 'Copy Full JSON',
       instructions:
         'In VS Code extensions such as Cline or Roo Code, set connection type to streamable-http and bridge this remote gateway:',
+      transportMode: 'This MCP endpoint supports Streamable HTTP (Stream HTTP) only. SSE is not supported.',
+      manualFieldType: 'Connection type:',
+      manualFieldUrl: 'URL:',
+      manualFieldHeaderName: 'Header key:',
+      manualFieldHeaderValue: 'Header value:',
+      manualFieldSse: 'SSE URL (unsupported, returns 404):',
       gatewayAddress: 'Current gateway URL:',
       gatewayNote:
-        'In development mode (5173), this sample points to backend port (default 6689). In deployment mode, it uses current same-origin host. Ensure correct Bearer header is enabled if gateway defense token is configured.',
+        'Prefer /mcp/ (with trailing slash). In development mode (5173), this sample points to backend port (default 6689). In deployment mode, it uses current same-origin host. If gateway defense token is enabled, Bearer header is required.',
       tokenFillHint: 'Put your token here',
     },
     dialogs: {

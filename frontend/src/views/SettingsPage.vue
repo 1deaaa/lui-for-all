@@ -598,6 +598,7 @@ function resolveMcpGatewayOrigin(): string {
 
 const mcpGatewayOrigin = computed(() => resolveMcpGatewayOrigin())
 const mcpGatewayUrl = computed(() => `${mcpGatewayOrigin.value}/mcp/`)
+const mcpSseUrl = computed(() => `${mcpGatewayOrigin.value}/mcp/sse`)
 const mcpJsonExample = computed(() => {
   const token = settings.value.mcp_api_token || t('settings.mcp.tokenFillHint')
   const url = mcpGatewayUrl.value
@@ -936,6 +937,19 @@ onMounted(loadSettings)
                   </div>
                   <p>{{ t('settings.mcp.instructions') }}</p>
                   <p class="instruction-note">
+                    <Icon icon="lucide:shield-check" /> {{ t('settings.mcp.transportMode') }}
+                  </p>
+                  <ul class="manual-fields">
+                    <li>{{ t('settings.mcp.manualFieldType') }}<code>Stream HTTP / streamable-http</code></li>
+                    <li>{{ t('settings.mcp.manualFieldUrl') }}<code>{{ mcpGatewayUrl }}</code></li>
+                    <li>{{ t('settings.mcp.manualFieldHeaderName') }}<code>Authorization</code></li>
+                    <li>
+                      {{ t('settings.mcp.manualFieldHeaderValue') }}
+                      <code>Bearer {{ settings.mcp_api_token || t('settings.mcp.tokenFillHint') }}</code>
+                    </li>
+                    <li>{{ t('settings.mcp.manualFieldSse') }}<code>{{ mcpSseUrl }}</code></li>
+                  </ul>
+                  <p class="instruction-note">
                     <Icon icon="lucide:server" /> {{ t('settings.mcp.gatewayAddress') }}<code>{{ mcpGatewayUrl }}</code>
                   </p>
                   <div class="code-block" v-html="highlightJson(mcpJsonExample)"></div>
@@ -1273,6 +1287,19 @@ onMounted(loadSettings)
   color: var(--el-text-color-placeholder) !important;
   margin-top: 12px !important;
   margin-bottom: 0 !important;
+}
+.manual-fields {
+  margin: 10px 0 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.7;
+}
+.manual-fields li {
+  margin: 4px 0;
+}
+.manual-fields code {
+  margin-left: 6px;
 }
 .code-block {
   background: #f8f9fa;

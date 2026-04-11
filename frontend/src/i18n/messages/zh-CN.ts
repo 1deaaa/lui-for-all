@@ -362,9 +362,15 @@ const zhCN = {
       clientConfigTitle: 'cline_mcp_settings.json 等配置文件',
       copyJson: '复制完整 JSON',
       instructions: '在 VS Code 的 Cline 或 Roo Code 等多模型插件中，建议将连接类型设置为 streamable-http，并桥接本远程网关：',
+      transportMode: '当前 MCP 端点仅支持 Streamable HTTP（Stream HTTP），不支持 SSE。',
+      manualFieldType: '连接类型：',
+      manualFieldUrl: 'URL：',
+      manualFieldHeaderName: '请求头 Key：',
+      manualFieldHeaderValue: '请求头 Value：',
+      manualFieldSse: 'SSE 地址（不可用，返回 404）：',
       gatewayAddress: '当前示例网关地址：',
       gatewayNote:
-        '开发模式下（5173）示例会自动指向后端端口（默认 6689）；部署模式下示例会自动使用当前同源端口。请确保启用了正确的 Bearer Header（如已启用防御）。',
+        '请优先使用 /mcp/（带结尾斜杠）。开发模式下（5173）示例会自动指向后端端口（默认 6689）；部署模式下示例会自动使用当前同源端口。若启用了防御 Token，必须携带 Bearer 头。',
       tokenFillHint: '在这里填入您的 Token',
     },
     dialogs: {
