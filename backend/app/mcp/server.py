@@ -7,12 +7,11 @@ MCP 连接桥 - FastMCP Server
 外部 Agent 走 /mcp 端点，协议和业务逻辑完全复用同一套 LangGraph 图。
 
 暴露的 MCP Tools：
-  - list_projects        列出所有已导入项目
-    - get_project_capabilities  查看项目能力清单（含参数提示）
-    - get_project_routes    查看项目路由目录（来自最新 route_map）
-    - get_task_run_result   查询任务执行结果与产物
-  - chat                 发送自然语言消息，流式执行 LangGraph 并返回结果
-  - get_session_history  获取会话对话历史
+  - list_projects              列出所有已导入项目
+  - get_project_capabilities   查看项目能力清单（业务语义 + 安全属性）
+  - chat                       发送自然语言消息，由内部 AI 执行并返回结果
+  - get_task_run_result        查询任务执行结果与产物
+  - get_session_history        获取会话对话历史
 
 鉴权：
   通过环境变量 LUI_MCP_API_TOKEN 配置静态 Bearer Token。
@@ -36,16 +35,22 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     name="LUI-for-All",
     instructions=(
-        "你正在连接到 LUI-for-All 自然语言接口层。\n"
-        "这个服务让你能够通过自然语言与已导入的业务系统进行交互。\n\n"
+        "你正在连接到 LUI-for-All —— 一个自然语言接口层，让你通过对话与已导入的业务系统交互。\n\n"
         "推荐工作流：\n"
-        "1. 在会话开始时调用一次 list_projects，确认可用的 project_id\n"
-        "   - 除非用户明确要求刷新，否则不要重复调用 list_projects\n"
-        "   - 如果 list_projects 返回空列表，请停止工具重试，并直接告知用户先导入项目\n"
-        "2. 调用 chat 发送自然语言指令；系统会自动理解意图、选择接口、执行并汇总返回\n"
-        "3. 若需多轮对话，将上一步返回的 session_id 传入下次 chat 调用\n"
-        "4. 调用 get_session_history 可回看历史记录\n\n"
-        "注意：写入类操作（create/update/delete）需要在目标系统配置了相应权限后才能执行。"
+        "1. 调用 list_projects 获取可用的 project_id（通常只需调用一次）\n"
+        "   - 若返回空列表，提示用户先导入项目，不要重复调用\n"
+        "2. 调用 get_project_capabilities 查看项目能做什么\n"
+        "   - 默认返回轻量列表（capability_id、名称、摘要），帮助快速浏览\n"
+        "   - 需要详细信息时，传入 capability_ids 批量查询（领域、安全等级、意图示例等）\n"
+        "   - 可按 domain / safety_level / keyword 过滤\n"
+        "3. 调用 chat 发送自然语言指令\n"
+        "   - 内部 AI 会自动理解意图、选择接口、执行调用并汇总结果\n"
+        "   - 你无法直接调用底层路由，chat 是唯一的执行通道\n"
+        "4. 多轮对话：将 chat 返回的 session_id 传入下次调用以保持上下文\n"
+        "5. get_task_run_result 可查询历史任务详情，get_session_history 可回看对话记录\n\n"
+        "安全提示：\n"
+        "- safety_level=hard_write 或 critical 的操作在 MCP 模式下可能被跳过，需通过内置聊天界面审批\n"
+        "- 若 chat 返回错误，请检查错误信息中的排查建议并转达给用户"
     ),
 )
 
@@ -153,9 +158,8 @@ def _build_route_hints_by_route_id(routes: list[dict[str, Any]] | None) -> dict[
 @mcp.tool(
     name="list_projects",
     description=(
-        "列出所有已导入到 LUI-for-All 的项目，包含项目 ID、名称、描述和能力数量。"
-        "这些项目由LUI-for-All内置的管理 AI 托管，旨在绕过复杂的 GUI，实现高效管理项目。"
-        "在调用 chat 工具前，通常只需调用一次此工具获取有效的 project_id。"
+        "列出所有已导入的项目，返回项目 ID、名称、描述和能力数量。"
+        "在调用 chat 前通常只需调用一次此工具获取有效的 project_id。"
         "若返回空列表，应提示用户先导入项目，不要重复调用本工具。"
     ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
@@ -190,20 +194,38 @@ async def list_projects() -> list[dict]:
 @mcp.tool(
     name="get_project_capabilities",
     description=(
-        "获取指定项目的管理AI的能力清单，包含可调用的路由安全等级、路由绑定与参数提示。"
-        "用于在调用 chat 前做精细化规划。"
+        "获取指定项目的能力清单。默认返回轻量列表（ID、名称、摘要），"
+        "传入 capability_ids 可批量查询指定能力的详细信息（领域、安全等级、意图示例等）。"
+        "可按 domain / safety_level / keyword 过滤。"
+        "底层路由参数细节由内部 AI 自行处理，本工具不返回。"
     ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
 )
 async def get_project_capabilities(
     project_id: Annotated[str, Field(description="目标项目 ID")],
+    capability_ids: Annotated[
+        list[str] | None,
+        Field(description="可选，批量查询指定能力的详细信息，传入 capability_id 列表"),
+    ] = None,
+    domain: Annotated[
+        str | None,
+        Field(
+            description="可选，按业务领域过滤：auth/customer/finance/inventory/content/analytics/operations/system/unknown",
+        ),
+    ] = None,
+    safety_level: Annotated[
+        str | None,
+        Field(
+            description="可选，按安全等级过滤：readonly_safe/readonly_sensitive/soft_write/hard_write/critical",
+        ),
+    ] = None,
+    keyword: Annotated[
+        str | None,
+        Field(description="可选，按能力名称或功能摘要模糊匹配"),
+    ] = None,
     limit: Annotated[int, Field(description="最多返回条数", ge=1, le=500)] = 200,
-    include_parameter_hints: Annotated[
-        bool,
-        Field(description="是否返回 parameter_hints（建议开启）"),
-    ] = True,
 ) -> dict[str, Any]:
-    """返回项目能力目录，便于外部 AI 预先了解可调用范围。"""
+    """返回项目能力目录，便于外部 AI 了解项目可调用范围。"""
     from app.db import async_session
     from app.repositories.project_repository import ProjectRepository
 
@@ -214,124 +236,72 @@ async def get_project_capabilities(
             raise ValueError(f"项目不存在：{project_id}")
 
         caps = await repo.list_capabilities(project_id)
-        route_map = await repo.get_latest_route_map(project_id)
-        route_hints_by_route_id = _build_route_hints_by_route_id(
-            route_map.routes if route_map else None,
-        )
 
-        items: list[dict[str, Any]] = []
-        for c in caps[:limit]:
-            item: dict[str, Any] = {
-                "capability_id": c.capability_id,
-                "name": c.name,
-                "description": c.description,
-                "domain": c.domain,
-                "safety_level": c.safety_level,
-                "permission_level": c.permission_level,
-                "requires_confirmation": c.requires_confirmation,
-                "backed_by_routes": c.backed_by_routes,
-                "best_modalities": c.best_modalities,
-            }
-            if include_parameter_hints:
-                item["parameter_hints"] = _merge_parameter_hints(
-                    c.parameter_hints,
-                    c.backed_by_routes,
-                    route_hints_by_route_id,
-                )
-            items.append(item)
-
-        return {
-            "project_id": project.id,
-            "project_name": project.name,
-            "count": len(items),
-            "capabilities": items,
-        }
-
-
-@mcp.tool(
-    name="get_project_routes",
-    description="读取指定项目最新路由地图，支持按 method 与关键词过滤。",
-    annotations={"readOnlyHint": True, "openWorldHint": False},
-)
-async def get_project_routes(
-    project_id: Annotated[str, Field(description="目标项目 ID")],
-    method: Annotated[
-        str | None,
-        Field(description="可选，按 HTTP 方法过滤，如 GET/POST"),
-    ] = None,
-    keyword: Annotated[
-        str | None,
-        Field(description="可选，按 path/summary/route_id 模糊匹配"),
-    ] = None,
-    limit: Annotated[int, Field(description="最多返回条数", ge=1, le=1000)] = 300,
-) -> dict[str, Any]:
-    """返回项目路由目录，便于外部 AI 做精细路由选择。"""
-    from app.db import async_session
-    from app.repositories.project_repository import ProjectRepository
-
-    async with async_session() as db:
-        repo = ProjectRepository(db)
-        project = await repo.get_by_id(project_id)
-        if not project:
-            raise ValueError(f"项目不存在：{project_id}")
-
-        route_map = await repo.get_latest_route_map(project_id)
-        if not route_map:
+        # 批量查询模式：传入 capability_ids 时返回详细信息
+        if capability_ids:
+            id_set = {str(cid) for cid in capability_ids}
+            items: list[dict[str, Any]] = []
+            for c in caps:
+                if c.capability_id not in id_set:
+                    continue
+                items.append({
+                    "capability_id": c.capability_id,
+                    "name": c.name,
+                    "summary": c.summary,
+                    "domain": c.domain,
+                    "safety_level": c.safety_level,
+                    "permission_level": c.permission_level,
+                    "user_intent_examples": c.user_intent_examples,
+                    "data_sensitivity": c.data_sensitivity,
+                    "ai_usage_guidelines": c.ai_usage_guidelines,
+                })
             return {
-                "project_id": project_id,
+                "project_id": project.id,
                 "project_name": project.name,
-                "route_map_version": None,
-                "count": 0,
-                "routes": [],
+                "count": len(items),
+                "capabilities": items,
             }
 
+        # 默认轻量模式：只返回 ID、名称、摘要
+        domain_lc = (domain or "").strip().lower()
+        safety_lc = (safety_level or "").strip().lower()
         keyword_lc = (keyword or "").strip().lower()
-        method_uc = (method or "").strip().upper()
 
-        routes: list[dict[str, Any]] = []
-        for route in route_map.routes or []:
-            if not isinstance(route, dict):
+        filtered: list[dict[str, Any]] = []
+        for c in caps:
+            if domain_lc and (c.domain or "").lower() != domain_lc:
                 continue
-
-            r_method = str(route.get("method") or "").upper()
-            r_path = str(route.get("path") or "")
-            r_route_id = str(route.get("route_id") or "")
-            r_summary = str(route.get("summary") or "")
-
-            if method_uc and r_method != method_uc:
+            if safety_lc and (c.safety_level or "").lower() != safety_lc:
                 continue
-
             if keyword_lc:
-                haystack = f"{r_route_id} {r_path} {r_summary}".lower()
+                haystack = f"{c.name} {c.summary or ''} {c.capability_id}".lower()
                 if keyword_lc not in haystack:
                     continue
 
-            routes.append(
-                {
-                    "route_id": r_route_id,
-                    "method": r_method,
-                    "path": r_path,
-                    "summary": r_summary,
-                    "parameters": route.get("parameters") or [],
-                    "request_body_fields": route.get("request_body_fields") or [],
-                }
-            )
+            filtered.append({
+                "capability_id": c.capability_id,
+                "name": c.name,
+                "summary": c.summary,
+            })
 
-            if len(routes) >= limit:
+            if len(filtered) >= limit:
                 break
 
         return {
             "project_id": project.id,
             "project_name": project.name,
-            "route_map_version": route_map.version,
-            "count": len(routes),
-            "routes": routes,
+            "count": len(filtered),
+            "capabilities": filtered,
         }
 
 
 @mcp.tool(
     name="get_task_run_result",
-    description="按 task_run_id 查询任务执行结果、状态与关键产物。",
+    description=(
+        "按 task_run_id 查询任务执行结果与状态。"
+        "返回任务状态、AI 汇总文本、执行产物等。"
+        "task_run_id 由 chat 工具返回。"
+    ),
     annotations={"readOnlyHint": True, "openWorldHint": False},
 )
 async def get_task_run_result(
@@ -377,7 +347,10 @@ async def get_task_run_result(
 
 @mcp.tool(
     name="get_session_history",
-    description="获取指定会话的完整对话历史，用于了解之前的交互记录。",
+    description=(
+        "获取指定会话的对话历史，用于回看之前的交互记录。"
+        "session_id 由 chat 工具返回。"
+    ),
     annotations={"readOnlyHint": True},
 )
 async def get_session_history(
@@ -410,13 +383,13 @@ async def get_session_history(
 @mcp.tool(
     name="chat",
     description=(
-        "向指定项目发送自然语言消息，项目内的管理 AI 将和你交互：：\n"
+        "向指定项目发送自然语言消息，由项目内的管理 AI 执行：\n"
         "1. 理解你的意图\n"
-        "2. 从项目能力图谱中选择合适的 API 接口\n"
+        "2. 从能力图谱中选择合适的接口\n"
         "3. 执行一个或多个 HTTP 调用（多轮 ReAct 循环）\n"
         "4. 汇总结果并以自然语言回复\n\n"
-        "支持多轮对话：传入相同的 session_id 可保持上下文。\n"
-        "不传 session_id 时自动创建新会话，返回的 session_id 可用于后续轮次。"
+        "这是唯一的执行通道，你无法直接调用底层路由。\n"
+        "支持多轮对话：传入相同的 session_id 可保持上下文，不传则自动创建新会话。"
     ),
 )
 async def chat(
@@ -446,6 +419,31 @@ async def chat(
     from app.repositories.task_repository import TaskRepository
     from app.config import settings
 
+    # ── 前置检查：LLM 可用性 ──
+    try:
+        from app.llm.agent_matchbox import matchbox
+        mgr = matchbox(required=False)
+        if not mgr:
+            raise RuntimeError(
+                "内部 AI 不可用：LLM 管理器未初始化。"
+                "排查建议：1) 前往 LUI-for-All 前台「模型设置」页面，配置至少一个 LLM 平台和模型；"
+                "2) 确认 API Base URL 和 API Key 正确；3) 使用「测试连接」功能验证连通性后重试。"
+            )
+        details = mgr.get_user_selection_detail(-1, "main")
+        current = details.get("current", {})
+        if not current.get("platform_id") or current.get("platform_id") == -1:
+            raise RuntimeError(
+                "内部 AI 不可用：尚未选择主模型。"
+                "排查建议：前往 LUI-for-All 前台「模型设置」页面，选择一个已配置的模型作为主模型后重试。"
+            )
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(
+            f"内部 AI 不可用：LLM 配置检查失败（{type(e).__name__}: {e}）。"
+            "排查建议：前往 LUI-for-All 前台「模型设置」页面，检查模型配置是否完整。"
+        ) from e
+
     if settings.safety_default_action != "allow":
         raise RuntimeError(
             "MCP 调用拒绝：当前系统安全性尚未就绪。MCP 取代了人类视觉审计环节，"
@@ -470,6 +468,18 @@ async def chat(
         if not project:
             raise ValueError(
                 f"项目不存在：{project_id}。请先调用 list_projects 获取有效的 project_id。"
+            )
+
+        # ── 前置检查：项目发现状态 ──
+        if project.discovery_status != "completed":
+            status_hint = {
+                "pending": "项目尚未开始建图，请在前台触发项目发现流程。",
+                "in_progress": "项目正在建图中，请稍后重试。",
+                "failed": f"项目建图失败{f'（{project.discovery_error}）' if project.discovery_error else ''}，请在前台重新触发发现流程。",
+            }.get(project.discovery_status, f"项目状态异常（{project.discovery_status}），请联系管理员。")
+            raise RuntimeError(
+                f"项目「{project.name}」尚未完成能力建图（当前状态：{project.discovery_status}），无法执行任务。"
+                f"{status_hint}"
             )
 
         if session_id:
@@ -534,6 +544,7 @@ async def chat(
             {
                 "capability_id": c.capability_id,
                 "name": c.name,
+                "summary": c.summary,
                 "description": c.description,
                 "domain": c.domain,
                 "safety_level": c.safety_level,
@@ -542,7 +553,7 @@ async def chat(
                 "permission_level": c.permission_level,
                 "data_sensitivity": c.data_sensitivity,
                 "best_modalities": c.best_modalities,
-                "requires_confirmation": c.requires_confirmation,
+                "ai_usage_guidelines": c.ai_usage_guidelines,
                 "parameter_hints": _merge_parameter_hints(
                     c.parameter_hints,
                     c.backed_by_routes,

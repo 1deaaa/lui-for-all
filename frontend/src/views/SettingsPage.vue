@@ -931,12 +931,14 @@ onMounted(loadSettings)
                   <Icon icon="lucide:key" />
                 </template>
                 <template #append>
-                  <el-button @click="copyBearerToken" :disabled="!settings.mcp_api_token">
-                    <Icon icon="lucide:copy" /> {{ t('settings.mcp.copyToken') }}
-                  </el-button>
-                  <el-button @click="generateMcpToken">
-                    <Icon icon="lucide:dices" /> {{ t('settings.mcp.generateToken') }}
-                  </el-button>
+                  <div class="mcp-token-btns">
+                    <el-button @click="copyBearerToken" :disabled="!settings.mcp_api_token">
+                      <Icon icon="lucide:copy" /> {{ t('settings.mcp.copyToken') }}
+                    </el-button>
+                    <el-button @click="generateMcpToken">
+                      <Icon icon="lucide:dices" /> {{ t('settings.mcp.generateToken') }}
+                    </el-button>
+                  </div>
                 </template>
               </el-input>
             </el-form-item>
@@ -1272,6 +1274,11 @@ onMounted(loadSettings)
   font-size: 13px;
   color: #c9302c;
   line-height: 1.6;
+}
+
+.mcp-token-btns {
+  display: flex;
+  gap: 8px;
 }
 
 .mcp-instructions {
