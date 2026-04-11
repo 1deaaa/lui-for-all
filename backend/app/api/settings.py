@@ -26,8 +26,9 @@ class SettingsResponse(SettingsPayload):
 
 
 def _ensure_env_file() -> Path:
-    """确保 backend/.env 存在"""
-    env_path = get_env_file_path()
+    """确保 workspace/.env 存在（保存时始终写入 volume 内的持久化目录）"""
+    from app.config import WORKSPACE_DIR
+    env_path = WORKSPACE_DIR / ".env"
     env_path.parent.mkdir(parents=True, exist_ok=True)
     if not env_path.exists():
         env_path.write_text("", encoding="utf-8")

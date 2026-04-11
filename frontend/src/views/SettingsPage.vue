@@ -567,6 +567,20 @@ async function generateMcpToken() {
   ElMessage.success(t('settings.messages.tokenGenerated'))
 }
 
+async function copyBearerToken() {
+  const token = settings.value.mcp_api_token
+  if (!token) {
+    ElMessage.warning(t('settings.mcp.tokenFillHint'))
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(`Bearer ${token}`)
+    ElMessage.success(t('settings.messages.tokenCopied'))
+  } catch {
+    ElMessage.error(t('settings.messages.copyFailed'))
+  }
+}
+
 async function handleSafetyActionChange(val: string) {
   if (val === 'allow') {
     try {
@@ -907,15 +921,19 @@ onMounted(loadSettings)
             </el-alert>
 
             <el-form-item :label="t('settings.mcp.tokenLabel')">
-              <el-input 
-                v-model="settings.mcp_api_token" 
-                type="password"
-                show-password
+              <el-input
+                :model-value="settings.mcp_api_token ? `Bearer ${settings.mcp_api_token}` : ''"
+                readonly
                 autocomplete="off"
                 :placeholder="t('settings.mcp.tokenPlaceholder')"
-                @change="() => saveMcpToken(false)"
               >
+                <template #prefix>
+                  <Icon icon="lucide:key" />
+                </template>
                 <template #append>
+                  <el-button @click="copyBearerToken" :disabled="!settings.mcp_api_token">
+                    <Icon icon="lucide:copy" /> {{ t('settings.mcp.copyToken') }}
+                  </el-button>
                   <el-button @click="generateMcpToken">
                     <Icon icon="lucide:dices" /> {{ t('settings.mcp.generateToken') }}
                   </el-button>

@@ -11,9 +11,14 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-ENV_FILE_PATH = Path(__file__).resolve().parents[1] / ".env"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_DIR = PROJECT_ROOT / "workspace"
+
+# 优先使用 workspace/.env（位于 lui_workspace Docker volume 内，部署后持久化）
+# 若 workspace/.env 不存在则回退到 backend/.env（本地开发兼容）
+_WORKSPACE_ENV = WORKSPACE_DIR / ".env"
+_LEGACY_ENV = Path(__file__).resolve().parents[1] / ".env"
+ENV_FILE_PATH = _WORKSPACE_ENV if _WORKSPACE_ENV.exists() else _LEGACY_ENV
 
 
 class Settings(BaseSettings):
