@@ -4,6 +4,12 @@ import { translate } from '@/i18n'
 
 const routes: RouteRecordRaw[] = [
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/LoginPage.vue'),
+    meta: { titleKey: 'routes.login', public: true },
+  },
+  {
     path: '/',
     name: 'Chat',
     component: () => import('@/views/ChatPage.vue'),
@@ -39,10 +45,22 @@ export function updateDocumentTitle(titleKey?: string): void {
   document.title = translate('app.pageTitle', { page: pageTitle })
 }
 
-// 路由守卫 - 更新页面标题
+// 路由守卫 - 更新页面标题 + JWT 鉴权
 router.beforeEach((to, _from, next) => {
   updateDocumentTitle(to.meta.titleKey as string | undefined)
-  next()
+
+  const isPublicRoute = to.meta.public === true
+  const hasToken = !!localStorage.getItem('lui_jwt')
+
+  if (!isPublicRoute && !hasToken) {
+    // 未登录，跳转登录页
+    next({ name: 'Login' })
+  } else if (isPublicRoute && hasToken && to.name === 'Login') {
+    // 已登录，访问登录页时跳转首页
+    next({ name: 'Chat' })
+  } else {
+    next()
+  }
 })
 
 export default router

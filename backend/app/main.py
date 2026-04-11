@@ -20,7 +20,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
-from app.api import approvals, audit, chat, projects, sessions, settings as settings_api
+from app.api import approvals, audit, auth, chat, projects, sessions, settings as settings_api
 from app.api import llm_status as llm_status_api
 from app.config import settings
 from app.db import init_db
@@ -200,6 +200,7 @@ app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"]
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(settings_api.router, prefix="/api/settings", tags=["settings"])
 app.include_router(llm_status_api.router, prefix="/api/llm-status", tags=["llm"])
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 
 
 # ── MCP 连接桥 Bearer Token 鉴权中间件 ──
@@ -235,6 +236,53 @@ if _mcp_http_app is not None:
     app.mount("/mcp", _mcp_http_app)
 else:
     logger.warning("⚠️ MCP 子应用未挂载，/mcp 端点不可用")
+
+
+# ── JWT 鉴权中间件 ──
+from app.api.auth import verify_jwt_token as _verify_jwt
+
+# 不需要 JWT 鉴权的路径前缀
+_JWT_WHITELIST = {
+    "/api/auth/status",
+    "/api/auth/setup",
+    "/api/auth/login",
+    "/api/auth/forgot-password-hint",
+    "/health",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+}
+
+
+class JWTAuthMiddleware(BaseHTTPMiddleware):
+    """对 /api 路径下请求校验 JWT Token（白名单路径除外）"""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # 非 /api 路径直接放行
+        if not path.startswith("/api"):
+            return await call_next(request)
+
+        # 白名单路径放行
+        if path in _JWT_WHITELIST:
+            return await call_next(request)
+
+        # 校验 JWT
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            if _verify_jwt(token):
+                return await call_next(request)
+
+        return JSONResponse(
+            {"detail": "Unauthorized: invalid or missing JWT token"},
+            status_code=401,
+        )
+
+
+app.add_middleware(JWTAuthMiddleware)
+logger.info("🔒 JWT 鉴权中间件已启用")
 
 
 @app.get("/health")

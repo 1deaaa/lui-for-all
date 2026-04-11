@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import axios from 'axios'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
@@ -59,7 +60,46 @@ function installNoAutocompleteGuard() {
   observer.observe(document.body, { childList: true, subtree: true })
 }
 
+function isAuthApiUrl(url: unknown): boolean {
+  if (typeof url !== 'string' || !url) {
+    return false
+  }
+
+  try {
+    const parsed = new URL(url, window.location.origin)
+    return parsed.pathname.startsWith('/api/auth/')
+  } catch {
+    return url.includes('/api/auth/')
+  }
+}
+
 const app = createApp(App)
+
+// ── axios 全局拦截器：JWT Token 注入 + 401 自动登出 ──
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('lui_jwt')
+  if (token && config.url?.startsWith('/api')) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      const url = error.config?.url || ''
+      // 不在 auth 相关接口上触发登出（避免循环）
+      if (!isAuthApiUrl(url)) {
+        localStorage.removeItem('lui_jwt')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+      }
+    }
+    return Promise.reject(error)
+  },
+)
 
 // 注册 Iconify 全局组件
 app.component('Icon', Icon)

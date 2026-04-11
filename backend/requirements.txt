@@ -38,6 +38,7 @@ python-dotenv>=1.0.0
 python-multipart>=0.0.9
 json-repair>=0.30.0
 fastmcp>=0.2.0
+PyJWT>=2.8.0
 
 # 测试
 pytest>=8.0.0

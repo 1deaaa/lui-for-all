@@ -3,7 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useWindowSize } from '@vueuse/core'
-import { ChatDotRound, Folder, Document, Setting } from '@element-plus/icons-vue'
+import { ChatDotRound, Folder, Document, Setting, SwitchButton } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import en from 'element-plus/es/locale/lang/en'
@@ -45,6 +45,27 @@ const menuItems = computed(() => [
   { index: '/settings', icon: Setting, title: t('routes.settings') },
 ])
 
+function clearSessionCaches() {
+  const prefixes = ['lui_route_map_', 'lui_caps_', 'lui_history_']
+  const keysToRemove: string[] = []
+
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index)
+    if (!key) continue
+    if (key === 'lui_jwt' || prefixes.some((prefix) => key.startsWith(prefix))) {
+      keysToRemove.push(key)
+    }
+  }
+
+  keysToRemove.forEach((key) => localStorage.removeItem(key))
+}
+
+function handleLogout() {
+  clearSessionCaches()
+  drawerVisible.value = false
+  window.location.replace('/login')
+}
+
 watch(
   [() => route.fullPath, () => locale.value],
   () => {
@@ -53,12 +74,29 @@ watch(
   { immediate: true },
 )
 
-projectStore.fetchProjects()
+// 登录页不加载项目数据
+const isLoginPage = computed(() => route.path === '/login')
+watch(isLoginPage, (isLogin) => {
+  const hasToken = !!localStorage.getItem('lui_jwt')
+  if (!isLogin && hasToken) {
+    projectStore.fetchProjects()
+  }
+}, { immediate: true })
 </script>
 
 <template>
   <el-config-provider :locale="elementPlusLocale">
-    <el-container class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
+    <!-- 登录页：全屏无侧边栏 -->
+    <div v-if="isLoginPage" class="login-fullscreen">
+      <router-view v-slot="{ Component }">
+        <transition name="fade-slide" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
+    </div>
+
+    <!-- 非登录页：正常布局 -->
+    <el-container v-else class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
       <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏) -->
       <div v-if="isMobile && route.path !== '/'" class="mobile-navbar">
         <div class="logo-mobile" @click="drawerVisible = true" style="cursor: pointer;">
@@ -83,6 +121,13 @@ projectStore.fetchProjects()
               <template #title>{{ item.title }}</template>
             </el-menu-item>
           </el-menu>
+          <div class="drawer-footer">
+            <el-tooltip :content="t('app.logout')" placement="right">
+              <button class="logout-btn" type="button" :aria-label="t('app.logout')" @click="handleLogout">
+                <el-icon><SwitchButton /></el-icon>
+              </button>
+            </el-tooltip>
+          </div>
         </div>
       </el-drawer>
 
@@ -103,6 +148,14 @@ projectStore.fetchProjects()
             <template #title>{{ item.title }}</template>
           </el-menu-item>
         </el-menu>
+
+        <div class="aside-footer">
+          <el-tooltip :content="t('app.logout')" placement="right">
+            <button class="logout-btn" type="button" :aria-label="t('app.logout')" @click="handleLogout">
+              <el-icon><SwitchButton /></el-icon>
+            </button>
+          </el-tooltip>
+        </div>
       </el-aside>
 
       <!-- 主内容区 -->
@@ -207,6 +260,12 @@ html, body, #app {
 }
 
 /* ================= 骨架布局 ================= */
+
+.login-fullscreen {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 .app-container {
   height: 100%;
 }
@@ -309,6 +368,14 @@ html, body, #app {
   flex-direction: column;
 }
 
+.drawer-footer {
+  margin-top: auto;
+  padding: 16px 0 18px;
+  border-top: 1px solid var(--border-color-light);
+  display: flex;
+  justify-content: flex-start;
+}
+
 /* ================= 组件复写: 平面直角菜单 ================= */
 .el-menu {
   border-right: none !important;
@@ -322,6 +389,43 @@ html, body, #app {
   flex-direction: column;
   align-items: center;
   gap: 16px;
+}
+
+.aside-footer {
+  margin-top: auto;
+  width: 100%;
+  padding: 16px 0 18px;
+  border-top: 1px solid var(--border-color-light);
+  display: flex;
+  justify-content: center;
+}
+
+.logout-btn {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-color-light);
+  background: #ffffff;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0;
+}
+
+.logout-btn:hover {
+  background-color: #f0f0f0;
+  border-color: #d4d4d4;
+  color: var(--color-text-primary);
+}
+
+.logout-btn:active {
+  background-color: #ebebeb;
+}
+
+.logout-btn .el-icon {
+  font-size: 18px;
 }
 
 .drawer-menu {

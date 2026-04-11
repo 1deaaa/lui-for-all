@@ -4,6 +4,8 @@
 backend/.env
 workspace/agent_matchbox/.env
 backend/app/llm/agent_matchbox/.env
+# 登录密码文件
+workspace/password.txt
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
