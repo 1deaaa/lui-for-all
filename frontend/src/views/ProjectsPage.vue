@@ -678,7 +678,7 @@ function getStatusText(status: string): string {
           <el-input v-model="importForm.username" :placeholder="t('projects.importDialog.fields.username.placeholder')" @change="loginVerified = null" />
         </el-form-item>
         <el-form-item :label="t('projects.importDialog.fields.password.label')">
-          <el-input v-model="importForm.password" type="password" :placeholder="t('projects.importDialog.fields.password.placeholder')" show-password @change="loginVerified = null" />
+          <el-input v-model="importForm.password" type="password" :placeholder="t('projects.importDialog.fields.password.placeholder')" show-password data-allow-autocomplete autocomplete="current-password" @change="loginVerified = null" />
         </el-form-item>
         <template v-if="importForm.username">
           <el-form-item :label="t('projects.importDialog.fields.loginRoute.label')">

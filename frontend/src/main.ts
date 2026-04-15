@@ -17,7 +17,8 @@ function markFieldNoAutocomplete(field: HTMLInputElement | HTMLTextAreaElement) 
     return
   }
 
-  field.setAttribute('autocomplete', 'off')
+  const isPasswordInput = field instanceof HTMLInputElement && field.type.toLowerCase() === 'password'
+  field.setAttribute('autocomplete', isPasswordInput ? 'new-password' : 'off')
   field.setAttribute('autocapitalize', 'none')
   field.setAttribute('autocorrect', 'off')
   field.setAttribute('spellcheck', 'false')
