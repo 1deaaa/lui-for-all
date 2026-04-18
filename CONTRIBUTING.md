@@ -85,14 +85,25 @@ C:/APP/conda/envs/llm/python.exe -m pytest test/test_route_extractor_representat
 C:/APP/conda/envs/llm/python.exe -m pytest test/test_semantic_ingestor_cache_reuse.py -q
 ```
 
+## CI 自动测试
+
+仓库配置了 CI 工作流，会在以下时机自动运行：
+
+- **触发条件**：向 `main` / `master` 发起 PR 或直接 push 时自动触发。
+- **后端测试**：Python 3.11 + pytest，运行 `backend/test/` 下全部测试。
+- **前端检查**：Node 20 + pnpm，执行 lint 和 build。
+
+PR 页面会显示 CI 状态（✅ 通过 / ❌ 失败）。**维护者会优先审核 CI 通过的 PR**；CI 未通过时建议先修复再请求审核。
+
 ## PR 友好清单
 
 提交前建议自查：
 
 - 变更目标清晰，避免一次 PR 混入无关改动。
 - 新增/修改适配器时，同步补充样例或测试。
-- 文档与代码口径一致，尤其是“已适配”和“理论可迁移”要分开写。
+- 文档与代码口径一致，尤其是"已适配"和"理论可迁移"要分开写。
 - 不引入与任务无关的大范围重排。
+- CI 全部通过后再请求审核。
 
 ## 历史路径说明
 
