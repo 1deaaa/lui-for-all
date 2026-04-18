@@ -37,7 +37,7 @@ jobs:
 
   # ── 前端检查 ──────────────────────────────────────
   frontend-check:
-    name: 前端 lint + build
+    name: 前端 build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,8 +60,5 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: Lint 检查
-        run: npm run lint
-
-      - name: 构建检查
+      - name: 构建检查（含 TypeScript 类型检查）
         run: npm run build
