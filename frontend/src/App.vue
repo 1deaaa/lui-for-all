@@ -17,6 +17,27 @@ const projectStore = useProjectStore()
 const { t, locale } = useI18n()
 const currentLocale = computed(() => locale.value as AppLocale)
 
+// ── 用户角色检测 ──
+function getJWTSubject(): 'admin' | 'user' | null {
+  const token = localStorage.getItem('lui_jwt')
+  if (!token) return null
+  try {
+    const base64 = token.split('.')[1]
+    const json = decodeURIComponent(
+      atob(base64.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(''),
+    )
+    const payload = JSON.parse(json)
+    return payload.sub === 'lui-user' ? 'user' : payload.sub === 'lui-admin' ? 'admin' : null
+  } catch {
+    return null
+  }
+}
+
+const isUserMode = computed(() => getJWTSubject() === 'user')
+
 const elementPlusLocaleMap: Record<AppLocale, typeof zhCn> = {
   'zh-CN': zhCn,
   'en-US': en,
@@ -38,15 +59,24 @@ const drawerVisible = ref(false)
 const activeMenu = computed(() => route.path)
 
 // 供 Menu 使用的核心导航结构
-const menuItems = computed(() => [
-  { index: '/', icon: ChatDotRound, title: t('routes.chat') },
-  { index: '/projects', icon: Folder, title: t('routes.projects') },
-  { index: '/audit', icon: Document, title: t('routes.audit') },
-  { index: '/settings', icon: Setting, title: t('routes.settings') },
-])
+const menuItems = computed(() => {
+  if (isUserMode.value) {
+    // 终端用户：仅显示聊天入口
+    const userSlug = localStorage.getItem('lui_user_slug') || ''
+    return [
+      { index: `/${userSlug}`, icon: ChatDotRound, title: t('routes.chat') },
+    ]
+  }
+  return [
+    { index: '/', icon: ChatDotRound, title: t('routes.chat') },
+    { index: '/projects', icon: Folder, title: t('routes.projects') },
+    { index: '/audit', icon: Document, title: t('routes.audit') },
+    { index: '/settings', icon: Setting, title: t('routes.settings') },
+  ]
+})
 
 function clearSessionCaches() {
-  const prefixes = ['lui_route_map_', 'lui_caps_', 'lui_history_']
+  const prefixes = ['lui_route_map_', 'lui_caps_', 'lui_history_', 'lui_user_']
   const keysToRemove: string[] = []
 
   for (let index = 0; index < localStorage.length; index += 1) {
@@ -61,9 +91,15 @@ function clearSessionCaches() {
 }
 
 function handleLogout() {
+  const wasUserMode = isUserMode.value
+  const userSlug = localStorage.getItem('lui_user_slug') || ''
   clearSessionCaches()
   drawerVisible.value = false
-  window.location.replace('/login')
+  if (wasUserMode && userSlug) {
+    window.location.replace(`/${userSlug}/login`)
+  } else {
+    window.location.replace('/login')
+  }
 }
 
 watch(
@@ -75,10 +111,10 @@ watch(
 )
 
 // 登录页不加载项目数据
-const isLoginPage = computed(() => route.path === '/login')
+const isLoginPage = computed(() => route.path === '/login' || route.path.match(/^\/[^/]+\/login$/))
 watch(isLoginPage, (isLogin) => {
   const hasToken = !!localStorage.getItem('lui_jwt')
-  if (!isLogin && hasToken) {
+  if (!isLogin && hasToken && !isUserMode.value) {
     projectStore.fetchProjects()
   }
 }, { immediate: true })

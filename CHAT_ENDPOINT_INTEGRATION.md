@@ -140,3 +140,95 @@ GET /api/chat/sessions/session-123/messages/msg-123
 - 审批层：收到 `write_approval_required` 后，调用 `chat/resume` 发回用户决策。
 
 做到以上四点，即可“替换 UI 不替换能力内核”。
+
+## 8. 终端用户 JWT 双通道认证
+
+LUI-for-All 支持两种 JWT 身份，允许同一服务器上的不同项目各自拥有终端用户群：
+
+| JWT Subject | 身份 | 可访问路径 | 签发方式 |
+|---|---|---|---|
+| `lui-admin` | 管理员 | 全部 `/api/*` | `POST /api/auth/setup` 或 `POST /api/auth/login` |
+| `lui-user` | 终端用户 | `/api/chat/*` + `/api/projects/resolve-slug/*` | `POST /api/auth/user-login` |
+
+### 8.1 终端用户登录流程
+
+1. 前端通过 `GET /api/projects/resolve-slug/{slug}` 获取项目信息（无需认证）。
+2. 用户提交 `project_slug + username + password` 到 `POST /api/auth/user-login`。
+3. 后端使用项目配置的登录接口向目标系统验证凭据；成功后捕获目标系统 token 并缓存。
+4. 后端匹配角色画像（精确匹配用户名 → 回退到默认角色画像），签发 User JWT。
+5. 前端保存 JWT 到 `lui_jwt`，后续请求自动携带。
+
+### 8.2 User JWT Payload 结构
+
+```json
+{
+  "sub": "lui-user",
+  "project_id": "uuid",
+  "project_slug": "my-project",
+  "role_profile_id": "uuid",
+  "username": "zhangsan",
+  "iat": 1234567890,
+  "exp": 1234567890
+}
+```
+
+### 8.3 用户登录请求示例
+
+```http
+POST /api/auth/user-login
+Content-Type: application/json
+
+{
+  "project_slug": "my-project",
+  "username": "zhangsan",
+  "password": "secret123"
+}
+```
+
+响应：
+
+```json
+{
+  "token": "eyJ...",
+  "project_id": "uuid",
+  "project_name": "",
+  "project_slug": "my-project",
+  "role_profile_id": "uuid"
+}
+```
+
+### 8.4 用户模式下聊天请求
+
+与管理员模式完全一致，只需携带 User JWT：
+
+```http
+POST /api/chat/stream
+Authorization: Bearer <user-jwt>
+Content-Type: application/json
+
+{
+  "project_id": "uuid",
+  "content": ""
+}
+```
+
+后端中间件自动注入 `user_context`，Agentic Loop 优先使用用户的目标系统 token 执行操作，确保权限边界正确。
+
+### 8.5 用户模式 URL 路由
+
+终端用户通过项目 slug 访问专属界面：
+
+| URL | 说明 |
+|---|---|
+| `/{slug}/login` | 终端用户登录页 |
+| `/{slug}` | 终端用户聊天页（仅显示聊天，隐藏管理菜单） |
+
+### 8.6 角色画像与权限探测
+
+管理员通过角色画像 API 管理终端用户权限：
+
+- `POST /api/projects/{project_id}/role-profiles` — 创建角色画像并触发权限探测
+- `GET /api/projects/{project_id}/role-profiles/{profile_id}/accessibility` — 查看探测结果
+- `PATCH /api/projects/{project_id}/role-profiles/{profile_id}/accessibility/{route_id:path}` — 手动覆盖可达性
+- `POST /api/projects/{project_id}/role-profiles/{profile_id}/reprobe` — 重新探测
+- `PUT /api/projects/{project_id}/default-role-profile` — 设置默认角色画像

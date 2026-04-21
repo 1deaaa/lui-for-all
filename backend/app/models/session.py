@@ -23,6 +23,9 @@ class Session(Base):
     # 会话标题（取首条用户消息前 20 字）
     title: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # 创建者标识（管理员为 "admin"，终端用户为目标系统用户名）
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="会话创建者标识")
+
     # 会话状态
     status: Mapped[str] = mapped_column(
         String(50),

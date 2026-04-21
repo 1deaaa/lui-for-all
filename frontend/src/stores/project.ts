@@ -213,6 +213,48 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  // ── 角色画像管理 ──
+
+  async function listRoleProfiles(projectId: string) {
+    const res = await axios.get(`/api/projects/${projectId}/role-profiles`)
+    return res.data.profiles || []
+  }
+
+  async function createRoleProfile(projectId: string, data: { name: string; description?: string; probe_username: string; probe_password: string }) {
+    const res = await axios.post(`/api/projects/${projectId}/role-profiles`, data)
+    return res.data
+  }
+
+  async function getRoleProfile(projectId: string, profileId: string) {
+    const res = await axios.get(`/api/projects/${projectId}/role-profiles/${profileId}`)
+    return res.data
+  }
+
+  async function reprobeRoleProfile(projectId: string, profileId: string) {
+    const res = await axios.post(`/api/projects/${projectId}/role-profiles/${profileId}/reprobe`)
+    return res.data
+  }
+
+  async function deleteRoleProfile(projectId: string, profileId: string) {
+    await axios.delete(`/api/projects/${projectId}/role-profiles/${profileId}`)
+  }
+
+  async function setDefaultRole(projectId: string, roleProfileId: string) {
+    await axios.put(`/api/projects/${projectId}/default-role`, { role_profile_id: roleProfileId })
+  }
+
+  async function updateRouteAccessibility(projectId: string, profileId: string, routeId: string, accessible: boolean) {
+    await axios.patch(`/api/projects/${projectId}/role-profiles/${profileId}/accessibility/${encodeURIComponent(routeId)}`, { accessible })
+  }
+
+  async function updateProjectSettings(projectId: string, data: Record<string, any>) {
+    await axios.patch(`/api/projects/${projectId}`, data)
+    const project = projects.value.find((p) => p.id === projectId)
+    if (project) {
+      Object.assign(project, data)
+    }
+  }
+
   return {
     // 状态
     projects,
@@ -232,5 +274,14 @@ export const useProjectStore = defineStore('project', () => {
     triggerDiscovery,
     deleteProject,
     updateProjectDescription,
+    // 角色画像
+    listRoleProfiles,
+    createRoleProfile,
+    getRoleProfile,
+    reprobeRoleProfile,
+    deleteRoleProfile,
+    setDefaultRole,
+    updateRouteAccessibility,
+    updateProjectSettings,
   }
 })

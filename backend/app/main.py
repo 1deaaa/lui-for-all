@@ -20,7 +20,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
-from app.api import approvals, audit, auth, chat, projects, sessions, settings as settings_api
+from app.api import approvals, audit, auth, chat, projects, role_profiles, sessions, settings as settings_api
 from app.api import llm_status as llm_status_api
 from app.config import settings
 from app.db import init_db
@@ -194,6 +194,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+app.include_router(role_profiles.router, prefix="/api/projects", tags=["role-profiles"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"])
@@ -238,14 +239,15 @@ else:
     logger.warning("⚠️ MCP 子应用未挂载，/mcp 端点不可用")
 
 
-# ── JWT 鉴权中间件 ──
-from app.api.auth import verify_jwt_token as _verify_jwt
+# ── JWT 鉴权中间件（双通道：管理员 + 终端用户）──
+from app.api.auth import verify_jwt_token as _verify_jwt, decode_jwt_payload as _decode_jwt
 
-# 不需要 JWT 鉴权的路径前缀
+# 不需要 JWT 鉴权的路径
 _JWT_WHITELIST = {
     "/api/auth/status",
     "/api/auth/setup",
     "/api/auth/login",
+    "/api/auth/user-login",
     "/api/auth/forgot-password-hint",
     "/health",
     "/docs",
@@ -253,9 +255,22 @@ _JWT_WHITELIST = {
     "/openapi.json",
 }
 
+# User JWT 可访问的路径前缀
+_USER_JWT_ALLOWED_PREFIXES = (
+    "/api/chat",
+    "/api/sessions",
+    "/api/auth/user-login",
+    "/api/projects/resolve-slug",
+)
+
 
 class JWTAuthMiddleware(BaseHTTPMiddleware):
-    """对 /api 路径下请求校验 JWT Token（白名单路径除外）"""
+    """对 /api 路径下请求校验 JWT Token（白名单路径除外）
+    
+    双通道鉴权：
+    - Admin JWT (sub=lui-admin): 全部 /api/*
+    - User JWT (sub=lui-user): 仅 chat + resolve-slug + user-login
+    """
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -268,15 +283,58 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         if path in _JWT_WHITELIST:
             return await call_next(request)
 
+        # resolve-slug 也放行（公开端点，仅返回项目名和 slug）
+        if path.startswith("/api/projects/resolve-slug/"):
+            return await call_next(request)
+
         # 校验 JWT
         auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            if _verify_jwt(token):
-                return await call_next(request)
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                {"detail": "Unauthorized: missing JWT token"},
+                status_code=401,
+            )
 
+        token = auth_header[7:]
+        if not _verify_jwt(token):
+            return JSONResponse(
+                {"detail": "Unauthorized: invalid or expired JWT token"},
+                status_code=401,
+            )
+
+        # 解码 payload 进行角色判断
+        payload = _decode_jwt(token)
+        if not payload:
+            return JSONResponse(
+                {"detail": "Unauthorized: invalid JWT payload"},
+                status_code=401,
+            )
+
+        sub = payload.get("sub", "")
+
+        if sub == "lui-admin":
+            # 管理员：全部 /api/* 放行
+            return await call_next(request)
+
+        if sub == "lui-user":
+            # 终端用户：仅允许特定路径前缀
+            if any(path.startswith(prefix) for prefix in _USER_JWT_ALLOWED_PREFIXES):
+                # 注入 user_context 到 request.state
+                request.state.user_context = {
+                    "project_id": payload.get("project_id"),
+                    "project_slug": payload.get("project_slug"),
+                    "role_profile_id": payload.get("role_profile_id"),
+                    "username": payload.get("username"),
+                }
+                return await call_next(request)
+            return JSONResponse(
+                {"detail": "Forbidden: user JWT cannot access this endpoint"},
+                status_code=403,
+            )
+
+        # 未知 sub 类型
         return JSONResponse(
-            {"detail": "Unauthorized: invalid or missing JWT token"},
+            {"detail": "Unauthorized: unknown JWT subject"},
             status_code=401,
         )
 
@@ -305,6 +363,7 @@ _FRONTEND_RESERVED_ROOT_SEGMENTS = {
     "openapi.json",
     "health",
     "mcp",
+    "assets",
 }
 
 

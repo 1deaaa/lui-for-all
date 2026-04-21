@@ -21,6 +21,25 @@ const projectStore = useProjectStore()
 const route = useRoute()
 const { t } = useI18n()
 
+// ── 用户模式检测 ──
+function getJWTSubject(): 'admin' | 'user' | null {
+  const token = localStorage.getItem('lui_jwt')
+  if (!token) return null
+  try {
+    const base64 = token.split('.')[1]
+    const json = decodeURIComponent(
+      atob(base64.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(''),
+    )
+    const payload = JSON.parse(json)
+    return payload.sub === 'lui-user' ? 'user' : payload.sub === 'lui-admin' ? 'admin' : null
+  } catch { return null }
+}
+const isUserMode = computed(() => getJWTSubject() === 'user')
+const userProjectId = computed(() => localStorage.getItem('lui_user_project_id') || '')
+
 const inputMessage = ref('')
 const messageContainer = ref<HTMLElement | null>(null)
 const sessionCreating = ref(false)
@@ -44,11 +63,14 @@ function toggleThought(msgId: string) {
 }
 
 // 当前选中的项目
-const selectedProject = computed(() =>
-  projectStore.currentProject ||
-  projectStore.projects.find((p) => p.discovery_status === 'completed') ||
-  null
-)
+const selectedProject = computed(() => {
+  if (isUserMode.value && userProjectId.value) {
+    return projectStore.projects.find((p) => p.id === userProjectId.value) || null
+  }
+  return projectStore.currentProject ||
+    projectStore.projects.find((p) => p.discovery_status === 'completed') ||
+    null
+})
 
 // 已完成发现的项目列表
 const readyProjects = computed(() =>
@@ -169,11 +191,20 @@ onMounted(async () => {
     scrollToBottom()
   })
 
-  await projectStore.fetchProjects()
-  const projectId = typeof route.query.project === 'string' ? route.query.project : null
-  if (projectId) {
-    await selectProject(projectId)
-    return
+  if (isUserMode.value) {
+    // 终端用户模式：自动选择用户项目并加载历史
+    const pid = userProjectId.value
+    if (pid) {
+      await projectStore.fetchProjects()
+      await selectProject(pid)
+    }
+  } else {
+    await projectStore.fetchProjects()
+    const projectId = typeof route.query.project === 'string' ? route.query.project : null
+    if (projectId) {
+      await selectProject(projectId)
+      return
+    }
   }
 })
 
@@ -213,32 +244,49 @@ function getProjectStatusLabel(status: string): string {
 
 <template>
   <div class="chat-page">
-    <!-- 左侧项目面板 -->
+    <!-- 左侧项目面板（用户模式下仅显示历史） -->
     <div class="project-panel" :class="{ collapsed: isSidebarCollapsed }">
       <div class="project-panel-inner">
-      <div class="panel-title">{{ t('chat.sidebar.projectsTitle') }}</div>
+      <!-- 管理员模式：项目列表 -->
+      <template v-if="!isUserMode">
+        <div class="panel-title">{{ t('chat.sidebar.projectsTitle') }}</div>
 
-      <div v-if="readyProjects.length === 0" class="panel-empty">
-        <p>{{ t('chat.sidebar.emptyProjects') }}</p>
-        <el-button type="primary" size="small" @click="$router.push('/projects')">
-          {{ t('chat.sidebar.goImport') }}
-        </el-button>
-      </div>
+        <div v-if="readyProjects.length === 0" class="panel-empty">
+          <p>{{ t('chat.sidebar.emptyProjects') }}</p>
+          <el-button type="primary" size="small" @click="$router.push('/projects')">
+            {{ t('chat.sidebar.goImport') }}
+          </el-button>
+        </div>
 
-      <div
-        v-for="p in readyProjects"
-        :key="p.id"
-        class="project-item"
-        :class="{ active: selectedProject?.id === p.id }"
-        @click="selectProject(p.id)"
-      >
-        <div class="project-item-name">{{ p.name }}</div>
-        <div class="project-item-url">{{ p.base_url }}</div>
-      </div>
+        <div
+          v-for="p in readyProjects"
+          :key="p.id"
+          class="project-item"
+          :class="{ active: selectedProject?.id === p.id }"
+          @click="selectProject(p.id)"
+        >
+          <div class="project-item-name">{{ p.name }}</div>
+          <div class="project-item-url">{{ p.base_url }}</div>
+        </div>
 
-      <!-- 历史会话列表 -->
+        <div class="panel-divider" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0" />
+        <div class="panel-title-sm" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0">
+          {{ t('chat.sidebar.otherProjects') }}
+        </div>
+        <div
+          v-for="p in projectStore.projects.filter(p => p.discovery_status !== 'completed')"
+          :key="p.id"
+          class="project-item disabled"
+          :title="t('chat.sidebar.disabledProjectHint', { status: getProjectStatusLabel(p.discovery_status) })"
+        >
+          <div class="project-item-name">{{ p.name }}</div>
+          <el-tag size="small" type="info">{{ getProjectStatusLabel(p.discovery_status) }}</el-tag>
+        </div>
+      </template>
+
+      <!-- 历史会话列表（管理员和用户都显示） -->
       <template v-if="selectedProject && sessionStore.historyList.length > 0">
-        <div class="panel-divider" />
+        <div class="panel-divider" v-if="!isUserMode" />
         <div class="panel-title-sm">{{ t('chat.sidebar.historyTitle') }}</div>
         <TransitionGroup name="history-list" tag="div" class="history-list-wrapper">
           <div
@@ -253,20 +301,6 @@ function getProjectStatusLabel(status: string): string {
           </div>
         </TransitionGroup>
       </template>
-
-      <div class="panel-divider" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0" />
-      <div class="panel-title-sm" v-if="projectStore.projects.filter(p => p.discovery_status !== 'completed').length > 0">
-        {{ t('chat.sidebar.otherProjects') }}
-      </div>
-      <div
-        v-for="p in projectStore.projects.filter(p => p.discovery_status !== 'completed')"
-        :key="p.id"
-        class="project-item disabled"
-        :title="t('chat.sidebar.disabledProjectHint', { status: getProjectStatusLabel(p.discovery_status) })"
-      >
-        <div class="project-item-name">{{ p.name }}</div>
-        <el-tag size="small" type="info">{{ getProjectStatusLabel(p.discovery_status) }}</el-tag>
-      </div>
       </div>
     </div>
 

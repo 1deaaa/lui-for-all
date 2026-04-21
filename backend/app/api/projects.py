@@ -30,6 +30,21 @@ from app.repositories.task_repository import TaskRepository
 router = APIRouter()
 
 
+# ── Slug 生成工具 ──
+
+_RESERVED_SLUGS = {"api", "docs", "redoc", "openapi.json", "health", "mcp", "assets", "login"}
+
+
+def generate_slug(name: str) -> str:
+    """从项目名生成 URL slug"""
+    import re
+    slug = name.lower().strip()
+    slug = re.sub(r'[\s\-]+', '-', slug)
+    slug = re.sub(r'[^a-z0-9\-]', '', slug)
+    slug = slug.strip('-')[:48]
+    return slug or 'project'
+
+
 class ProjectImportRequest(BaseModel):
     """项目导入请求"""
 
@@ -37,6 +52,7 @@ class ProjectImportRequest(BaseModel):
     base_url: str
     openapi_url: str | None = None
     description: str | None = None
+    slug: str | None = Field(default=None, description="URL 友好标识，如 my-app，不填则自动从 name 生成")
     username: str | None = Field(default=None, description="需要目标系统登录时填写的账号")
     password: str | None = Field(default=None, description="需要目标系统登录时填写的密码")
     login_route_id: str | None = Field(default=None, description="登录接口 route_id，如 POST:/api/auth/login")
@@ -63,6 +79,15 @@ class VerifyLoginRequest(BaseModel):
     password: str
     body_field_username: str = Field(default="username", description="登录接口的用户名字段名")
     body_field_password: str = Field(default="password", description="登录接口的密码字段名")
+
+
+class VerifySourcePathRequest(BaseModel):
+    """源码路径验证请求"""
+
+    source_path: str = Field(
+        ...,
+        description="目标项目本地源码目录的绝对路径",
+    )
 
 
 class TestConnectionRequest(BaseModel):
@@ -127,6 +152,87 @@ def _resolve_source_path(candidates: list[Path]) -> tuple[str, bool]:
             return str(candidate), True
 
     return str(normalized[0]), False
+
+
+def _verify_source_path(source_path: str) -> dict:
+    """
+    验证源码路径的可达性，返回结构化诊断信息。
+
+    涵盖：路径存在性、是否为目录、可读性、框架检测、
+    Docker 环境感知及卷挂载提示。
+    """
+    from app.discovery.adapters import get_adapter, list_adapters
+
+    in_container = _is_running_in_container()
+    path = Path(source_path)
+
+    result: dict = {
+        "source_path": source_path,
+        "accessible": False,
+        "is_directory": False,
+        "readable": False,
+        "framework_detected": None,
+        "adapter_name": None,
+        "available_adapters": [a["name"] for a in list_adapters()],
+        "file_count": 0,
+        "sample_files": [],
+        "running_in_container": in_container,
+        "hint": None,
+    }
+
+    # 路径不存在
+    if not path.exists():
+        if in_container:
+            result["hint"] = (
+                f"路径 {source_path} 在当前容器内不可达。"
+                "若目标项目源码位于宿主机或其他容器，"
+                "请在 docker-compose.yml 中通过 volumes 将源码目录挂载到本容器，"
+                "例如：- /path/on/host/my-project:/app/projects/my-project，"
+                "然后 source_path 填写容器内挂载路径 /app/projects/my-project。"
+            )
+        else:
+            result["hint"] = f"路径 {source_path} 不存在，请检查路径是否正确。"
+        return result
+
+    # 不是目录
+    if not path.is_dir():
+        result["hint"] = f"路径 {source_path} 不是目录，请提供项目根目录路径。"
+        return result
+
+    result["is_directory"] = True
+
+    # 可读性检测
+    try:
+        entries = list(path.iterdir())
+        result["readable"] = True
+        result["accessible"] = True
+        result["file_count"] = len(entries)
+        result["sample_files"] = sorted(
+            [e.name for e in entries if not e.name.startswith(".")]
+        )[:20]
+    except PermissionError:
+        result["hint"] = (
+            f"路径 {source_path} 存在但无读取权限。"
+            "请检查目录权限或容器运行用户的访问控制。"
+        )
+        return result
+    except OSError as e:
+        result["hint"] = f"读取目录 {source_path} 时出错：{e}"
+        return result
+
+    # 框架检测
+    adapter = get_adapter(source_path)
+    if adapter:
+        result["framework_detected"] = adapter.NAME
+        result["adapter_name"] = adapter.NAME
+    else:
+        result["hint"] = (
+            "未检测到匹配的框架适配器，源码精准提取将不可用，"
+            "建图时将使用规则推断模式。如需精准提取，"
+            "请确认项目使用了已支持的框架。"
+        )
+
+    return result
 
 
 def _is_running_in_container() -> bool:
@@ -473,18 +579,37 @@ async def get_import_presets():
     return {"presets": [preset.model_dump() for preset in presets]}
 
 
+@router.post("/verify-source-path")
+async def verify_source_path(request: VerifySourcePathRequest):
+    """验证源码路径的可达性，返回结构化诊断信息（含 Docker 环境感知）"""
+    result = _verify_source_path(request.source_path)
+    return result
+
+
 @router.post("/import", response_model=ProjectImportResponse)
 async def import_project(
     request: ProjectImportRequest,
     db: AsyncSession = Depends(get_session),
 ):
     """导入新项目"""
-    if not os.path.exists(request.source_path):
-        raise HTTPException(
-            status_code=400,
-            detail=f"指定的本地源码路径不存在: {request.source_path}",
-        )
-    if not os.path.isdir(request.source_path):
+    verification = _verify_source_path(request.source_path)
+    if not verification["accessible"]:
+        hint = verification.get("hint", "")
+        if verification["running_in_container"]:
+            detail = (
+                f"源码路径不可达: {request.source_path}。"
+                f"{hint}"
+            ) if hint else (
+                f"源码路径不可达: {request.source_path}。"
+                "若目标项目源码位于宿主机或其他容器，"
+                "请通过 volumes 将源码目录挂载到本容器。"
+            )
+        else:
+            detail = (
+                f"源码路径不可达: {request.source_path}。{hint}"
+            ) if hint else f"指定的本地源码路径不存在: {request.source_path}"
+        raise HTTPException(status_code=400, detail=detail)
+    if not verification["is_directory"]:
         raise HTTPException(
             status_code=400,
             detail=f"源码路径必须是一个目录: {request.source_path}",
@@ -492,9 +617,19 @@ async def import_project(
 
     project_id = str(uuid.uuid4())
 
+    # 生成 slug
+    slug = request.slug or generate_slug(request.name)
+    if slug in _RESERVED_SLUGS:
+        slug = f"{slug}-project"
+    # 确保 slug 唯一
+    existing = await ProjectRepository(db).get_by_slug(slug)
+    if existing:
+        slug = f"{slug}-{project_id[:8]}"
+
     project = Project(
         id=project_id,
         name=request.name,
+        slug=slug,
         base_url=request.base_url,
         openapi_url=request.openapi_url,
         description=request.description,
@@ -519,6 +654,24 @@ async def import_project(
         name=request.name,
         status="pending",
     )
+
+
+@router.get("/resolve-slug/{slug}")
+async def resolve_project_slug(
+    slug: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """将 URL slug 解析为项目信息，供前端用户登录页初始化使用"""
+    project = await ProjectRepository(db).get_by_slug(slug)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if not project.user_login_enabled:
+        raise HTTPException(status_code=403, detail="该项目未开放用户登录")
+    return {
+        "project_id": project.id,
+        "name": project.name,
+        "slug": project.slug,
+    }
 
 @router.post("/fetch-routes")
 async def fetch_routes(request: FetchRoutesRequest):
@@ -588,7 +741,12 @@ async def verify_login(request: VerifyLoginRequest):
 
 @router.post("/test-connection")
 async def test_connection(request: TestConnectionRequest):
-    """测试指定基地址或 OpenApiURL 的连通性"""
+    """测试指定基地址或 OpenApiURL 的连通性，同时检测 source_path 可达性"""
+    # 源码路径可达性检测
+    source_path_info = None
+    if request.source_path:
+        source_path_info = _verify_source_path(request.source_path)
+
     try:
         result = await _resolve_import_routes_openapi_first(
             base_url=request.base_url,
@@ -596,12 +754,15 @@ async def test_connection(request: TestConnectionRequest):
             source_path=request.source_path,
             timeout=10.0,
         )
-        return {
+        response = {
             "status": result.get("status", "success"),
             "message": result.get("message", "连接与 OpenAPI 探索可用"),
             "routes": result.get("routes", []),
             "source": result.get("source", "openapi"),
         }
+        if source_path_info is not None:
+            response["source_path_info"] = source_path_info
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -745,6 +906,7 @@ async def list_projects(
             {
                 "id": p.id,
                 "name": p.name,
+                "slug": p.slug,
                 "description": p.description,
                 "base_url": p.base_url,
                 "discovery_status": p.discovery_status,
@@ -752,6 +914,8 @@ async def list_projects(
                 "discovery_message": (p.metadata_ or {}).get("discovery_message"),
                 "discovery_error": p.discovery_error,
                 "model_version": p.model_version,
+                "user_login_enabled": p.user_login_enabled,
+                "default_role_profile_id": p.default_role_profile_id,
                 "created_at": p.created_at.isoformat(),
                 "updated_at": p.updated_at.isoformat(),
             }
@@ -765,6 +929,10 @@ class ProjectUpdateRequest(BaseModel):
     """项目信息修改请求"""
     name: str | None = None
     description: str | None = None
+    slug: str | None = None
+    base_url: str | None = None
+    user_login_enabled: bool | None = None
+    default_role_profile_id: str | None = None
 
 
 @router.patch("/{project_id}")
@@ -782,6 +950,19 @@ async def update_project(
         project.name = request.name
     if request.description is not None:
         project.description = request.description
+    if request.slug is not None:
+        if request.slug in _RESERVED_SLUGS:
+            raise HTTPException(status_code=400, detail=f"slug 不能使用保留名称: {', '.join(sorted(_RESERVED_SLUGS))}")
+        existing = await ProjectRepository(db).get_by_slug(request.slug)
+        if existing and existing.id != project_id:
+            raise HTTPException(status_code=409, detail="slug 已被其他项目使用")
+        project.slug = request.slug
+    if request.user_login_enabled is not None:
+        project.user_login_enabled = request.user_login_enabled
+    if request.base_url is not None:
+        project.base_url = request.base_url.rstrip("/")
+    if request.default_role_profile_id is not None:
+        project.default_role_profile_id = request.default_role_profile_id
 
     await db.commit()
     return {"project_id": project_id, "status": "updated"}

@@ -11,7 +11,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,57 @@ from app.repositories.task_repository import TaskRepository
 from app.schemas.event import format_sse_event
 
 router = APIRouter()
+
+
+# ── 用户上下文辅助函数 ──
+
+async def _load_accessible_routes(project_id: str, role_profile_id: str | None) -> list[str]:
+    """根据角色画像加载可达路由 ID 列表"""
+    if not role_profile_id:
+        return []
+    async with async_session() as db:
+        repo = ProjectRepository(db)
+        records = await repo.list_route_accessibility(project_id, role_profile_id)
+        return [r.route_id for r in records if r.accessible]
+
+
+def _filter_capabilities_for_user(
+    capabilities: list[dict[str, Any]],
+    accessible_route_ids: list[str],
+) -> list[dict[str, Any]]:
+    """按可达路由过滤能力列表：仅保留至少有一条可达路由的能力，并过滤掉不可达路由"""
+    if not accessible_route_ids:
+        # 无可达路由信息（管理员或未配置画像）→ 返回全部
+        return capabilities
+
+    accessible_set = set(accessible_route_ids)
+    filtered = []
+    for cap in capabilities:
+        routes = cap.get("backed_by_routes") or []
+        # 过滤出可达路由
+        accessible_routes = [
+            r for r in routes
+            if isinstance(r, dict) and r.get("route_id") in accessible_set
+        ]
+        if not accessible_routes:
+            # 该能力的所有路由都不可达 → 整个能力不可见
+            continue
+        # 至少有一条可达路由 → 保留，但只展示可达路由
+        filtered_cap = dict(cap)
+        filtered_cap["backed_by_routes"] = accessible_routes
+        # 同步过滤 route_hints_by_route_id 在调用处处理
+        filtered.append(filtered_cap)
+    return filtered
+
+
+def _get_user_target_token(project_id: str, username: str | None) -> str | None:
+    """从用户 token 缓存获取目标系统 token"""
+    if not username:
+        return None
+    from app.api.auth import _user_token_cache
+    cache_key = f"{project_id}:{username}"
+    entry = _user_token_cache.get(cache_key)
+    return entry.get("token") if entry else None
 
 
 # 运行中流任务注册表：task_run_id -> asyncio.Task
@@ -269,8 +320,14 @@ async def stream_events(
     resume_action: str | None = None,
     resume_approved_ids: str | None = None,
     resume_batch_id: str | None = None,
+    request: Request = None,
 ):
     """SSE 事件流 - 执行 LangGraph 图（支持打断与恢复）"""
+
+    # 从 JWT 中间件注入的 request.state 获取用户上下文
+    user_context: dict | None = None
+    if request and hasattr(request, "state") and hasattr(request.state, "user_context"):
+        user_context = request.state.user_context
 
     async def event_generator():
         from app.models.project import CapabilityRecord, Project
@@ -365,6 +422,29 @@ async def stream_events(
                         for c in capabilities
                     ]
 
+                    # 终端用户可达路由过滤
+                    user_accessible_route_ids: list[str] = (
+                        await _load_accessible_routes(
+                            task_run_data["project_id"],
+                            user_context.get("role_profile_id"),
+                        ) if user_context and user_context.get("role_profile_id") else []
+                    )
+                    if user_accessible_route_ids:
+                        _cap_count_before = len(available_capabilities)
+                        available_capabilities = _filter_capabilities_for_user(
+                            available_capabilities, user_accessible_route_ids
+                        )
+                        logger.info(
+                            f"[user-filter] capabilities: {_cap_count_before} → {len(available_capabilities)}, "
+                            f"accessible_routes: {len(user_accessible_route_ids)}"
+                        )
+                        # 同步过滤 route_hints_by_route_id
+                        accessible_set = set(user_accessible_route_ids)
+                        route_hints_by_route_id = {
+                            rid: hints for rid, hints in route_hints_by_route_id.items()
+                            if rid in accessible_set
+                        }
+
         try:
             yield format_sse_event(
                 SessionStartedEvent(
@@ -402,6 +482,13 @@ async def stream_events(
                 "user_message": task_run_data["user_message"],
                 "available_capabilities": available_capabilities,
                 "route_hints_by_route_id": route_hints_by_route_id,
+                # 终端用户上下文
+                "user_role_profile_id": user_context.get("role_profile_id") if user_context else None,
+                "user_accessible_route_ids": user_accessible_route_ids,
+                "user_target_token": _get_user_target_token(
+                    task_run_data["project_id"],
+                    user_context.get("username"),
+                ) if user_context else None,
                 # Agentic Loop 初始化字段
                 "agentic_history": [],
                 "agentic_done": False,

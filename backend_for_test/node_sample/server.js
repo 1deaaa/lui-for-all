@@ -11,9 +11,14 @@ const users = new Map();
 const orders = new Map();
 const jobs = new Map();
 const idempotencyPayments = new Map();
+// token → { username, role }
 const tokens = new Map();
-const LOGIN_USERNAME = '111';
-const LOGIN_PASSWORD = '111111';
+
+// 双角色凭据
+const LOGIN_ACCOUNTS = {
+  '111': { password: '111111', role: 'admin' },
+  '222': { password: '222222', role: 'user' },
+};
 
 function now() {
   return new Date().toISOString();
@@ -47,8 +52,20 @@ function authRequired(req, res, next) {
     res.status(401).json({ detail: '认证无效或已过期' });
     return;
   }
-  req.username = tokens.get(token);
+  const info = tokens.get(token);
+  req.username = info.username;
+  req.userRole = info.role;
   next();
+}
+
+function adminRequired(req, res, next) {
+  authRequired(req, res, () => {
+    if (req.userRole !== 'admin') {
+      res.status(403).json({ detail: '需要管理员权限' });
+      return;
+    }
+    next();
+  });
 }
 
 function mustGetUser(userId, res) {
@@ -258,15 +275,16 @@ app.post('/api/auth/login', (req, res) => {
     return;
   }
 
-  if (username !== LOGIN_USERNAME || password !== LOGIN_PASSWORD) {
+  const account = LOGIN_ACCOUNTS[username];
+  if (!account || password !== account.password) {
     res.status(401).json({ detail: '用户名或密码错误' });
     return;
   }
 
   const token = `token-${crypto.randomUUID().replace(/-/g, '')}`;
-  tokens.set(token, username);
+  tokens.set(token, { username, role: account.role });
   res.setHeader('Set-Cookie', `session_token=${encodeURIComponent(token)}; HttpOnly; Path=/`);
-  res.json({ access_token: token, token_type: 'bearer', expires_in: 3600, username });
+  res.json({ access_token: token, token_type: 'bearer', expires_in: 3600, username, role: account.role });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -331,7 +349,7 @@ app.get('/api/users', (req, res) => {
   });
 });
 
-app.post('/api/users', authRequired, (req, res) => {
+app.post('/api/users', adminRequired, (req, res) => {
   const { name, email, role = 'user', active = true, tags = [] } = req.body || {};
   if (!name || !email) {
     res.status(400).json({ detail: 'name 和 email 必填' });
@@ -356,7 +374,7 @@ app.post('/api/users', authRequired, (req, res) => {
   res.status(201).json(user);
 });
 
-app.post('/api/users/batch', authRequired, (req, res) => {
+app.post('/api/users/batch', adminRequired, (req, res) => {
   const list = Array.isArray(req.body?.users) ? req.body.users : [];
   const created = [];
 
@@ -382,7 +400,7 @@ app.post('/api/users/batch', authRequired, (req, res) => {
   res.status(201).json({ count: created.length, items: created });
 });
 
-app.patch('/api/users/batch/status', authRequired, (req, res) => {
+app.patch('/api/users/batch/status', adminRequired, (req, res) => {
   const userIds = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
   const active = Boolean(req.body?.active);
   let updated = 0;
@@ -404,7 +422,7 @@ app.get('/api/users/:userId', authRequired, (req, res) => {
   res.json(user);
 });
 
-app.put('/api/users/:userId', authRequired, (req, res) => {
+app.put('/api/users/:userId', adminRequired, (req, res) => {
   const user = mustGetUser(req.params.userId, res);
   if (!user) return;
 
@@ -423,7 +441,7 @@ app.put('/api/users/:userId', authRequired, (req, res) => {
   res.json(user);
 });
 
-app.patch('/api/users/:userId', authRequired, (req, res) => {
+app.patch('/api/users/:userId', adminRequired, (req, res) => {
   const user = mustGetUser(req.params.userId, res);
   if (!user) return;
 
@@ -437,7 +455,7 @@ app.patch('/api/users/:userId', authRequired, (req, res) => {
   res.json(user);
 });
 
-app.delete('/api/users/:userId', authRequired, (req, res) => {
+app.delete('/api/users/:userId', adminRequired, (req, res) => {
   const user = mustGetUser(req.params.userId, res);
   if (!user) return;
 
@@ -627,7 +645,7 @@ app.get('/api/jobs/:jobId', authRequired, (req, res) => {
   res.json(job);
 });
 
-app.patch('/api/jobs/:jobId', authRequired, (req, res) => {
+app.patch('/api/jobs/:jobId', adminRequired, (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
     res.status(404).json({ detail: '任务不存在' });
@@ -646,12 +664,12 @@ app.patch('/api/jobs/:jobId', authRequired, (req, res) => {
   res.json(job);
 });
 
-app.delete('/api/jobs/:jobId', authRequired, (req, res) => {
+app.delete('/api/jobs/:jobId', adminRequired, (req, res) => {
   jobs.delete(req.params.jobId);
   res.status(204).send();
 });
 
-app.post('/api/payments', authRequired, (req, res) => {
+app.post('/api/payments', adminRequired, (req, res) => {
   const idempotencyKey = req.get('Idempotency-Key');
   if (!idempotencyKey) {
     res.status(400).json({ detail: '缺少 Idempotency-Key' });

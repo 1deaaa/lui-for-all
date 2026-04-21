@@ -92,8 +92,27 @@ axios.interceptors.response.use(
       const url = error.config?.url || ''
       // 不在 auth 相关接口上触发登出（避免循环）
       if (!isAuthApiUrl(url)) {
+        const token = localStorage.getItem('lui_jwt')
+        let isUser = false
+        let userSlug = ''
+        if (token) {
+          try {
+            const base64 = token.split('.')[1]
+            const json = decodeURIComponent(
+              atob(base64.replace(/-/g, '+').replace(/_/g, '/'))
+                .split('')
+                .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join(''),
+            )
+            const payload = JSON.parse(json)
+            isUser = payload.sub === 'lui-user'
+            userSlug = payload.project_slug || ''
+          } catch { /* ignore */ }
+        }
         localStorage.removeItem('lui_jwt')
-        if (window.location.pathname !== '/login') {
+        if (isUser && userSlug) {
+          window.location.href = `/${userSlug}/login`
+        } else if (window.location.pathname !== '/login') {
           window.location.href = '/login'
         }
       }

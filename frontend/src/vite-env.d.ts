@@ -26,6 +26,8 @@ export interface Project {
   discovery_message?: string
   discovery_error?: string
   model_version?: string
+  user_login_enabled?: boolean
+  default_role_profile_id?: string | null
   created_at: string
   updated_at?: string
 }

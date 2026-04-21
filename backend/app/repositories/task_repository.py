@@ -26,13 +26,17 @@ class TaskRepository:
         self,
         session_id: str | None = None,
         status: str | None = None,
+        project_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[TaskRun], int]:
         from sqlalchemy import func
         query = select(TaskRun).order_by(TaskRun.created_at.desc())
         count_query = select(func.count()).select_from(TaskRun)
-        
+
+        if project_id:
+            query = query.where(TaskRun.project_id == project_id)
+            count_query = count_query.where(TaskRun.project_id == project_id)
         if session_id:
             query = query.where(TaskRun.session_id == session_id)
             count_query = count_query.where(TaskRun.session_id == session_id)

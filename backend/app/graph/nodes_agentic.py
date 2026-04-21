@@ -43,9 +43,16 @@ _project_login_locks: dict[str, asyncio.Lock] = {}
 async def _ensure_project_token(state: GraphState) -> str | None:
     """
     确保当前项目已登录并持有有效 token。
+    优先使用终端用户的 user_target_token，无用户 token 时回退到管理员凭据自动登录。
     使用每项目锁防止并发竞态导致重复登录。
     """
     project_id = state.get("project_id", "")
+
+    # 优先使用终端用户 token
+    user_target_token = state.get("user_target_token")
+    if user_target_token:
+        logger.info(f"[token_cache] project={project_id} 使用终端用户 token")
+        return user_target_token
     if project_id in _project_token_cache:
         return _project_token_cache[project_id].get("token")
 

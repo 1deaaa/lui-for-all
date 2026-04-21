@@ -13,6 +13,11 @@ services:
       AGENT_MATCHBOX_HOME: /app/workspace/agent_matchbox
     volumes:
       - lui_workspace:/app/workspace
+      # ── 挂载外部项目源码（供 source_path 路径验证与 AST 发现使用）──
+      # 若目标项目源码位于宿主机，请取消下方注释并修改为实际路径：
+      # - /path/on/host/my-project:/app/projects/my-project:ro
+      # 若目标项目源码位于其他容器，可使用 Docker named volume 或相对路径：
+      # - my-project-src:/app/projects/my-project:ro
     ports:
       - "6689:6689"
     healthcheck:

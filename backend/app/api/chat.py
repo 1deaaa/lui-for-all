@@ -6,7 +6,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,12 +100,24 @@ def _serialize_task_run(task_run: TaskRun) -> dict:
     }
 
 
+def _get_user_context(request: Request) -> dict | None:
+    """从 request.state 获取用户上下文（由 JWT 中间件注入）"""
+    return getattr(request.state, "user_context", None)
+
+
 @router.post("/stream")
 async def chat_stream(
     request: ChatStreamRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """单请求启动聊天并直接返回 SSE 流（复用 sessions.stream_events）。"""
+    user_ctx = _get_user_context(http_request)
+
+    # User JWT 必须访问自己项目的端点
+    if user_ctx and user_ctx.get("project_id") != request.project_id:
+        raise HTTPException(status_code=403, detail="无权访问该项目")
+
     session_repo = SessionRepository(db)
     task_repo = TaskRepository(db)
     project_repo = ProjectRepository(db)
@@ -130,11 +142,13 @@ async def chat_stream(
 
         session_id = str(uuid.uuid4())
         thread_id = f"thread_{session_id}"
+        created_by = user_ctx.get("username", "admin") if user_ctx else "admin"
         session = Session(
             id=session_id,
             project_id=request.project_id,
             status="active",
             thread_id=thread_id,
+            created_by=created_by,
         )
         await session_repo.add_session(session)
 
@@ -165,16 +179,23 @@ async def chat_stream(
 
     await db.commit()
 
+    # 构建用户上下文参数（传递给 stream_events）
+    user_context_kwarg = {}
+    if user_ctx:
+        user_context_kwarg = {"user_context": user_ctx}
+
     return await stream_events(
         session_id=session_id,
         task_run_id=task_run_id,
         locale=request.locale,
+        **user_context_kwarg,
     )
 
 
 @router.post("/resume")
 async def chat_resume(
     request: ChatResumeRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """统一恢复执行入口：审批后继续同一 task_run 的 SSE 流。"""
@@ -215,6 +236,12 @@ async def chat_resume(
             approval.decided_by = "user"
         await db.commit()
 
+    # 构建用户上下文参数
+    user_ctx = _get_user_context(http_request)
+    user_context_kwarg = {}
+    if user_ctx:
+        user_context_kwarg = {"user_context": user_ctx}
+
     return await stream_events(
         session_id=request.session_id,
         task_run_id=request.task_run_id,
@@ -223,6 +250,7 @@ async def chat_resume(
         resume_action=request.action,
         resume_approved_ids=",".join(approved_ids),
         resume_batch_id=request.batch_id,
+        **user_context_kwarg,
     )
 
 

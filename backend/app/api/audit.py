@@ -15,6 +15,7 @@ router = APIRouter()
 
 @router.get("/task-runs")
 async def list_task_runs(
+    project_id: str | None = None,
     session_id: str | None = None,
     status: str | None = None,
     limit: int = Query(50, le=100),
@@ -23,6 +24,7 @@ async def list_task_runs(
 ):
     """列出任务运行记录"""
     task_runs, total = await TaskRepository(db).list_task_runs(
+        project_id=project_id,
         session_id=session_id,
         status=status,
         limit=limit,
@@ -143,6 +145,7 @@ async def get_http_execution(
 
 @router.get("/http-executions")
 async def list_http_executions(
+    project_id: str | None = None,
     task_run_id: str | None = None,
     keyword: str | None = None,
     limit: int = Query(50, le=100),
@@ -152,9 +155,14 @@ async def list_http_executions(
     """列出 HTTP 执行记录列表"""
     from sqlalchemy import select, func
     from app.models.audit import HttpExecution
+    from app.models.task import TaskRun
 
     query = select(HttpExecution).order_by(HttpExecution.created_at.desc())
     count_query = select(func.count()).select_from(HttpExecution)
+
+    if project_id:
+        query = query.join(TaskRun, HttpExecution.task_run_id == TaskRun.id).where(TaskRun.project_id == project_id)
+        count_query = count_query.join(TaskRun, HttpExecution.task_run_id == TaskRun.id).where(TaskRun.project_id == project_id)
 
     if task_run_id:
         query = query.where(HttpExecution.task_run_id == task_run_id)
@@ -198,6 +206,7 @@ async def list_http_executions(
 
 @router.get("/approvals")
 async def list_approval_log(
+    project_id: str | None = None,
     status: str | None = None,
     keyword: str | None = None,
     limit: int = Query(50, le=100),
@@ -205,7 +214,7 @@ async def list_approval_log(
     db: AsyncSession = Depends(get_session),
 ):
     """列出审批操作记录（审批日志）"""
-    approvals, total = await AuditRepository(db).list_approvals(status=status, keyword=keyword, limit=limit, offset=offset)
+    approvals, total = await AuditRepository(db).list_approvals(project_id=project_id, status=status, keyword=keyword, limit=limit, offset=offset)
 
     return {
         "approvals": [
@@ -229,6 +238,7 @@ async def list_approval_log(
 
 @router.get("/policy-verdicts")
 async def list_policy_verdicts(
+    project_id: str | None = None,
     task_run_id: str | None = None,
     action: str | None = None,
     limit: int = Query(50, le=100),
@@ -236,6 +246,7 @@ async def list_policy_verdicts(
 ):
     """列出策略判定记录"""
     verdicts = await AuditRepository(db).list_policy_verdicts(
+        project_id=project_id,
         task_run_id=task_run_id,
         action=action,
         limit=limit,
@@ -262,12 +273,14 @@ async def list_policy_verdicts(
 
 @router.get("/model-calls")
 async def list_model_calls(
+    project_id: str | None = None,
     task_run_id: str | None = None,
     limit: int = Query(50, le=100),
     db: AsyncSession = Depends(get_session),
 ):
     """列出模型调用记录"""
     calls = await AuditRepository(db).list_model_calls(
+        project_id=project_id,
         task_run_id=task_run_id,
         limit=limit,
     )

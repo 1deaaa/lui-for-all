@@ -4,11 +4,31 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/stores/project'
+import RoleProfilesDrawer from '@/components/project/RoleProfilesDrawer.vue'
 
 const projectStore = useProjectStore()
 const router = useRouter()
 const { t } = useI18n()
 let pollingTimer: number | null = null
+
+// 角色权限抽屉
+const roleDrawerVisible = ref(false)
+const roleDrawerProjectId = ref('')
+const roleDrawerProjectName = ref('')
+
+function openRoleDrawer(project: any) {
+  roleDrawerProjectId.value = project.id
+  roleDrawerProjectName.value = project.name
+  roleDrawerVisible.value = true
+}
+
+/** 构建 fetch 请求的 headers（自动注入 JWT） */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...extra }
+  const token = localStorage.getItem('lui_jwt')
+  if (token) h['Authorization'] = `Bearer ${token}`
+  return h
+}
 
 // 描述内联编辑状态
 const editingDescId = ref<string | null>(null)
@@ -106,6 +126,11 @@ const importLoading = ref(false)
 const testConnectionLoading = ref(false)
 const connectionStatus = ref<'untested' | 'success' | 'warning' | 'error'>('untested')
 
+// 源码路径验证
+const sourcePathVerifying = ref(false)
+const sourcePathVerified = ref<null | 'accessible' | 'no_framework' | 'not_found' | 'permission_denied'>(null)
+const sourcePathInfo = ref<Record<string, any> | null>(null)
+
 // 登录接口选择
 const routeOptions = ref<{ route_id: string; label: string }[]>([])
 const routesLoading = ref(false)
@@ -116,6 +141,8 @@ const loginVerifying = ref(false)
 function openImportDialog() {
   importForm.value = createDefaultImportForm()
   connectionStatus.value = 'untested'
+  sourcePathVerified.value = null
+  sourcePathInfo.value = null
   routeOptions.value = []
   loginVerified.value = null
   selectedPresetId.value = ''
@@ -159,7 +186,7 @@ function applyImportPresetById(presetId: string) {
 async function fetchImportPresets() {
   presetLoading.value = true
   try {
-    const response = await fetch('/api/projects/import-presets')
+    const response = await fetch('/api/projects/import-presets', { headers: authHeaders() })
     const data = (await response.json()) as { presets?: ImportPreset[]; detail?: string }
     if (!response.ok) {
       throw new Error(data.detail || t('projects.messages.presetFetchFailed'))
@@ -180,6 +207,62 @@ async function fetchImportPresets() {
   }
 }
 
+// 验证源码路径可达性
+async function verifySourcePath() {
+  if (!importForm.value.source_path) {
+    ElMessage.warning(t('projects.messages.sourcePathRequired'))
+    return false
+  }
+
+  sourcePathVerifying.value = true
+  try {
+    const response = await fetch('/api/projects/verify-source-path', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ source_path: importForm.value.source_path })
+    })
+
+    const data = await response.json()
+    if (!response.ok) {
+      sourcePathVerified.value = 'not_found'
+      ElMessage.error(data.detail || t('projects.messages.sourcePathVerifyFailed'))
+      return false
+    }
+
+    sourcePathInfo.value = data
+
+    if (data.accessible && data.framework_detected) {
+      sourcePathVerified.value = 'accessible'
+      ElMessage.success(
+        t('projects.messages.sourcePathAccessible', {
+          framework: data.framework_detected,
+          fileCount: data.file_count,
+        })
+      )
+    } else if (data.accessible) {
+      sourcePathVerified.value = 'no_framework'
+      ElMessage.warning(t('projects.messages.sourcePathNoFramework'))
+    } else if (data.hint && data.hint.includes('权限')) {
+      sourcePathVerified.value = 'permission_denied'
+      ElMessage.error(data.hint)
+    } else {
+      sourcePathVerified.value = 'not_found'
+      if (data.hint) {
+        ElMessage.error(data.hint)
+      } else {
+        ElMessage.error(t('projects.messages.sourcePathNotFound'))
+      }
+    }
+    return data.accessible
+  } catch {
+    sourcePathVerified.value = 'not_found'
+    ElMessage.error(t('projects.messages.sourcePathVerifyFailed'))
+    return false
+  } finally {
+    sourcePathVerifying.value = false
+  }
+}
+
 // 测试连通性
 async function testConnection() {
   if (!importForm.value.base_url) {
@@ -191,7 +274,7 @@ async function testConnection() {
   try {
     const response = await fetch('/api/projects/test-connection', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         base_url: importForm.value.base_url,
         openapi_url: importForm.value.openapi_url || null,
@@ -216,6 +299,17 @@ async function testConnection() {
           label: `${r.method} ${r.path}${r.summary ? '  · ' + r.summary : ''}`,
         }))
       }
+      // 顺带更新源码路径验证状态
+      if (data.source_path_info) {
+        sourcePathInfo.value = data.source_path_info
+        if (data.source_path_info.accessible && data.source_path_info.framework_detected) {
+          sourcePathVerified.value = 'accessible'
+        } else if (data.source_path_info.accessible) {
+          sourcePathVerified.value = 'no_framework'
+        } else {
+          sourcePathVerified.value = 'not_found'
+        }
+      }
       return true
     }
   } catch (error) {
@@ -238,7 +332,7 @@ async function fetchRoutes(force = false) {
   try {
     const resp = await fetch('/api/projects/fetch-routes', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         base_url: importForm.value.base_url,
         openapi_url: importForm.value.openapi_url || null,
@@ -273,7 +367,7 @@ async function verifyLogin(): Promise<boolean> {
   try {
     const resp = await fetch('/api/projects/verify-login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ base_url, login_route_id, username, password, body_field_username, body_field_password }),
     })
     const data = await resp.json()
@@ -606,6 +700,15 @@ function getStatusText(status: string): string {
           >
             {{ t('common.delete') }}
           </el-button>
+          <el-button
+            size="small"
+            plain
+            @click.stop="openRoleDrawer(project)"
+            :disabled="project.discovery_status !== 'completed'"
+            :title="project.discovery_status !== 'completed' ? t('projects.actions.enterChatHint') : ''"
+          >
+            <el-icon><UserFilled /></el-icon> {{ t('projects.actions.roleProfiles') }}
+          </el-button>
         </div>
       </el-card>
     </div>
@@ -652,7 +755,38 @@ function getStatusText(status: string): string {
           <el-input v-model="importForm.openapi_url" :placeholder="t('projects.importDialog.fields.openapiUrl.placeholder')" />
         </el-form-item>
         <el-form-item :label="t('projects.importDialog.fields.sourcePath.label')" required>
-          <el-input v-model="importForm.source_path" :placeholder="t('projects.importDialog.fields.sourcePath.placeholder')" />
+          <div class="source-path-row">
+            <el-input
+              v-model="importForm.source_path"
+              :placeholder="t('projects.importDialog.fields.sourcePath.placeholder')"
+              @change="sourcePathVerified = null; sourcePathInfo = null"
+              style="flex: 1;"
+            />
+            <el-button
+              size="small"
+              :type="sourcePathVerified === 'accessible' ? 'success' : sourcePathVerified === 'not_found' || sourcePathVerified === 'permission_denied' ? 'danger' : sourcePathVerified === 'no_framework' ? 'warning' : 'default'"
+              :loading="sourcePathVerifying"
+              @click="verifySourcePath"
+              style="margin-left: 8px;"
+            >
+              <template v-if="sourcePathVerified === 'accessible'">✓</template>
+              <template v-else-if="sourcePathVerified === 'not_found' || sourcePathVerified === 'permission_denied'">✗</template>
+              <template v-else-if="sourcePathVerified === 'no_framework'">⚠</template>
+              <template v-else>{{ t('projects.importDialog.verifySourcePath') }}</template>
+            </el-button>
+          </div>
+          <div v-if="sourcePathInfo && sourcePathInfo.accessible && sourcePathInfo.framework_detected" class="source-path-info success">
+            {{ t('projects.importDialog.sourcePathDetected', { framework: sourcePathInfo.framework_detected, fileCount: sourcePathInfo.file_count }) }}
+          </div>
+          <div v-else-if="sourcePathInfo && sourcePathInfo.accessible && !sourcePathInfo.framework_detected" class="source-path-info warning">
+            {{ t('projects.importDialog.sourcePathNoFrameworkHint') }}
+          </div>
+          <div v-else-if="sourcePathInfo && !sourcePathInfo.accessible && sourcePathInfo.running_in_container" class="source-path-info error">
+            {{ t('projects.importDialog.sourcePathDockerHint') }}
+          </div>
+          <div v-else-if="sourcePathInfo && !sourcePathInfo.accessible && sourcePathInfo.hint" class="source-path-info error">
+            {{ sourcePathInfo.hint }}
+          </div>
         </el-form-item>
         <el-form-item :label="t('projects.importDialog.fields.description.label')">
           <el-input
@@ -733,6 +867,14 @@ function getStatusText(status: string): string {
         </div>
       </template>
     </el-dialog>
+
+    <!-- 角色权限抽屉 -->
+    <RoleProfilesDrawer
+      v-model:visible="roleDrawerVisible"
+      :project-id="roleDrawerProjectId"
+      :project-name="roleDrawerProjectName"
+      @changed="refreshProjects"
+    />
   </div>
 </template>
 
@@ -884,6 +1026,39 @@ function getStatusText(status: string): string {
   margin-top: 4px;
   font-family: var(--font-mono);
   word-break: break-all;
+}
+
+.source-path-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.source-path-info {
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 0;
+  word-break: break-all;
+}
+
+.source-path-info.success {
+  background: #f0f9eb;
+  border: 1px solid #c2e7b0;
+  color: #67c23a;
+}
+
+.source-path-info.warning {
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
+  color: #e6a23c;
+}
+
+.source-path-info.error {
+  background: #fef0f0;
+  border: 1px solid #fbc4c4;
+  color: #f56c6c;
 }
 
 .dialog-footer-row {

@@ -38,9 +38,14 @@ USERS: dict[str, dict[str, Any]] = {}
 ORDERS: dict[str, list[dict[str, Any]]] = {}
 JOBS: dict[str, dict[str, Any]] = {}
 IDEMPOTENCY_PAYMENTS: dict[str, dict[str, Any]] = {}
-TOKENS: dict[str, str] = {}
-LOGIN_USERNAME = "111"
-LOGIN_PASSWORD = "111111"
+# token → {username, role}
+TOKENS: dict[str, dict[str, str]] = {}
+
+# 双角色凭据
+LOGIN_ACCOUNTS: dict[str, dict[str, str]] = {
+    "111": {"password": "111111", "role": "admin"},
+    "222": {"password": "222222", "role": "user"},
+}
 
 
 class LoginRequest(BaseModel):
@@ -124,12 +129,24 @@ def _get_token(
 def _require_auth(
     authorization: str | None = Header(default=None, alias="Authorization"),
     session_token: str | None = Cookie(default=None),
-) -> str:
+) -> dict[str, str]:
+    """返回 {username, role}，认证无效则 401"""
     token = _get_token(authorization=authorization, session_token=session_token)
-    username = TOKENS.get(token)
-    if not username:
+    info = TOKENS.get(token)
+    if not info:
         raise HTTPException(status_code=401, detail="认证无效或已过期")
-    return username
+    return info
+
+
+def _require_admin(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    session_token: str | None = Cookie(default=None),
+) -> dict[str, str]:
+    """仅 admin 角色可访问，否则 403"""
+    info = _require_auth(authorization=authorization, session_token=session_token)
+    if info["role"] != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return info
 
 
 def _must_get_user(user_id: str) -> dict[str, Any]:
@@ -187,17 +204,19 @@ def health() -> dict[str, str]:
 
 @app.post("/api/auth/login")
 def login(request: LoginRequest, response: Response) -> dict[str, Any]:
-    if request.username != LOGIN_USERNAME or request.password != LOGIN_PASSWORD:
+    account = LOGIN_ACCOUNTS.get(request.username)
+    if not account or request.password != account["password"]:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     token = f"token-{uuid.uuid4().hex}"
-    TOKENS[token] = request.username
+    TOKENS[token] = {"username": request.username, "role": account["role"]}
     response.set_cookie(key="session_token", value=token, httponly=True)
     return {
         "access_token": token,
         "token_type": "bearer",
         "expires_in": 3600,
         "username": request.username,
+        "role": account["role"],
     }
 
 
@@ -271,7 +290,7 @@ def list_users(
 
 
 @app.post("/api/users", status_code=status.HTTP_201_CREATED)
-def create_user(payload: UserCreate, actor: str = Depends(_require_auth)) -> dict[str, Any]:
+def create_user(payload: UserCreate, actor: dict[str, str] = Depends(_require_admin)) -> dict[str, Any]:
     user_id = f"u-{uuid.uuid4().hex[:8]}"
     now = _now()
     user = {
@@ -283,7 +302,7 @@ def create_user(payload: UserCreate, actor: str = Depends(_require_auth)) -> dic
         "tags": payload.tags,
         "created_at": now,
         "updated_at": now,
-        "created_by": actor,
+        "created_by": actor["username"],
     }
     USERS[user_id] = user
     ORDERS.setdefault(user_id, [])
@@ -293,7 +312,7 @@ def create_user(payload: UserCreate, actor: str = Depends(_require_auth)) -> dic
 @app.post("/api/users/batch", status_code=status.HTTP_201_CREATED)
 def batch_create_users(
     payload: BatchCreateUsersRequest,
-    actor: str = Depends(_require_auth),
+    actor: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     created = []
     for user_data in payload.users:
@@ -308,7 +327,7 @@ def batch_create_users(
             "tags": user_data.tags,
             "created_at": now,
             "updated_at": now,
-            "created_by": actor,
+            "created_by": actor["username"],
         }
         USERS[user_id] = user
         ORDERS.setdefault(user_id, [])
@@ -319,7 +338,7 @@ def batch_create_users(
 @app.patch("/api/users/batch/status")
 def batch_update_status(
     payload: BatchStatusRequest,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     updated = 0
     for user_id in payload.user_ids:
@@ -331,7 +350,7 @@ def batch_update_status(
 
 
 @app.get("/api/users/{user_id}")
-def get_user(user_id: str, _: str = Depends(_require_auth)) -> dict[str, Any]:
+def get_user(user_id: str, _: dict[str, str] = Depends(_require_auth)) -> dict[str, Any]:
     return _must_get_user(user_id)
 
 
@@ -339,7 +358,7 @@ def get_user(user_id: str, _: str = Depends(_require_auth)) -> dict[str, Any]:
 def replace_user(
     user_id: str,
     payload: UserReplace,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     user = _must_get_user(user_id)
     user.update(
@@ -359,7 +378,7 @@ def replace_user(
 def patch_user(
     user_id: str,
     payload: UserPatch,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     user = _must_get_user(user_id)
     patch_data = payload.model_dump(exclude_none=True)
@@ -373,7 +392,7 @@ def patch_user(
 def delete_user(
     user_id: str,
     hard: bool = Query(default=False, description="true 表示硬删除"),
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     _must_get_user(user_id)
     if hard:
@@ -391,7 +410,7 @@ def delete_user(
 def list_orders(
     user_id: str,
     status_filter: Literal["created", "paid", "cancelled"] | None = Query(default=None, alias="status"),
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_auth),
 ) -> dict[str, Any]:
     _must_get_user(user_id)
     items = ORDERS.get(user_id, [])
@@ -404,7 +423,7 @@ def list_orders(
 def create_order(
     user_id: str,
     payload: OrderCreate,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_auth),
 ) -> dict[str, Any]:
     _must_get_user(user_id)
     order = {
@@ -423,7 +442,7 @@ def create_order(
 @app.post("/api/orders/batch/cancel")
 def batch_cancel_orders(
     payload: BatchCancelOrderRequest,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_auth),
 ) -> dict[str, Any]:
     cancelled = 0
     for order_list in ORDERS.values():
@@ -490,7 +509,7 @@ def echo_cookies(
 
 
 @app.get("/api/export/users.csv")
-def export_users_csv(_: str = Depends(_require_auth)) -> StreamingResponse:
+def export_users_csv(_: dict[str, str] = Depends(_require_auth)) -> StreamingResponse:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=["id", "name", "email", "role", "active"])
     writer.writeheader()
@@ -530,7 +549,7 @@ async def stream_notifications() -> StreamingResponse:
 
 
 @app.post("/api/jobs", status_code=status.HTTP_202_ACCEPTED)
-def create_job(payload: JobCreate, _: str = Depends(_require_auth)) -> dict[str, Any]:
+def create_job(payload: JobCreate, _: dict[str, str] = Depends(_require_auth)) -> dict[str, Any]:
     job_id = f"j-{uuid.uuid4().hex[:8]}"
     job = {
         "id": job_id,
@@ -545,7 +564,7 @@ def create_job(payload: JobCreate, _: str = Depends(_require_auth)) -> dict[str,
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str, _: str = Depends(_require_auth)) -> dict[str, Any]:
+def get_job(job_id: str, _: dict[str, str] = Depends(_require_auth)) -> dict[str, Any]:
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -556,7 +575,7 @@ def get_job(job_id: str, _: str = Depends(_require_auth)) -> dict[str, Any]:
 def patch_job(
     job_id: str,
     payload: JobPatch,
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     job = JOBS.get(job_id)
     if not job:
@@ -567,7 +586,7 @@ def patch_job(
 
 
 @app.delete("/api/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_job(job_id: str, _: str = Depends(_require_auth)) -> Response:
+def delete_job(job_id: str, _: dict[str, str] = Depends(_require_admin)) -> Response:
     JOBS.pop(job_id, None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -576,7 +595,7 @@ def delete_job(job_id: str, _: str = Depends(_require_auth)) -> Response:
 def create_payment(
     payload: PaymentRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    _: str = Depends(_require_auth),
+    _: dict[str, str] = Depends(_require_admin),
 ) -> dict[str, Any]:
     if not idempotency_key:
         raise HTTPException(status_code=400, detail="缺少 Idempotency-Key")

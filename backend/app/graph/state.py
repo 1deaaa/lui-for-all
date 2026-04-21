@@ -36,6 +36,11 @@ class GraphState(TypedDict):
     captured_token: str | None  # Agentic loop 跨轮次复用的认证 token
     project_description: str | None  # 项目全局业务描述（由 AI 或用户填写）
 
+    # 终端用户上下文（仅当 User JWT 请求时填充）
+    user_role_profile_id: str | None  # 用户角色画像 ID
+    user_accessible_route_ids: list[str]  # 用户可达路由 ID 列表
+    user_target_token: str | None  # 用户在目标系统的 token（替代项目管理员 token）
+
     # 整个对话上下文历史
     chat_history: list[dict[str, Any]]
 

@@ -6,7 +6,7 @@ Talk-to-Interface 数据库模块
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -62,12 +62,48 @@ async_session = async_sessionmaker(
 )
 
 
+async def _migrate_legacy_tables(conn) -> None:
+    """检测旧表缺列并用 ALTER TABLE 补齐（SQLite 不支持 ADD COLUMN IF NOT EXISTS）"""
+    # 需要补齐的列定义: (表名, 列名, 列类型 SQL)
+    migrations = [
+        ("projects", "slug", "VARCHAR(100)"),
+        ("projects", "user_login_enabled", "BOOLEAN DEFAULT 0"),
+        ("projects", "default_role_profile_id", "VARCHAR(36)"),
+        ("sessions", "created_by", "VARCHAR(255)"),
+    ]
+
+    for table_name, column_name, column_type in migrations:
+        # 检查表是否存在
+        result = await conn.execute(
+            text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=:t"
+            ),
+            {"t": table_name},
+        )
+        if result.fetchone() is None:
+            continue
+
+        # 获取已有列名
+        col_result = await conn.execute(
+            text(f"PRAGMA table_info({table_name})")
+        )
+        existing_cols = {row[1] for row in col_result.fetchall()}
+
+        if column_name not in existing_cols:
+            await conn.execute(
+                text(
+                    f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                )
+            )
+
+
 async def init_db():
-    """初始化数据库 (创建所有表)"""
+    """初始化数据库 (创建所有表 + 迁移旧表缺列)"""
     from app.models import audit, project, session, task  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_legacy_tables(conn)
 
 
 async def get_session() -> AsyncSession:
