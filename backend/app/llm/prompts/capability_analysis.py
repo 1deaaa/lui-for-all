@@ -35,11 +35,26 @@ CAPABILITY_INFER_PROMPT = """
       "domain": "auth",
       "safety_level": "readonly_safe",
       "requires_confirmation": false,
-      "usage_note": "返回的token有效期24小时"
+      "usage_note": "返回的token有效期24小时",
+      "response_mode": "instant"
     }}
   ]
 }}
 
 domain 必须是以下之一: auth, customer, finance, inventory, content, analytics, operations, system, unknown
 safety_level 必须是以下之一: readonly_safe, readonly_sensitive, soft_write, hard_write, critical
+response_mode 必须是以下之一（极为重要，请仔细分析源码后判断）：
+- instant：普通请求-响应，一次返回完整结果（绝大多数接口都是这个）
+- streaming：源码中出现以下任一特征时标记为 streaming：
+  · Content-Type 设置为 text/event-stream
+  · 使用 SSE 相关库（如 sse-starlette、flask-sse、fastapi.responses.StreamingResponse 配合 yield）
+  · 函数体内使用 yield 返回生成器（且不是简单的列表推导）
+  · 使用 ServerSentEvent / EventSourceResponse 等流式响应类
+  · 注解或装饰器含 stream / heartbeat / subscribe 等关键词
+  · 路径含 /stream / /subscribe / /watch / /realtime 等流式语义
+- paginated：源码中出现以下特征时标记为 paginated：
+  · 接受 page / offset / cursor / after / next_token / skip / limit 等分页参数
+  · 返回值包含 next_page / has_more / next_cursor / total_pages 等分页元数据
+  · 使用分页工具类（如 fastapi-pagination、PageParams、Paginator）
+  如果分页特征不明显，默认为 instant
 """

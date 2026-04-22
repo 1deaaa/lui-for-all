@@ -369,6 +369,7 @@ class CapabilityGraphBuilder:
                 summary = analysis.summary or self._generate_fallback_summary(route)
                 ai_usage_guidelines = analysis.usage_note
                 source_code_analysis = f"AI 分析摘要: {analysis.summary}"
+                response_mode = analysis.response_mode
                 confidence = 0.85
             else:
                 # 规则兜底：不再用 LLM "猜"，由 HTTP Method 决定默认值
@@ -378,6 +379,8 @@ class CapabilityGraphBuilder:
                 summary = self._generate_fallback_summary(route)
                 ai_usage_guidelines = None
                 source_code_analysis = None
+                # 无源码时从 OpenAPI 的 response_is_streaming 推断
+                response_mode = "streaming" if route.response_is_streaming else "instant"
                 confidence = 0.3
 
             # 根据安全等级推断最佳 UI 组件（而非要求 AI 逐一指定）
@@ -414,6 +417,7 @@ class CapabilityGraphBuilder:
                     )
                 ],
                 parameter_hints=self._extract_parameter_hints(route),
+                response_mode=response_mode,
             )
             capabilities.append(capability)
 

@@ -419,6 +419,7 @@ async def stream_events(
                             "data_sensitivity": c.data_sensitivity,
                             "best_modalities": c.best_modalities,
                             "requires_confirmation": c.requires_confirmation,
+                            "response_mode": c.response_mode,
                             "parameter_hints": _merge_parameter_hints(
                                 c.parameter_hints,
                                 c.backed_by_routes,

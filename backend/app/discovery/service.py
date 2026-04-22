@@ -114,6 +114,7 @@ class DiscoveryService:
                 parameter_hints=cap.parameter_hints,
                 ai_usage_guidelines=cap.ai_usage_guidelines,
                 source_code_analysis=cap.source_code_analysis,
+                response_mode=cap.response_mode,
             )
             self.db.add(cap_record)
 

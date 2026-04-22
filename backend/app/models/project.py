@@ -204,6 +204,12 @@ class CapabilityRecord(Base):
     parameter_hints: Mapped[dict[str, Any]] = mapped_column(JSON, default={})
     ai_usage_guidelines: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_code_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 响应模式
+    response_mode: Mapped[str] = mapped_column(
+        String(20), default="instant",
+        comment="响应模式: instant/streaming/paginated",
+    )
     
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(

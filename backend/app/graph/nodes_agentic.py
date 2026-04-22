@@ -199,13 +199,20 @@ def _build_capability_list(available_capabilities: list[dict]) -> str:
         desc = cap.get("description") or ""
         parameter_hints = cap.get("parameter_hints") or {}
         routes = cap.get("backed_by_routes", [])
+        # 响应模式标记
+        response_mode = cap.get("response_mode", "instant")
+        mode_tag = ""
+        if response_mode == "streaming":
+            mode_tag = " 📡SSE流式"
+        elif response_mode == "paginated":
+            mode_tag = " 📄分页追加"
         # 取第一个路由作为 route_id 示例
         route_id = ""
         if routes and isinstance(routes, list):
             first = routes[0]
             if isinstance(first, dict):
                 route_id = first.get("route_id", "")
-        line = f"- {route_id or cap_id} | {safety} | {name}：{desc}"
+        line = f"- {route_id or cap_id} | {safety}{mode_tag} | {name}：{desc}"
         line += f"\n  参数: {_format_parameter_hints(parameter_hints)}"
         lines.append(line)
     return "\n".join(lines) if lines else "（无可用接口）"
@@ -544,6 +551,188 @@ async def _execute_read_call(
         }
 
 
+def _find_response_mode(state: GraphState, route_id: str) -> str:
+    """从 available_capabilities 中查找指定 route_id 的 response_mode"""
+    for cap in state.get("available_capabilities", []):
+        routes = cap.get("backed_by_routes") or []
+        if any(isinstance(r, dict) and r.get("route_id") == route_id for r in routes):
+            return cap.get("response_mode", "instant")
+        if cap.get("capability_id") == route_id:
+            return cap.get("response_mode", "instant")
+    return "instant"
+
+
+async def _execute_stream_call(
+    call: dict,
+    state: GraphState,
+    current_token: str | None = None,
+) -> dict:
+    """执行流式采集调用，返回采集结果摘要"""
+    from app.executor.stream_collector import StreamHTTPCollector
+
+    route_id = call.get("route_id", "")
+    parameters = call.get("parameters", {})
+    call_id = call.get("call_id", str(uuid.uuid4()))
+    strategy = call.get("collect_strategy", {"mode": "time_window", "duration_seconds": 10})
+    step_id = str(uuid.uuid4())
+
+    # 终端用户可达路由检查
+    accessible_ids = state.get("user_accessible_route_ids") or []
+    if accessible_ids and route_id not in accessible_ids:
+        _emit("tool_started", tool_name="stream_collect", title=f"采集 {route_id}", detail="权限不足", step_id=step_id, route_id=route_id)
+        _emit("tool_completed", tool_name="stream_collect", title=f"✗ {route_id} → 权限不足", detail="当前角色无权访问该接口", step_id=step_id, route_id=route_id, status_code=403)
+        return {
+            "call_id": call_id,
+            "route_id": route_id,
+            "status": "forbidden",
+            "status_code": 403,
+            "result": f"权限不足：当前角色无权访问 {route_id}",
+            "duration_ms": 0,
+        }
+
+    _emit("tool_started", tool_name="stream_collect", title=f"采集 {route_id}", detail=call.get("reasoning", ""), step_id=step_id, route_id=route_id)
+
+    # 构建认证信息（复用 _execute_read_call 的逻辑）
+    project_id = state.get("project_id", "")
+    user_target_token = state.get("user_target_token")
+    if user_target_token and isinstance(user_target_token, dict):
+        token = current_token or user_target_token.get("token")
+        auth_mode = user_target_token.get("auth_mode", "bearer")
+        cookie_name = user_target_token.get("cookie_name")
+    else:
+        cached = _project_token_cache.get(project_id, {})
+        token = current_token or cached.get("token")
+        auth_mode = cached.get("auth_mode", "bearer")
+        cookie_name = cached.get("cookie_name")
+
+    if not token:
+        token = await _ensure_project_token(state)
+        cached = _project_token_cache.get(project_id, {})
+        auth_mode = cached.get("auth_mode", "bearer")
+        cookie_name = cached.get("cookie_name")
+
+    # 构建 URL 和 headers
+    method, path = _parse_route(route_id)
+    route_hints = _find_route_parameter_hints(state, route_id)
+
+    # 替换路径模板变量
+    path_param_keys = re.findall(r"\{([^{}]+)\}", path)
+    remaining = dict(parameters)
+    for key in path_param_keys:
+        if key in remaining:
+            path = path.replace(f'{{{key}}}', str(remaining.pop(key)))
+    parameters = remaining
+
+    # 按参数位置拆分（仅 query 用于 SSE，query+body 用于分页）
+    query_params: dict[str, Any] = {}
+    for key, value in parameters.items():
+        key_str = str(key)
+        hint = _resolve_param_hint(route_hints, key_str, method)
+        location = str((hint or {}).get("location", "")).lower()
+        if location in ("query", "path", ""):
+            query_params[key_str] = value
+
+    base_url = state.get("project_base_url", "http://localhost:6689").rstrip("/")
+    norm_path = path if path.startswith("/") else f"/{path}"
+    full_url = f"{base_url}{norm_path}"
+
+    from app.services.auth_session_service import AuthSessionService
+    auth = AuthSessionService()
+    if token:
+        auth._token = token
+        auth._auth_mode = auth_mode
+        auth._cookie_name = cookie_name
+    headers = auth.build_headers({"Content-Type": "application/json"})
+
+    # 根据 response_mode 选择采集方式
+    response_mode = _find_response_mode(state, route_id)
+    collector = StreamHTTPCollector()
+
+    try:
+        if response_mode == "streaming":
+            collect_result = await collector.collect_sse(
+                url=full_url, headers=headers, strategy=strategy, params=query_params or None,
+            )
+        elif response_mode == "paginated":
+            collect_result = await collector.collect_paginated(
+                url=full_url, headers=headers, strategy=strategy, params=query_params or None,
+            )
+        else:
+            # instant 模式不应走到这里，降级为普通 call
+            logger.warning(f"[stream_call] route {route_id} 的 response_mode=instant，降级为普通 HTTP 调用")
+            return await _execute_read_call(call, state, current_token=token)
+
+        _emit(
+            "tool_completed",
+            tool_name="stream_collect",
+            title=f"✓ {route_id} → 采集完成",
+            detail=f"采集到 {collect_result.events_count} 个事件，耗时 {collect_result.duration_ms}ms，采样率 {collect_result.sample_ratio}",
+            step_id=step_id,
+            route_id=route_id,
+            status_code=200,
+        )
+
+        # 构建结果文本
+        result_text = (
+            f"【流式采集结果】状态: {collect_result.status} | "
+            f"事件数: {collect_result.events_count} | "
+            f"耗时: {collect_result.duration_ms}ms | "
+            f"采样率: {collect_result.sample_ratio}\n"
+            f"【汇总统计】{json.dumps(collect_result.summary, ensure_ascii=False)}\n"
+            f"【事件数据】\n{json.dumps(collect_result.events, ensure_ascii=False)}"
+        )
+        if len(result_text) > 32000:
+            result_text = result_text[:32000] + "... [数据过长，已被系统截断]"
+
+        return {
+            "call_id": call_id,
+            "route_id": route_id,
+            "status": "success",
+            "status_code": 200,
+            "result": result_text,
+            "duration_ms": collect_result.duration_ms,
+            "captured_token": None,
+            "artifact": {
+                "artifact_id": str(uuid.uuid4()),
+                "step_id": step_id,
+                "route_id": route_id,
+                "method": method,
+                "url": full_url,
+                "request_body": {"strategy": strategy, "params": query_params},
+                "status_code": 200,
+                "response_body": {
+                    "collect_status": collect_result.status,
+                    "events_count": collect_result.events_count,
+                    "duration_ms": collect_result.duration_ms,
+                    "sample_ratio": collect_result.sample_ratio,
+                    "summary": collect_result.summary,
+                    "events": collect_result.events,
+                },
+                "duration_ms": collect_result.duration_ms,
+                "redacted": False,
+                "error": None,
+            },
+        }
+
+    except Exception as exc:
+        _emit(
+            "tool_completed",
+            tool_name="stream_collect",
+            title=f"✗ {route_id} 采集失败",
+            detail=str(exc),
+            step_id=step_id,
+            route_id=route_id,
+            status_code=0,
+        )
+        return {
+            "call_id": call_id,
+            "route_id": route_id,
+            "status": "error",
+            "status_code": 0,
+            "result": f"流式采集失败: {exc}",
+        }
+
+
 async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     """
     Agentic Loop 核心节点（ReAct 模式）
@@ -843,6 +1032,67 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
             "agentic_history": existing_history + new_history,
             "execution_artifacts": new_artifacts,
             "approved_writes_cache": new_approved_cache[-20:]
+        }
+
+    elif action == "stream_call":
+        # 流式采集调用：SSE / 分页追加
+        call = decision.get("call", {})
+        if not call:
+            logger.warning("[agentic_loop] action=stream_call 但 call 为空，视为 finish")
+            return {
+                "agentic_done": True,
+                "agentic_iterations": iterations,
+                "agentic_history": existing_history + new_history,
+                "execution_artifacts": new_artifacts,
+            }
+
+        # 安全等级分流（与 call 分支一致）
+        safety_level = call.get("safety_level", "readonly_safe")
+        if safety_level in WRITE_SAFETY:
+            # 写入类接口不支持 stream_call，降级提示
+            stream_result_summary = f'stream_call 不支持写入操作（safety_level={safety_level}），请改用 action=call'
+            new_history.append({
+                "role": "user",
+                "content": f"【工具执行结果】\n{stream_result_summary}",
+            })
+            _task_run_llm_cache.pop(cache_key, None)
+            return {
+                "agentic_done": False,
+                "agentic_iterations": iterations,
+                "agentic_history": existing_history + new_history,
+                "execution_artifacts": new_artifacts,
+            }
+
+        # 执行流式采集
+        result = await _execute_stream_call(call, state)
+        tool_results_summary = [
+            f'call_id={result["call_id"]} route={result["route_id"]} status={result.get("status_code", "N/A")}\n结果: {result["result"]}'
+        ]
+
+        # 收集执行产物
+        if result.get("artifact"):
+            from app.schemas.task import ExecutionArtifact
+            try:
+                artifact = ExecutionArtifact(**result["artifact"])
+                new_artifacts.append(artifact)
+            except Exception as e:
+                logger.error(f"[agentic_loop] Failed to parse ExecutionArtifact for stream_call: {e}", exc_info=True)
+
+        # 将本轮工具结果追加为 observation 消息
+        observation_content = "【工具执行结果】\n" + "\n\n".join(tool_results_summary)
+        new_history.append({
+            "role": "user",
+            "content": observation_content,
+        })
+
+        # 本轮结束，清理缓存
+        _task_run_llm_cache.pop(cache_key, None)
+
+        return {
+            "agentic_done": False,
+            "agentic_iterations": iterations,
+            "agentic_history": existing_history + new_history,
+            "execution_artifacts": new_artifacts,
         }
 
     else:

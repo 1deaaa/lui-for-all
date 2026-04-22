@@ -629,3 +629,182 @@ def webhook_order_updated(
         "received_payload": payload,
         "received_at": _now(),
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# 流式 / 分页 / 长连接 端点（用于 LUI 流式采集测试）
+# ═══════════════════════════════════════════════════════════
+
+import random
+
+# ── SSE 实时指标流（带心跳，持续推送） ──
+
+@app.get("/api/stream/metrics")
+async def stream_metrics() -> StreamingResponse:
+    """SSE 实时指标流：每秒推送一条系统指标数据，带心跳保活"""
+    async def generate():
+        idx = 0
+        while True:
+            idx += 1
+            # 每 3 条数据插入一条心跳注释
+            if idx % 3 == 0:
+                yield ": heartbeat\n\n"
+                continue
+
+            payload = {
+                "timestamp": _now(),
+                "cpu_usage": round(random.uniform(10, 90), 1),
+                "memory_usage": round(random.uniform(30, 80), 1),
+                "request_rate": round(random.uniform(100, 5000), 0),
+                "error_rate": round(random.uniform(0, 5), 2),
+            }
+            yield f"id: {idx}\nevent: metric\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── SSE 有限事件流（模拟告警推送，发完即止） ──
+
+@app.get("/api/stream/alerts")
+async def stream_alerts(
+    max_alerts: int = Query(default=10, ge=1, le=100, description="最大告警数"),
+) -> StreamingResponse:
+    """SSE 告警流：推送指定数量的告警后发送 [DONE] 结束"""
+    async def generate():
+        levels = ["info", "warning", "critical"]
+        for idx in range(1, max_alerts + 1):
+            payload = {
+                "alert_id": f"alt-{uuid.uuid4().hex[:6]}",
+                "level": random.choice(levels),
+                "source": random.choice(["database", "network", "storage", "auth"]),
+                "message": f"系统告警 #{idx}: {random.choice(['连接超时', '磁盘空间不足', 'CPU 过高', '登录失败激增', '响应延迟上升'])}",
+                "timestamp": _now(),
+            }
+            yield f"id: {idx}\nevent: alert\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.3)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── 游标分页端点 ──
+
+# 预生成 50 条日志用于分页
+LOG_ENTRIES: list[dict[str, Any]] = []
+
+
+@app.on_event("startup")
+def _seed_logs() -> None:
+    if LOG_ENTRIES:
+        return
+    levels = ["DEBUG", "INFO", "WARN", "ERROR"]
+    modules = ["auth", "api", "db", "scheduler", "export"]
+    for i in range(1, 51):
+        LOG_ENTRIES.append({
+            "id": f"log-{i:04d}",
+            "level": random.choice(levels),
+            "module": random.choice(modules),
+            "message": f"示例日志条目 #{i}",
+            "timestamp": datetime.now(UTC).isoformat(),
+        })
+
+
+@app.get("/api/logs")
+def list_logs_cursor(
+    cursor: str | None = Query(default=None, description="游标，传入上页返回的 next_cursor"),
+    limit: int = Query(default=10, ge=1, le=50),
+    level: str | None = Query(default=None, description="按日志级别过滤"),
+) -> dict[str, Any]:
+    """游标分页日志查询：返回 next_cursor / has_more 元数据"""
+    filtered = LOG_ENTRIES
+    if level:
+        filtered = [e for e in filtered if e["level"] == level.upper()]
+
+    start = 0
+    if cursor:
+        # cursor 格式: log-XXXX，找到对应位置
+        for idx, entry in enumerate(filtered):
+            if entry["id"] == cursor:
+                start = idx + 1
+                break
+
+    page = filtered[start : start + limit]
+    has_more = start + limit < len(filtered)
+    next_cursor = page[-1]["id"] if has_more and page else None
+
+    return {
+        "items": page,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "total": len(filtered),
+    }
+
+
+# ── 偏移分页端点 ──
+
+PRODUCTS: list[dict[str, Any]] = []
+
+
+@app.on_event("startup")
+def _seed_products() -> None:
+    if PRODUCTS:
+        return
+    categories = ["电子", "家居", "食品", "服装", "运动"]
+    for i in range(1, 101):
+        PRODUCTS.append({
+            "id": f"prod-{i:04d}",
+            "name": f"商品-{i}",
+            "category": random.choice(categories),
+            "price": round(random.uniform(10, 999), 2),
+            "stock": random.randint(0, 500),
+            "created_at": datetime.now(UTC).isoformat(),
+        })
+
+
+@app.get("/api/products")
+def list_products_offset(
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=10, ge=1, le=50, description="每页条数"),
+    category: str | None = Query(default=None, description="按分类过滤"),
+) -> dict[str, Any]:
+    """偏移分页商品查询：返回 total_pages / current_page 元数据"""
+    filtered = PRODUCTS
+    if category:
+        filtered = [p for p in filtered if p["category"] == category]
+
+    total = len(filtered)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    offset = (page - 1) * page_size
+    items = filtered[offset : offset + page_size]
+
+    return {
+        "items": items,
+        "total": total,
+        "current_page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "has_next_page": page < total_pages,
+    }
+
+
+# ── 长轮询端点 ──
+
+@app.get("/api/poll/task-status/{task_id}")
+async def poll_task_status(
+    task_id: str,
+    timeout: int = Query(default=30, ge=1, le=60, description="长轮询等待秒数"),
+) -> dict[str, Any]:
+    """长轮询：模拟任务状态变更，等待直到状态变化或超时"""
+    # 模拟：随机等待 1~5 秒后返回结果
+    wait = min(random.uniform(1, 5), timeout)
+    await asyncio.sleep(wait)
+
+    statuses = ["pending", "running", "completed", "failed"]
+    return {
+        "task_id": task_id,
+        "status": random.choice(statuses),
+        "progress": random.randint(0, 100),
+        "waited_seconds": round(wait, 1),
+        "timestamp": _now(),
+    }

@@ -199,11 +199,13 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
 8. 调用参数名必须严格使用“参数清单”中的名字，不得自造字段名。
 9. 参数清单里括号中的 location 代表参数位置：path/query/header/cookie/body。你只需要给出参数键值，系统会按 location 自动组装请求。
 10. 你输出在 think、reasoning 字段中的自然语言，必须优先使用 {response_language}，**除非用户主动使用别的语言**。
+11. 标注为 📡SSE流式 的接口，**必须使用 action=stream_call 调用**，不要使用 action=call。普通的 action=call 对流式接口只会返回空结果或连接超时。
+12. 标注为 📄分页追加 的接口，可使用 action=stream_call（自动翻页采集完整数据），也可使用 action=call（只取第一页）。根据用户需求决定。
 
 【输出格式（极为重要）】
 
 情况一：需要调用接口时（继续循环）
-必须输出一个合法的 JSON 对象（可包含在 ```json 中），**无论如何不要写人类寒暄（例如“好的”、“请稍等”等），必须直接以 {{ 或者 ```json 起手**！
+必须输出一个合法的 JSON 对象（可包含在 ```json 中），**无论如何不要写人类寒暄（例如"好的"、"请稍等"等），必须直接以 {{ 或者 ```json 起手**！
 {{
   "action": "call",
   "think": "（简短解释：我现在要做什么，为什么这样做）",
@@ -225,5 +227,34 @@ AGENTIC_LOOP_SYSTEM_PROMPT = """
     "think": "我已经完成了所需操作（或失败），准备向用户汇报。",
     "final_answer": "面向用户的最终答复正文（Markdown 格式，优先使用 {response_language}）"
 }}
-"""
 
+情况三：调用流式/分页追加接口时
+标注为 📡SSE流式 的接口**必须**使用 stream_call，标注为 📄分页追加 的接口在需要跨页采集时也使用 stream_call：
+{{
+  "action": "stream_call",
+  "think": "该接口是SSE流式/分页追加，需要采集数据",
+  "call": {{
+    "call_id": "（唯一字符串 ID）",
+    "route_id": "（完整 route_id）",
+    "parameters": {{}},
+    "safety_level": "readonly_safe",
+    "reasoning": "（本次采集的目的）",
+    "collect_strategy": {{
+      "mode": "time_window",
+      "duration_seconds": 15
+    }}
+  }}
+}}
+
+collect_strategy 可选模式（根据接口类型和用户需求选择）：
+- time_window：采集固定时长。参数：duration_seconds（默认10，最大60）
+  适用：📡SSE流式接口，观察一段时间内的动态变化趋势
+- event_count：采集到指定数量后停止。参数：max_events（默认50，最大500）
+  适用：📡SSE流式接口，需要收集一定量的事件做统计分析
+- snapshot：连接后取首个数据帧即断开。无额外参数
+  适用：📡SSE流式接口，只需获取最新实时状态
+- paginate：自动翻页采集。参数：max_pages（默认5，最大20），max_items（默认100，最大500）
+  适用：📄分页追加接口，需要跨页收集完整数据
+
+⚠️ 重要：对流式接口使用普通 call 会导致超时或空结果，务必使用 stream_call！
+"""

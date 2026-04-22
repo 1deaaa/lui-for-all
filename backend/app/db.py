@@ -70,6 +70,7 @@ async def _migrate_legacy_tables(conn) -> None:
         ("projects", "user_login_enabled", "BOOLEAN DEFAULT 0"),
         ("projects", "default_role_profile_id", "VARCHAR(36)"),
         ("sessions", "created_by", "VARCHAR(255)"),
+        ("capabilities", "response_mode", "VARCHAR(20) DEFAULT 'instant'"),
     ]
 
     for table_name, column_name, column_type in migrations:

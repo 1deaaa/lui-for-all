@@ -29,6 +29,15 @@ class RouteAnalysis(BaseModel):
         default=None,
         description="调用约束简短说明，如果源码中有特殊校验逻辑才填写，否则留空",
     )
+    response_mode: str = Field(
+        default="instant",
+        description=(
+            "响应模式，从以下选择一个: "
+            "instant（普通一问一答，绝大多数接口）、"
+            "streaming（SSE/实时推送流，源码中出现 text/event-stream、SSE库、yield+StreamingResponse、生成器等特征）、"
+            "paginated（分页追加/长轮询，源码中出现 page/offset/cursor/after 分页参数或 next_page/has_more 分页元数据）"
+        ),
+    )
 
 
 class BatchRouteAnalysisResult(BaseModel):

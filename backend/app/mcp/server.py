@@ -554,6 +554,7 @@ async def chat(
                 "data_sensitivity": c.data_sensitivity,
                 "best_modalities": c.best_modalities,
                 "ai_usage_guidelines": c.ai_usage_guidelines,
+                "response_mode": c.response_mode,
                 "parameter_hints": _merge_parameter_hints(
                     c.parameter_hints,
                     c.backed_by_routes,

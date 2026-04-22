@@ -127,6 +127,10 @@ class Capability(BaseModel):
         default=None,
         description="AI 的源码逻辑分析摘要",
     )
+    response_mode: str = Field(
+        default="instant",
+        description="响应模式: instant(一问一答), streaming(SSE/实时流), paginated(分页追加)",
+    )
 
 
 class CapabilityGraph(BaseModel):

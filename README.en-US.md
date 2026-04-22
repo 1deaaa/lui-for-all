@@ -4,7 +4,7 @@
 
 **Operate any system with natural language.**
 
-*Language User Interface · Zero-Intrusion Integration · Enterprise-Grade Safety*
+*Language User Interface · Zero-Intrusion Integration · Enterprise-Grade Safety · Full Interface Type Coverage*
 </div>
 
 ---
@@ -33,8 +33,22 @@ LUI: [Understand intent -> call existing APIs -> render table + highlights]
 - Runs as an isolated folder beside your project
 - Uses read-only access to existing code by default
 - Runtime write operations are isolated in `workspace/`
+- Supports **multi-project management** — each project has its own capability map, sessions, and permission isolation
 
-2. Hybrid discovery: OpenAPI + Tree-sitter AST
+2. Dual-channel authentication: Admin + End-user
+LUI implements **dual-channel JWT authentication**, making the system truly usable for both project administrators and all project users:
+
+- **Admin channel** (`sub=lui-admin`): Project administrators log in via LUI's independent password, with full management privileges — creating projects, configuring capabilities, managing role profiles, viewing audit logs, etc.
+- **User channel** (`sub=lui-user`): End-users authenticate through the **target system's own login endpoint**. LUI proxies the login and issues a restricted JWT. Users can only access interfaces permitted by their role profile within their project, achieving true project-level permission isolation.
+
+**Role Profile mechanism**: Administrators can create role profiles for different roles (e.g., "Regular User", "Department Manager"). The system automatically probes each route's accessibility (`RouteAccessibility`) using that role's credentials, generating a precise interface whitelist. Users without a matched profile fall back to the default role profile.
+
+This means:
+- All backends on a single device can be onboarded as independent projects
+- Each project's regular users can log in via the project's built-in auth system and operate **interfaces within their permission scope** using natural language
+- LUI becomes a truly universal and secure Language User Interface
+
+3. Hybrid discovery: OpenAPI + Tree-sitter AST
 - OpenAPI-first ingestion for fast, structured route discovery
 - Unified AST extraction layer (`FrameAdapter + get_tree_sitter_query`) for full handler implementation capture
 - Built-in adapters for mainstream backends: Python (FastAPI/Flask/Sanic), Node.js (NestJS/Express/Fastify), Java (Spring Boot), C# (ASP.NET Core), and Go (Gin/Echo/Fiber/chi)
@@ -128,39 +142,53 @@ flowchart TD
      AF --> AG[Discovery completed]
 ```
 
-3. Strict declarative UI whitelist
+4. Full interface type coverage: Instant / Streaming / Paginated — AI auto-detects and adapts
+
+During the capability building phase, the system automatically analyzes each route's response mode (`response_mode`) and classifies it into three categories:
+
+| Response Mode | Typical Scenarios | AI Collection Strategy |
+|---|---|---|
+| `instant` | Standard CRUD, queries, write operations | Single request-response, direct return |
+| `streaming` | SSE real-time push (metrics stream, alerts stream, notifications) | `stream_call`: time window / event count / snapshot; supports heartbeat filtering and `[DONE]` termination detection |
+| `paginated` | Cursor pagination (`next_cursor`), offset pagination (`page/page_size`) | `stream_call`: auto-pagination, supports both cursor and offset protocols with auto-detection |
+
+At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄Paginated` in the capability list, it automatically selects the `stream_call` action instead of a regular `call`. It collects data according to the strategy and returns a compressed summary (with sampling ratio and statistical summary), rather than dumping the raw stream to the user.
+
+**Hard-limit safeguards**: Max collection duration 60s, max events 500, max single event 4KB, max total result 32KB. Exceeding these triggers uniform sampling preserving head and tail — the AI cannot override these limits.
+
+5. Strict declarative UI whitelist
 - Model output is JSON blocks only, not raw HTML/JS/CSS
 - Supports 8 safe block types: `text_block`, `metric_card`, `data_table`, `echart_card`, `confirm_panel`, `filter_form`, `timeline_card`, `diff_card`
 
-4. LangGraph workflow with human approval gates
+6. LangGraph workflow with human approval gates
 - Multi-step task orchestration with checkpoints
 - `interrupt()` hard pause for write-risk operations
 - Resume-after-approval flow with full audit trail
 
-5. AG-UI + SSE real-time event stream
+7. AG-UI + SSE real-time event stream
 - Node-level progress events
 - Streamed reasoning and output
 - Approval-triggered UI interruption without polling
 
-6. End-to-end observability
+8. End-to-end observability
 - Unified Trace ID across API layer, graph execution, and HTTP executor
 - Full-step auditable event trail
 
-7. Multi-model gateway support
+9. Multi-model gateway support
 - Built-in Agent Matchbox routing
 - Model switching without business code changes
 
-8. Docker-aware connectivity for project import
+10. Docker-aware connectivity for project import
 - Auto-resolves sample backend addresses by runtime environment
 - Uses container DNS names in Docker and `localhost` on local host
 - `test-connection` and `fetch-routes` can fall back to AST discovery with `source_path`, preventing import flow from being blocked by OpenAPI reachability
 
-9. Pluggable chat protocol for custom GUIs
+11. Pluggable chat protocol for custom GUIs
 - Developers can directly integrate with `chat` endpoints and replace the built-in frontend without changing backend execution logic
 - Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 8 UI block types
 - Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
 
-10. MCP integration with OpenClaw (multi-channel execution gateway)
+12. MCP integration with OpenClaw (multi-channel execution gateway)
 OpenClaw's biggest value is fully automated, unattended execution from natural language. You give it a task, and it keeps working across its own computer, accounts, and channels without needing a human to click through every step.
 
 The combined value with LUI-for-All is more practical:
@@ -264,8 +292,9 @@ If your target system does not expose OpenAPI, you can still onboard by providin
 - [x] Real-time SSE streaming and approval interrupt
 - [x] Multi-model gateway
 - [x] Tree-sitter AST semantic route discovery (OpenAPI-optional onboarding)
+- [x] Full streaming interface type coverage (SSE / cursor pagination / offset pagination / long polling)
+- [x] Dual-channel JWT auth (admin + project end-user) with role profiles
 - [ ] Capability graph visual management
-- [ ] Multi-tenant permission system
 - [ ] Private deployment guide
 
 ## License

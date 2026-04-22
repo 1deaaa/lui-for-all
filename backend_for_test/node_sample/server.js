@@ -709,6 +709,160 @@ app.post('/api/webhooks/order-updated', (req, res) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════
+// 流式 / 分页 / 长连接 端点（用于 LUI 流式采集测试）
+// ═══════════════════════════════════════════════════════════
+
+// ── SSE 实时指标流（带心跳，持续推送） ──
+
+app.get('/api/stream/metrics', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  let idx = 0;
+  const timer = setInterval(() => {
+    idx++;
+    // 每 3 条插入心跳
+    if (idx % 3 === 0) {
+      res.write(': heartbeat\n\n');
+      return;
+    }
+    const payload = {
+      timestamp: now(),
+      cpu_usage: Math.round(Math.random() * 80 + 10) / 10,
+      memory_usage: Math.round(Math.random() * 50 + 30) / 10,
+      request_rate: Math.round(Math.random() * 4900 + 100),
+      error_rate: Math.round(Math.random() * 500) / 100,
+    };
+    res.write(`id: ${idx}\nevent: metric\ndata: ${JSON.stringify(payload)}\n\n`);
+  }, 1000);
+
+  req.on('close', () => clearInterval(timer));
+});
+
+// ── SSE 有限告警流 ──
+
+app.get('/api/stream/alerts', (req, res) => {
+  const maxAlerts = Math.min(Number(req.query.max_alerts) || 10, 100);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const levels = ['info', 'warning', 'critical'];
+  const sources = ['database', 'network', 'storage', 'auth'];
+  const messages = ['连接超时', '磁盘空间不足', 'CPU 过高', '登录失败激增', '响应延迟上升'];
+  let idx = 0;
+
+  const timer = setInterval(() => {
+    idx++;
+    if (idx > maxAlerts) {
+      res.write('data: [DONE]\n\n');
+      clearInterval(timer);
+      res.end();
+      return;
+    }
+    const payload = {
+      alert_id: `alt-${crypto.randomBytes(3).toString('hex')}`,
+      level: levels[Math.floor(Math.random() * levels.length)],
+      source: sources[Math.floor(Math.random() * sources.length)],
+      message: `系统告警 #${idx}: ${messages[Math.floor(Math.random() * messages.length)]}`,
+      timestamp: now(),
+    };
+    res.write(`id: ${idx}\nevent: alert\ndata: ${JSON.stringify(payload)}\n\n`);
+  }, 300);
+
+  req.on('close', () => clearInterval(timer));
+});
+
+// ── 游标分页日志 ──
+
+const LOG_ENTRIES = [];
+for (let i = 1; i <= 50; i++) {
+  LOG_ENTRIES.push({
+    id: `log-${String(i).padStart(4, '0')}`,
+    level: ['DEBUG', 'INFO', 'WARN', 'ERROR'][Math.floor(Math.random() * 4)],
+    module: ['auth', 'api', 'db', 'scheduler', 'export'][Math.floor(Math.random() * 5)],
+    message: `示例日志条目 #${i}`,
+    timestamp: now(),
+  });
+}
+
+app.get('/api/logs', (req, res) => {
+  const cursor = req.query.cursor || null;
+  const limit = Math.min(Number(req.query.limit) || 10, 50);
+  const level = req.query.level || null;
+
+  let filtered = LOG_ENTRIES;
+  if (level) filtered = filtered.filter(e => e.level === level.toUpperCase());
+
+  let start = 0;
+  if (cursor) {
+    const idx = filtered.findIndex(e => e.id === cursor);
+    if (idx >= 0) start = idx + 1;
+  }
+
+  const page = filtered.slice(start, start + limit);
+  const hasMore = start + limit < filtered.length;
+  const nextCursor = hasMore && page.length ? page[page.length - 1].id : null;
+
+  res.json({ items: page, has_more: hasMore, next_cursor: nextCursor, total: filtered.length });
+});
+
+// ── 偏移分页商品 ──
+
+const PRODUCTS = [];
+const categories = ['电子', '家居', '食品', '服装', '运动'];
+for (let i = 1; i <= 100; i++) {
+  PRODUCTS.push({
+    id: `prod-${String(i).padStart(4, '0')}`,
+    name: `商品-${i}`,
+    category: categories[Math.floor(Math.random() * categories.length)],
+    price: Math.round(Math.random() * 9890 + 100) / 100,
+    stock: Math.floor(Math.random() * 500),
+    created_at: now(),
+  });
+}
+
+app.get('/api/products', (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const pageSize = Math.min(Number(req.query.page_size) || 10, 50);
+  const category = req.query.category || null;
+
+  let filtered = PRODUCTS;
+  if (category) filtered = filtered.filter(p => p.category === category);
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const offset = (page - 1) * pageSize;
+  const items = filtered.slice(offset, offset + pageSize);
+
+  res.json({
+    items,
+    total,
+    current_page: page,
+    page_size: pageSize,
+    total_pages: totalPages,
+    has_next_page: page < totalPages,
+  });
+});
+
+// ── 长轮询 ──
+
+app.get('/api/poll/task-status/:taskId', (req, res) => {
+  const wait = Math.min(Math.random() * 4 + 1, Number(req.query.timeout) || 30);
+  setTimeout(() => {
+    const statuses = ['pending', 'running', 'completed', 'failed'];
+    res.json({
+      task_id: req.params.taskId,
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+      progress: Math.floor(Math.random() * 100),
+      waited_seconds: Math.round(wait * 10) / 10,
+      timestamp: now(),
+    });
+  }, wait * 1000);
+});
+
 app.use((req, res) => {
   res.status(404).json({ detail: '路由不存在', path: req.path, method: req.method });
 });
