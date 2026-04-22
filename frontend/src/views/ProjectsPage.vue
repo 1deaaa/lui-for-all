@@ -909,7 +909,7 @@ function getStatusText(status: string): string {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
   gap: 24px;
   padding-bottom: 40px;
 }
@@ -919,7 +919,7 @@ function getStatusText(status: string): string {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  min-height: 220px;
+  min-height: 240px;
   background: #ffffff;
 }
 
@@ -951,7 +951,8 @@ function getStatusText(status: string): string {
 
 .project-actions {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: auto;
   border-top: 1px solid var(--border-color-light, #e5e5e5);
   padding-top: 16px;

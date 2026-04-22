@@ -70,14 +70,20 @@ def _filter_capabilities_for_user(
     return filtered
 
 
-def _get_user_target_token(project_id: str, username: str | None) -> str | None:
-    """从用户 token 缓存获取目标系统 token"""
+def _get_user_target_token(project_id: str, username: str | None) -> dict | None:
+    """从用户 token 缓存获取目标系统完整认证信息（token + auth_mode + cookie_name）"""
     if not username:
         return None
     from app.api.auth import _user_token_cache
     cache_key = f"{project_id}:{username}"
     entry = _user_token_cache.get(cache_key)
-    return entry.get("token") if entry else None
+    if not entry:
+        return None
+    return {
+        "token": entry.get("token"),
+        "auth_mode": entry.get("auth_mode", "bearer"),
+        "cookie_name": entry.get("cookie_name"),
+    }
 
 
 # 运行中流任务注册表：task_run_id -> asyncio.Task

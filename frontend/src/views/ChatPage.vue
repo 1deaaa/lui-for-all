@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWindowSize } from '@vueuse/core'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 import { useI18n } from 'vue-i18n'
@@ -19,6 +19,7 @@ const emit = defineEmits(['openDrawer'])
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
 const route = useRoute()
+const router = useRouter()
 const { t } = useI18n()
 
 // ── 用户模式检测 ──
@@ -47,14 +48,24 @@ const runtimeExpanded = ref(false)
 const { width: windowWidth } = useWindowSize()
 const isMobile = computed(() => windowWidth.value <= 768)
 
-const isSidebarCollapsed = ref(isMobile.value)
+const isSidebarCollapsed = ref(isMobile.value && !isUserMode.value)
 
 watch(isMobile, (mobile) => {
-  if (mobile) isSidebarCollapsed.value = true
+  if (mobile && !isUserMode.value) isSidebarCollapsed.value = true
 })
 
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
+}
+
+// ── 用户模式退出登录 ──
+function handleUserLogout() {
+  const slug = localStorage.getItem('lui_user_slug') || ''
+  localStorage.removeItem('lui_jwt')
+  localStorage.removeItem('lui_user_project_id')
+  localStorage.removeItem('lui_user_slug')
+  localStorage.removeItem('lui_user_project_name')
+  router.replace({ name: 'UserLogin', params: { slug } })
 }
 // 每条消息的思考内容折叠状态（默认折叠）
 const thoughtExpanded = ref<Record<string, boolean>>({})
@@ -164,10 +175,22 @@ async function handleStop() {
   await sessionStore.stopCurrentTask()
 }
 
+// 用户是否停留在底部（用于判断是否自动滚动）
+const isUserAtBottom = ref(true)
+
+function checkUserAtBottom() {
+  if (!messageContainer.value) return
+  const el = messageContainer.value
+  // 距底部 50px 以内视为"在底部"
+  isUserAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 50
+}
+
 function scrollToBottom(smooth = false) {
+  // 用户主动上滑时，不自动滚动
+  if (!isUserAtBottom.value) return
   if (!messageContainer.value) return
   const scroll = () => {
-    if (!messageContainer.value) return
+    if (!messageContainer.value || !isUserAtBottom.value) return
     if (smooth) {
       messageContainer.value.scrollTo({
         top: messageContainer.value.scrollHeight,
@@ -191,11 +214,17 @@ onMounted(async () => {
     scrollToBottom()
   })
 
+  // 监听滚动事件，检测用户是否在底部
+  await nextTick()
+  if (messageContainer.value) {
+    messageContainer.value.addEventListener('scroll', checkUserAtBottom, { passive: true })
+  }
+
   if (isUserMode.value) {
-    // 终端用户模式：自动选择用户项目并加载历史
+    // 终端用户模式：用 fetchProject 获取自己项目信息并自动选中
     const pid = userProjectId.value
     if (pid) {
-      await projectStore.fetchProjects()
+      await projectStore.fetchProject(pid)
       await selectProject(pid)
     }
   } else {
@@ -226,6 +255,22 @@ watch(
   }
 )
 
+onBeforeUnmount(() => {
+  if (messageContainer.value) {
+    messageContainer.value.removeEventListener('scroll', checkUserAtBottom)
+  }
+})
+
+// 新消息发送时重置为底部模式
+watch(
+  () => sessionStore.messages.length,
+  (newLen, oldLen) => {
+    if (newLen && newLen > (oldLen || 0)) {
+      isUserAtBottom.value = true
+    }
+  }
+)
+
 function getProjectStatusLabel(status: string): string {
   switch (status) {
     case 'completed':
@@ -245,8 +290,15 @@ function getProjectStatusLabel(status: string): string {
 <template>
   <div class="chat-page">
     <!-- 左侧项目面板（用户模式下仅显示历史） -->
-    <div class="project-panel" :class="{ collapsed: isSidebarCollapsed }">
+    <div class="project-panel" :class="{ collapsed: isSidebarCollapsed, 'user-mode-panel': isUserMode }">
       <div class="project-panel-inner">
+      <!-- 用户模式：紧凑项目头部 -->
+      <template v-if="isUserMode && selectedProject">
+        <div class="user-project-compact-header">
+          <div class="user-project-compact-name">{{ selectedProject.name }}</div>
+        </div>
+      </template>
+
       <!-- 管理员模式：项目列表 -->
       <template v-if="!isUserMode">
         <div class="panel-title">{{ t('chat.sidebar.projectsTitle') }}</div>
@@ -284,8 +336,8 @@ function getProjectStatusLabel(status: string): string {
         </div>
       </template>
 
-      <!-- 历史会话列表（管理员和用户都显示） -->
-      <template v-if="selectedProject && sessionStore.historyList.length > 0">
+      <!-- 历史会话列表（用户模式为主内容，管理员模式为附属） -->
+      <template v-if="isUserMode || (selectedProject && sessionStore.historyList.length > 0)">
         <div class="panel-divider" v-if="!isUserMode" />
         <div class="panel-title-sm">{{ t('chat.sidebar.historyTitle') }}</div>
         <TransitionGroup name="history-list" tag="div" class="history-list-wrapper">
@@ -300,6 +352,16 @@ function getProjectStatusLabel(status: string): string {
             <button class="history-item-del" @click="handleDeleteSession(s, $event)" :title="t('chat.sidebar.deleteSession')">&times;</button>
           </div>
         </TransitionGroup>
+      </template>
+
+      <!-- 用户模式：退出登录（底部） -->
+      <template v-if="isUserMode">
+        <div class="user-logout-section">
+          <button class="user-logout-btn" @click="handleUserLogout">
+            <Icon icon="solar:logout-2-bold-duotone" />
+            <span>{{ t('app.logout') }}</span>
+          </button>
+        </div>
       </template>
       </div>
     </div>
@@ -319,7 +381,7 @@ function getProjectStatusLabel(status: string): string {
         </button>
         <template v-if="selectedProject">
           <span class="chat-project-name">{{ selectedProject.name }}</span>
-          <span class="chat-project-url">{{ selectedProject.base_url }}</span>
+          <span v-if="!isUserMode" class="chat-project-url">{{ selectedProject.base_url }}</span>
         </template>
         <span v-else class="chat-hint-topbar">{{ t('chat.topbar.selectProjectHint') }}</span>
         
@@ -1527,5 +1589,54 @@ function getProjectStatusLabel(status: string): string {
   .chat-project-url {
     display: none;
   }
+}
+
+/* ============ 用户模式专用样式 ============ */
+.user-mode-panel {
+  width: 220px;
+}
+
+.user-project-compact-header {
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border-color-light, #e5e5e5);
+}
+
+.user-project-compact-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f0f0f);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-logout-section {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color-light, #e5e5e5);
+}
+
+.user-logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color-light, #e5e5e5);
+  background: transparent;
+  color: var(--color-text-secondary, #737373);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.user-logout-btn:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
+}
+
+.user-logout-btn svg {
+  font-size: 16px;
 }
 </style>

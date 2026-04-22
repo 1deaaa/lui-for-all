@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,6 +111,7 @@ class DiscoveryStatusResponse(BaseModel):
 
     project_id: str
     name: str | None = None
+    slug: str | None = None
     base_url: str | None = None
     status: str
     progress: int = 0
@@ -826,6 +827,7 @@ async def get_discovery_status(
     return DiscoveryStatusResponse(
         project_id=project_id,
         name=project.name,
+        slug=project.slug,
         base_url=project.base_url,
         status=project.discovery_status,
         progress=progress,
@@ -840,19 +842,41 @@ async def get_discovery_status(
 async def get_route_map(
     project_id: str,
     db: AsyncSession = Depends(get_session),
+    request: Request = None,
 ):
-    """获取路由地图"""
+    """获取路由地图（终端用户仅返回可达路由）"""
     route_map = await ProjectRepository(db).get_latest_route_map(project_id)
 
     if not route_map:
         raise HTTPException(status_code=404, detail="路由地图不存在")
 
+    routes = route_map.routes
+    schemas = route_map.schemas
+
+    # 终端用户可达路由过滤
+    user_context = getattr(request.state, "user_context", None) if request else None
+    if user_context and user_context.get("role_profile_id"):
+        from app.api.sessions import _load_accessible_routes
+        accessible_ids = await _load_accessible_routes(project_id, user_context["role_profile_id"])
+        if accessible_ids:
+            accessible_set = set(accessible_ids)
+            routes = [r for r in routes if isinstance(r, dict) and r.get("route_id") in accessible_set]
+            # 同步过滤 schemas：仅保留可达路由引用的 schema
+            referenced_schemas = set()
+            for r in routes:
+                if isinstance(r, dict):
+                    ref = r.get("request_body_ref") or r.get("response_ref")
+                    if ref:
+                        referenced_schemas.add(ref)
+            if isinstance(schemas, dict) and referenced_schemas:
+                schemas = {k: v for k, v in schemas.items() if k in referenced_schemas}
+
     return {
         "project_id": project_id,
         "version": route_map.version,
-        "routes": route_map.routes,
-        "schemas": route_map.schemas,
-        "route_count": route_map.route_count,
+        "routes": routes,
+        "schemas": schemas,
+        "route_count": len(routes),
         "source": route_map.source,
         "created_at": route_map.created_at.isoformat(),
     }
@@ -862,35 +886,47 @@ async def get_route_map(
 async def get_capabilities(
     project_id: str,
     db: AsyncSession = Depends(get_session),
+    request: Request = None,
 ):
-    """获取能力图谱"""
-    capabilities = await ProjectRepository(db).list_capabilities(project_id)
+    """获取能力图谱（终端用户仅返回可达能力）"""
+    repo = ProjectRepository(db)
+    capabilities = await repo.list_capabilities(project_id)
 
     if not capabilities:
         raise HTTPException(status_code=404, detail="能力图谱不存在")
 
+    caps = [
+        {
+            "capability_id": c.capability_id,
+            "name": c.name,
+            "description": c.description,
+            "domain": c.domain,
+            "backed_by_routes": c.backed_by_routes,
+            "user_intent_examples": c.user_intent_examples,
+            "permission_level": c.permission_level,
+            "safety_level": c.safety_level,
+            "data_sensitivity": c.data_sensitivity,
+            "requires_confirmation": c.requires_confirmation,
+            "best_modalities": c.best_modalities,
+            "parameter_hints": c.parameter_hints,
+            "ai_usage_guidelines": c.ai_usage_guidelines,
+            "source_code_analysis": c.source_code_analysis,
+        }
+        for c in capabilities
+    ]
+
+    # 终端用户可达路由过滤
+    user_context = getattr(request.state, "user_context", None) if request else None
+    if user_context and user_context.get("role_profile_id"):
+        from app.api.sessions import _load_accessible_routes, _filter_capabilities_for_user
+        accessible_ids = await _load_accessible_routes(project_id, user_context["role_profile_id"])
+        if accessible_ids:
+            caps = _filter_capabilities_for_user(caps, accessible_ids)
+
     return {
         "project_id": project_id,
-        "capabilities": [
-            {
-                "capability_id": c.capability_id,
-                "name": c.name,
-                "description": c.description,
-                "domain": c.domain,
-                "backed_by_routes": c.backed_by_routes,
-                "user_intent_examples": c.user_intent_examples,
-                "permission_level": c.permission_level,
-                "safety_level": c.safety_level,
-                "data_sensitivity": c.data_sensitivity,
-                "requires_confirmation": c.requires_confirmation,
-                "best_modalities": c.best_modalities,
-                "parameter_hints": c.parameter_hints,
-                "ai_usage_guidelines": c.ai_usage_guidelines,
-                "source_code_analysis": c.source_code_analysis,
-            }
-            for c in capabilities
-        ],
-        "total": len(capabilities),
+        "capabilities": caps,
+        "total": len(caps),
     }
 
 

@@ -203,8 +203,14 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
+    // EventSource 不支持自定义 header，通过 query parameter 传递 JWT
+    const jwt = localStorage.getItem('lui_jwt')
+    if (jwt) {
+      params.set('token', jwt)
+    }
+
     const url = `/api/sessions/${currentSession.value?.id}/events/stream?${params.toString()}`
-    
+
     eventSource.value = new EventSource(url)
     isStreaming.value = true
     stopRequested.value = false

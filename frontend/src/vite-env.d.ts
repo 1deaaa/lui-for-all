@@ -19,6 +19,7 @@ export interface UIBlock {
 export interface Project {
   id: string
   name: string
+  slug?: string | null
   description?: string
   base_url: string
   discovery_status: string

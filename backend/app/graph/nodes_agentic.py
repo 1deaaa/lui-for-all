@@ -50,9 +50,9 @@ async def _ensure_project_token(state: GraphState) -> str | None:
 
     # 优先使用终端用户 token
     user_target_token = state.get("user_target_token")
-    if user_target_token:
+    if user_target_token and isinstance(user_target_token, dict):
         logger.info(f"[token_cache] project={project_id} 使用终端用户 token")
-        return user_target_token
+        return user_target_token.get("token")
     if project_id in _project_token_cache:
         return _project_token_cache[project_id].get("token")
 
@@ -393,6 +393,36 @@ async def _execute_read_call(
     call_id = call.get("call_id", str(uuid.uuid4()))
     step_id = str(uuid.uuid4())
 
+    # 终端用户可达路由检查：不可达路由直接拒绝
+    accessible_ids = state.get("user_accessible_route_ids") or []
+    if accessible_ids and route_id not in accessible_ids:
+        logger.warning(f"[access-control] 用户无权访问路由 {route_id}，已拒绝执行")
+        _emit(
+            "tool_started",
+            tool_name="http_request",
+            title=f"调用 {route_id}",
+            detail="权限不足",
+            step_id=step_id,
+            route_id=route_id,
+        )
+        _emit(
+            "tool_completed",
+            tool_name="http_request",
+            title=f"✗ {route_id} → 权限不足",
+            detail=f"当前角色无权访问该接口",
+            step_id=step_id,
+            route_id=route_id,
+            status_code=403,
+        )
+        return {
+            "call_id": call_id,
+            "route_id": route_id,
+            "status": "forbidden",
+            "status_code": 403,
+            "result": f"权限不足：当前角色无权访问 {route_id}",
+            "duration_ms": 0,
+        }
+
     _emit(
         "tool_started",
         tool_name="http_request",
@@ -403,11 +433,18 @@ async def _execute_read_call(
     )
 
     # 从缓存取完整 auth 信息（token + mode + cookie_name）
+    # 终端用户优先使用 user_target_token，避免使用管理员 token
     project_id = state.get("project_id", "")
-    cached = _project_token_cache.get(project_id, {})
-    token = current_token or cached.get("token")
-    auth_mode = cached.get("auth_mode", "bearer")
-    cookie_name = cached.get("cookie_name")
+    user_target_token = state.get("user_target_token")
+    if user_target_token and isinstance(user_target_token, dict):
+        token = current_token or user_target_token.get("token")
+        auth_mode = user_target_token.get("auth_mode", "bearer")
+        cookie_name = user_target_token.get("cookie_name")
+    else:
+        cached = _project_token_cache.get(project_id, {})
+        token = current_token or cached.get("token")
+        auth_mode = cached.get("auth_mode", "bearer")
+        cookie_name = cached.get("cookie_name")
 
     # 无缓存时自动登录
     if not token:
@@ -692,6 +729,13 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 rid = wc.get("route_id", "")
                 params = wc.get("parameters", {})
                 m, p = _parse_route(rid)
+
+                # 终端用户可达路由检查：不可达路由直接拒绝
+                accessible_ids = state.get("user_accessible_route_ids") or []
+                if accessible_ids and rid not in accessible_ids:
+                    logger.warning(f"[access-control] write call 用户无权访问路由 {rid}，跳过")
+                    approved_write_results.append(f'route={rid} → 权限不足：当前角色无权访问该接口')
+                    continue
 
                 # 生成指纹：route + params
                 params_str = json.dumps(params, sort_keys=True)

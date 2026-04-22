@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/stores/project'
@@ -44,6 +44,12 @@ const profiles = ref<RoleProfile[]>([])
 const loading = ref(false)
 const userLoginEnabled = ref(false)
 const defaultProfileId = ref<string | null>(null)
+const projectSlug = ref<string | null>(null)
+
+const userEndpointUrl = computed(() => {
+  if (!projectSlug.value) return ''
+  return `${window.location.origin}/${projectSlug.value}/login`
+})
 
 // ── 创建表单 ──
 const showCreateForm = ref(false)
@@ -79,9 +85,10 @@ async function loadProfiles() {
     // 从 list 返回值中找到 is_default 的画像
     const defaultProfile = profileList.find((p: any) => p.is_default)
     defaultProfileId.value = defaultProfile?.id ?? null
-    // 从项目数据读取 user_login_enabled
+    // 从项目数据读取 user_login_enabled 和 slug
     const proj = projectStore.projects.find((p) => p.id === props.projectId) as any
     userLoginEnabled.value = proj?.user_login_enabled ?? false
+    projectSlug.value = proj?.slug ?? null
   } catch (e: any) {
     ElMessage.error(t('roleProfiles.messages.loadFailed'))
   } finally {
@@ -99,6 +106,18 @@ async function toggleUserLogin(val: boolean) {
   } catch {
     ElMessage.error(t('roleProfiles.messages.updateFailed'))
   }
+}
+
+// ── 复制用户登录端点 ──
+function copyUserEndpoint() {
+  if (!projectSlug.value) {
+    ElMessage.warning(t('roleProfiles.userEndpointNoSlug'))
+    return
+  }
+  navigator.clipboard.writeText(userEndpointUrl.value).then(
+    () => ElMessage.success(t('roleProfiles.copySuccess')),
+    () => ElMessage.error(t('roleProfiles.copyFailed')),
+  )
 }
 
 // ── 创建角色画像 ──
@@ -259,6 +278,23 @@ function httpStatusClass(code: number | null): string {
       </el-tooltip>
     </div>
 
+    <!-- 用户登录端点 -->
+    <div v-if="userLoginEnabled" class="endpoint-section">
+      <div class="endpoint-header">
+        <span class="endpoint-label">{{ t('roleProfiles.userEndpoint') }}</span>
+        <el-tooltip :content="t('roleProfiles.userEndpointHint')" placement="top">
+          <el-icon class="hint-icon"><InfoFilled /></el-icon>
+        </el-tooltip>
+      </div>
+      <div class="endpoint-url-row">
+        <code v-if="projectSlug" class="endpoint-url">{{ userEndpointUrl }}</code>
+        <span v-else class="endpoint-no-slug">{{ t('roleProfiles.userEndpointNoSlug') }}</span>
+        <el-button size="small" :disabled="!projectSlug" @click="copyUserEndpoint">
+          <el-icon><CopyDocument /></el-icon> 复制
+        </el-button>
+      </div>
+    </div>
+
     <!-- 角色画像列表 -->
     <div class="profiles-section">
       <div class="section-header">
@@ -417,6 +453,51 @@ function httpStatusClass(code: number | null): string {
 .hint-icon {
   color: var(--color-text-secondary, #737373);
   cursor: help;
+}
+
+.endpoint-section {
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  background: #f0f7ff;
+  border: 1px solid #d0e3f7;
+}
+
+.endpoint-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.endpoint-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f0f0f);
+}
+
+.endpoint-url-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.endpoint-url {
+  flex: 1;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--color-text-primary, #0f0f0f);
+  word-break: break-all;
+  user-select: all;
+}
+
+.endpoint-no-slug {
+  flex: 1;
+  font-size: 12px;
+  color: var(--el-color-warning);
+  font-style: italic;
 }
 
 .profiles-section,

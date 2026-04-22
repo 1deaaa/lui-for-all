@@ -265,8 +265,22 @@ _USER_JWT_ALLOWED_PREFIXES = (
     "/api/chat",
     "/api/sessions",
     "/api/auth/user-login",
+    "/api/auth/me",
     "/api/projects/resolve-slug",
 )
+
+
+def _is_user_allowed_project_path(path: str, user_project_id: str | None) -> bool:
+    """判断 user JWT 是否可以访问 /api/projects/{project_id}/ 下的路径（仅限自己项目）"""
+    if not user_project_id or not path.startswith("/api/projects/"):
+        return False
+    # 提取路径中 project_id 段: /api/projects/{project_id}/...
+    remainder = path[len("/api/projects/"):]
+    # project_id 是 UUID 格式 (36 字符)
+    segments = remainder.split("/", 1)
+    if segments[0] == user_project_id:
+        return True
+    return False
 
 
 class JWTAuthMiddleware(BaseHTTPMiddleware):
@@ -292,15 +306,18 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/projects/resolve-slug/"):
             return await call_next(request)
 
-        # 校验 JWT
+        # 校验 JWT（支持 Authorization header 或 query parameter）
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        query_token = request.query_params.get("token", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        elif query_token:
+            token = query_token
+        else:
             return JSONResponse(
                 {"detail": "Unauthorized: missing JWT token"},
                 status_code=401,
             )
-
-        token = auth_header[7:]
         if not _verify_jwt(token):
             return JSONResponse(
                 {"detail": "Unauthorized: invalid or expired JWT token"},
@@ -322,8 +339,10 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if sub == "lui-user":
-            # 终端用户：仅允许特定路径前缀
-            if any(path.startswith(prefix) for prefix in _USER_JWT_ALLOWED_PREFIXES):
+            # 终端用户：仅允许特定路径前缀 + 自己项目下的只读接口
+            user_project_id = payload.get("project_id")
+            if any(path.startswith(prefix) for prefix in _USER_JWT_ALLOWED_PREFIXES) or \
+               _is_user_allowed_project_path(path, user_project_id):
                 # 注入 user_context 到 request.state
                 request.state.user_context = {
                     "project_id": payload.get("project_id"),

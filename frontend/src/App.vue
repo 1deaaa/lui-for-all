@@ -133,8 +133,8 @@ watch(isLoginPage, (isLogin) => {
 
     <!-- 非登录页：正常布局 -->
     <el-container v-else class="app-container" :class="{ 'no-padding-top': isMobile && route.path === '/' }">
-      <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏) -->
-      <div v-if="isMobile && route.path !== '/'" class="mobile-navbar">
+      <!-- 移动端顶部 Navbar (合并策略：只有在非主聊天页时才显示独立顶栏，用户模式下不显示) -->
+      <div v-if="isMobile && route.path !== '/' && !isUserMode" class="mobile-navbar">
         <div class="logo-mobile" @click="drawerVisible = true" style="cursor: pointer;">
           <BrandLogo :size="24" />
         </div>
@@ -167,8 +167,8 @@ watch(isLoginPage, (isLogin) => {
         </div>
       </el-drawer>
 
-      <!-- 桌面侧边栏 (极简固定) -->
-      <el-aside v-if="!isMobile" width="64px" class="app-aside">
+      <!-- 桌面侧边栏 (极简固定，用户模式下隐藏) -->
+      <el-aside v-if="!isMobile && !isUserMode" width="64px" class="app-aside">
         <div class="logo">
           <BrandLogo :size="30" />
         </div>

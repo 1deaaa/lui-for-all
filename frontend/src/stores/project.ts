@@ -66,9 +66,14 @@ export const useProjectStore = defineStore('project', () => {
       const p: Project = {
         id,
         name: response.data.name || t('common.unknownProject'),
+        slug: response.data.slug || null,
         discovery_status: response.data.status,
         base_url: response.data.base_url || '',
         created_at: new Date().toISOString(),
+      }
+      // 确保加入 projects 数组，以便 selectedProject 的 find 能命中
+      if (!projects.value.find((x) => x.id === id)) {
+        projects.value.push(p)
       }
       currentProject.value = p
       return p
@@ -82,10 +87,26 @@ export const useProjectStore = defineStore('project', () => {
 
   // 获取正在对话的选定项目附加详情（能力和路由图谱，后台预加载）
   async function fetchProjectDetails(id: string) {
-    // 快速从 localStorage 恢复（实现刷新后瞬间可见）
-    const localRouteStr = localStorage.getItem(`lui_route_map_${id}`)
-    const localCapsStr = localStorage.getItem(`lui_caps_${id}`)
-    
+    // 用户模式下不使用 localStorage 缓存（避免读取管理员缓存的未过滤数据）
+    const isUserMode = (() => {
+      const token = localStorage.getItem('lui_jwt')
+      if (!token) return false
+      try {
+        const base64 = token.split('.')[1]
+        const json = decodeURIComponent(
+          atob(base64.replace(/-/g, '+').replace(/_/g, '/'))
+            .split('')
+            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join(''),
+        )
+        return JSON.parse(json).sub === 'lui-user'
+      } catch { return false }
+    })()
+
+    // 快速从 localStorage 恢复（实现刷新后瞬间可见），用户模式跳过
+    const localRouteStr = !isUserMode ? localStorage.getItem(`lui_route_map_${id}`) : null
+    const localCapsStr = !isUserMode ? localStorage.getItem(`lui_caps_${id}`) : null
+
     let hasLocalData = false
     if (localRouteStr && localCapsStr) {
       try {
