@@ -1,4 +1,6 @@
 # 火柴Agent网关——为Agent而生的全功能大模型网关
+[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md)
+
 ![MatchGateway App](./app.png)
 
 火柴Agent网关面向 Agent 开发而生，是一个功能强大且极其灵活的大模型路由与配额控制中心。**它轻量、无需部署，深度融入到 agent 开发管理中**。它面向当今最专业、最通用的 Agent 编排框架**LangChain/LangGraph**，但**可以非常轻松的迁移至AutoGen、CrewAI等其他同样强大的Agent框架**，仅需对你的Coding Assistant说一句话即可适配你的框架。
@@ -31,7 +33,7 @@
 - **统一的接口**：无论后端配置如何变化，开发者都可以通过 `matchbox().get_user_llm(user_id, usage_key="fast")` 获取对应用户/用途的 LLM 实例。
 - **智能推理流适配（拒绝空等待）**：网关**兼容 Open AI 协议**，并支持动态探测和自动将各种常见的推理字段（如 `reasoning_content` 和 `<think>` 标签）**统一转化为持续的推理流**，确保深度思考模型在运转时前端依然能拥有极佳的纯流式体验。
 - **多用途选中模型**：为每个用户维护“主模型 / 快速模型 / 推理模型”等多个用途槽位，并允许用户自定义新的用途，按需绑定不同模型。
-- **系统与用户隔离**：明确区分“系统平台”和“用户私有平台”，系统平台由配置文件 (`llm_mgr_cfg.yaml`) 统一管理，用户平台数据则存储在数据库中。
+- **系统与用户隔离**：明确区分“系统平台”和“用户私有平台”，系统平台由配置文件 (`matchbox_cfg.yaml`) 统一管理，用户平台数据则存储在数据库中。
 - **灵活的密钥管理**：
   - 强烈推荐使用**环境变量**来管理API Key，避免密钥硬编码，提高安全性。
   - 支持用户为共享的系统平台提供自己的API Key，从而分摊成本。
@@ -39,9 +41,14 @@
 - **按资金来源拆分的配额机制**：
   - 调用会自动区分为 `sys_paid`（消耗站长托管 Key）和 `self_paid`（消耗用户自己的 Key）。
   - 两条口径都支持“每 N 小时配额”和“总配额”，并在实际发起 LLM 请求前执行拦截。
+- **兑换码系统**：
+  - 管理员可批量创建、废弃、删除兑换码，设置可兑换点数额度。
+  - 支持两种类型：`single`（一次性，用完即废）和 `per_user`（每用户可用一次，全服福利）。
+  - 兑换码默认随机生成 20 位（大小写字母+数字，排除 I/O/l/o），也支持自定义。
+  - 用户可通过兑换码充值系统点数，兑换记录可追溯。
 - **动态模型探测**：内置独立的模型探测工具 (`probe_platform_models`)，可以探测任何兼容OpenAI接口的平台所支持的模型列表。
   - **推理内容/计费字段可视化（平台测试）**：GUI 的“测试模型”会展示原始响应 JSON，部分平台会返回 `reasoning_content`、`usage` 或 `billing` 相关字段，可直接在日志中查看。
-  - **图形化配置工具**：提供一个基于 `Tkinter` 的 GUI 工具（`llm_mgr_cfg_gui.py`），完全无需依赖前端配置，**直接操作数据库**，支持添加/编辑/删除平台与模型、加密存储 API Key、探测和测试模型，以及从配置文件重置数据库或将数据库导出到 YAML。
+  - **图形化配置工具**：提供一个基于 `Tkinter` 的 GUI 工具（`matchbox_cfg_gui.py`），完全无需依赖前端配置，**直接操作数据库**，支持添加/编辑/删除平台与模型、加密存储 API Key、探测和测试模型，以及从配置文件重置数据库或将数据库导出到 YAML。
 - **数据库持久化**：使用 SQLite 存储用户配置、平台和模型信息，数据持久可靠。
 - **自动配置修正**：当用户的配置失效（如模型或平台被删除），系统会自动回退到第一个可用的默认平台，保证服务的可用性。
 
@@ -59,19 +66,20 @@
 ├── user_services.py       # 用户服务 Mixin (UserServicesMixin)
 ├── quota_services.py      # 配额配置/统计/拦截 Mixin (QuotaServicesMixin)
 ├── usage_services.py      # 用量统计 Mixin (UsageServicesMixin)
+├── redeem_code_services.py # 兑换码管理 Mixin (RedeemCodeServicesMixin)
 ├── tracked_model.py       # LLMClient/LLMUsage/UsageTrackingCallback
 ├── estimate_tokens.py     # Token 用量估算工具
 ├── utils.py               # 工具函数 (probe_platform_models, parse_extra_body 等)
-├── llm_mgr_cfg.yaml       # 系统平台预设配置（仅用于初始化/导出，运行时以数据库为准）
-├── llm_mgr_cfg_gui.py     # 图形化配置管理工具（入口，实际代码在 gui/ 子目录）
-├── gui/                   # GUI 模块（拆分自 llm_mgr_cfg_gui.py）
+├── matchbox_cfg.yaml       # 系统平台预设配置（仅用于初始化/导出，运行时以数据库为准）
+├── matchbox_cfg_gui.py     # 图形化配置管理工具（入口，实际代码在 gui/ 子目录）
+├── gui/                   # GUI 模块（拆分自 matchbox_cfg_gui.py）
 │   ├── __init__.py
 │   ├── main_window.py     # 主窗口 LLMConfigGUI 类（平台配置、用户总览、模型管理）
 │   ├── platform_panel.py  # 平台管理 Mixin
 │   ├── model_panel.py     # 模型管理 Mixin
 │   ├── dialogs.py         # 对话框 Mixin（添加/编辑模型、系统用途槽、用户配额）
 │   ├── key_manager.py     # 密钥管理 Mixin
-│   ├── testing.py         # 测试功能 Mixin
+│   ├── probe.py           # 探测功能 Mixin
 │   ├── dpi.py             # 高分屏适配与窗口尺寸策略
 │   └── theme.py           # GUI 主题、配色与表格样式
 ├── llm_config.db          # (自动生成) SQLite 数据库文件
@@ -81,21 +89,21 @@
 - **`manager.py`**: 包含 `AIManager` 类，通过 Mixin 模式组合了 `AdminMixin`、`LLMBuilderMixin`、`UserServicesMixin`、`QuotaServicesMixin`、`UsageServicesMixin` 等功能模块。这是与程序交互的主要入口。
 - **`quota_services.py`**: 配额服务模块，集中处理 `sys_paid/self_paid` 两条计费口径的配额配置、周期用量统计、总量统计与调用前拦截。
 - **`usage_services.py`**: 用量统计模块，除单用户汇总外，也提供面向 GUI 的全用户调用总览聚合能力。
-- **`llm_mgr_cfg.yaml`**: **初始化配置文件**。用于定义初始的"系统平台"。首次启动时，管理器会将此文件中的平台同步到数据库。后续启动仅增量添加新平台，不会覆盖已有配置。**运行时权威数据源是数据库，而非此文件。**
-- **`llm_mgr_cfg_gui.py`**: GUI 入口文件，实际逻辑拆分在 `gui/` 子目录中。**直接操作数据库**，支持平台/模型增删改、API Key 加密存储、模型探测与测试、全用户调用总览、双击用户查看详情，以及从配置文件重置数据库或将数据库导出到 YAML。
+- **`matchbox_cfg.yaml`**: **初始化配置文件**。用于定义初始的"系统平台"。首次启动时，管理器会将此文件中的平台同步到数据库。后续启动仅增量添加新平台，不会覆盖已有配置。**运行时权威数据源是数据库，而非此文件。**
+- **`matchbox_cfg_gui.py`**: GUI 入口文件，实际逻辑拆分在 `gui/` 子目录中。**直接操作数据库**，支持平台/模型增删改、API Key 加密存储、模型探测与测试、全用户调用总览、双击用户查看详情，以及从配置文件重置数据库或将数据库导出到 YAML。
 
 ## 🛠️ 第一次配置流程 (新手必读)
 
-**注意：** 项目自带的配置文件 (`llm_mgr_cfg.yaml`) 适用于快速迁移或者分享自己模型配置的，但其中的 API Key 是无效的（为了保护站长密钥而进行加密，同时满足分享和快速部署的需求）。
+**注意：** 项目自带的配置文件 (`matchbox_cfg.yaml`) 适用于快速迁移或者分享自己模型配置的，但其中的 API Key 是无效的（为了保护站长密钥而进行加密，同时满足分享和快速部署的需求）。
 
 首次使用时，你需要运行配置工具，填入你自己的 API Key。
 
 1. **设置主加密密钥 (LLM_KEY)**：
     - 系统使用 `LLM_KEY` 加密你的 API Key和所有用户自定义的API Key。你可以设置环境变量，或者直接运行 GUI 工具，它会提示你输入并自动保存。
-    - **首次部署时若你看到“存在历史密钥无法解密”的提示，不必惊慌。** 这通常意味着 `llm_mgr_cfg.yaml` 中携带了仓库作者或其他环境生成的加密 Key，它们在你的机器上本来就不可用。此时你只需要设置自己的 `LLM_KEY`，并按提示选择清理这些不可恢复密钥即可。**清理不会删除平台与模型结构，只会清空这些不可用的托管 Key。**
+    - **首次部署时若你看到“存在历史密钥无法解密”的提示，不必惊慌。** 这通常意味着 `matchbox_cfg.yaml` 中携带了仓库作者或其他环境生成的加密 Key，它们在你的机器上本来就不可用。此时你只需要设置自己的 `LLM_KEY`，并按提示选择清理这些不可恢复密钥即可。**清理不会删除平台与模型结构，只会清空这些不可用的托管 Key。**
 
 2. **启动配置工具**：
-    - 在终端进入 `server/llm/agen_matchbox` 目录，运行 `python llm_mgr_cfg_gui.py`。
+    - 在终端进入 `server/llm/agen_matchbox` 目录，运行 `python matchbox_cfg_gui.py`。
     - 你会看到预置的平台（如 DeepSeek, OpenRouter），但它们的 Key 是无法使用的。
 
 3. **替换并激活平台**：
@@ -158,14 +166,14 @@ for chunk in client.stream("继续扩展成三幕结构"):
 这是一个特殊的虚拟用户ID。当代码中使用 `matchbox().get_user_llm()` (不带 `user_id` 参数) 或 `matchbox().get_user_llm(user_id="-1")` 时，管理器会进入**系统模式**。
 
 - **目的**：为应用后端、全局服务或开发调试提供一个统一的LLM实例。
-- **密钥来源**：系统模式下优先使用用户对系统平台配置的专属 Key；未配置时按 `LLM_AUTO_KEY` 规则回退到系统后备 Key。当前实现中，系统后备 Key 来自 `DEFAULT_PLATFORM_CONFIGS`（即 `llm_mgr_cfg.yaml` / 环境变量解析结果）。
+- **密钥来源**：系统模式下优先使用用户对系统平台配置的专属 Key；未配置时按 `LLM_AUTO_KEY` 规则回退到系统后备 Key。当前实现中，系统后备 Key 来自 `DEFAULT_PLATFORM_CONFIGS`（即 `matchbox_cfg.yaml` / 环境变量解析结果）。
 
 ### 2. 全局模式开关
 
 在 [`config.py`](config.py) 中有两个重要的全局开关：
 
 - **`USE_SYS_LLM_CONFIG = True` (多用户固定平台模式)**
-  - 所有用户都只能看到和使用 `llm_mgr_cfg.yaml` 中定义的系统平台。
+  - 所有用户都只能看到和使用 `matchbox_cfg.yaml` 中定义的系统平台。
   - 用户**不能**创建、修改或删除自己的平台和模型。
   - 用户**可以**为这些系统平台提供自己的API Key，这些Key会安全地存储在数据库的 `llm_sys_platform_keys` 表中，与用户ID关联。
   - 这种模式兼顾了模型的统一管理和成本的分摊。
@@ -257,10 +265,10 @@ pip install langchain-core langchain-openai sqlalchemy tiktoken cryptography pyy
 **推荐方式**：直接使用 GUI 工具操作数据库，无需手动编辑 YAML。
 
 ```bash
-python llm_mgr_cfg_gui.py
+python matchbox_cfg_gui.py
 ```
 
-> **说明**：`llm_mgr_cfg.yaml` 仅在**首次启动**时将预置平台写入数据库（增量同步，不覆盖已有配置）。
+> **说明**：`matchbox_cfg.yaml` 仅在**首次启动**时将预置平台写入数据库（增量同步，不覆盖已有配置）。
 > 运行时平台/模型选择以数据库为准；系统后备 Key 解析仍会使用 `DEFAULT_PLATFORM_CONFIGS`（来自 YAML/环境变量）。
 > 若仓库分发的 YAML 中包含其他环境加密的 `ENC:` 密钥，而当前站点无法解密，系统会**跳过导入这些无效托管 Key**，但仍然会正常同步平台与模型结构，随后由站长在本地 GUI 中填写自己的 Key。
 
@@ -274,14 +282,14 @@ python llm_mgr_cfg_gui.py
 
 #### 2.2. 手动编辑 YAML（仅用于初始化/分发）
 
-直接编辑 [`llm_mgr_cfg.yaml`](llm_mgr_cfg.yaml:1) 文件，下次启动时新增的平台会被增量同步到数据库。
+直接编辑 [`matchbox_cfg.yaml`](matchbox_cfg.yaml:1) 文件，下次启动时新增的平台会被增量同步到数据库。
 
 - **`api_key`**: 可使用占位符（如 `{OPENAI_API_KEY}`），系统启动时会自动从环境变量解析。
   也可留空，后续通过 GUI 在数据库中填写加密 Key。
 
 ### 3. 设置环境变量
 
-在运行你的主应用之前，请确保在系统中设置了你在 `llm_mgr_cfg.yaml` 中引用的环境变量。
+在运行你的主应用之前，请确保在系统中设置了你在 `matchbox_cfg.yaml` 中引用的环境变量。
 
 例如，如果你的配置是 `api_key: '{GEMINIX_API_KEY}'`，你需要：
 
@@ -300,7 +308,7 @@ python llm_mgr_cfg_gui.py
 
   (为了永久生效，请添加到 `.bashrc` 或 `.zshrc`)
 
-**提示**：GUI 工具的“保存 API Key”会将 Key **加密写入数据库**（不是直接写入 YAML）。如果你希望将当前数据库配置回写到 `llm_mgr_cfg.yaml`，请使用工具栏的“导出DB到YAML”。
+**提示**：GUI 工具的“保存 API Key”会将 Key **加密写入数据库**（不是直接写入 YAML）。如果你希望将当前数据库配置回写到 `matchbox_cfg.yaml`，请使用工具栏的“导出DB到YAML”。
 
 ### 4. 在代码中使用
 
@@ -328,7 +336,7 @@ except ValueError as e:
 
 
 # --- 场景2: 在后端服务或无用户场景下使用 ---
-# 使用特殊的 SYSTEM_USER_ID，密钥来自 llm_mgr_cfg.yaml 中配置的加密 Key
+# 使用特殊的 SYSTEM_USER_ID，密钥来自 matchbox_cfg.yaml 中配置的加密 Key
 try:
     system_llm = matchbox().get_user_llm() # user_id=None 默认为系统用户
     # response = system_llm.invoke("写一个Python的Hello World")
@@ -337,7 +345,7 @@ except ValueError as e:
 
 
 # --- 场景3: 强制使用某个特定的系统内置模型 ---
-# 名字必须与 llm_mgr_cfg.yaml 中的显示名完全一致
+# 名字必须与 matchbox_cfg.yaml 中的显示名完全一致
 try:
     qwen_llm = matchbox().get_spec_sys_llm(
         platform_name="阿里云百炼",
@@ -357,7 +365,7 @@ except ValueError as e:
 | 数据源 | 存储位置 | 生效方式 | 适用场景 |
 |--------|----------|----------|----------|
 | **数据库** (推荐) | `llm_config.db` | 修改即时生效 | 生产环境、Web 前端管理、动态修改 |
-| **YAML** | `llm_mgr_cfg.yaml` | 需重启服务 | 初始化部署、配置分享、版本控制 |
+| **YAML** | `matchbox_cfg.yaml` | 需重启服务 | 初始化部署、配置分享、版本控制 |
 
 ### 同步策略 (三种触发时机)
 
@@ -378,11 +386,11 @@ except ValueError as e:
 
 ### GUI 工具
 
-GUI 配置工具 (`llm_mgr_cfg_gui.py`) **直接操作数据库**，修改即时生效，无需重启服务。
+GUI 配置工具 (`matchbox_cfg_gui.py`) **直接操作数据库**，修改即时生效，无需重启服务。
 
 - **📦 数据库（唯一模式）**：所有平台/模型的增删改均写入数据库，API Key 加密存储。
-- **📥 从YAML重置DB**：以 `llm_mgr_cfg.yaml` 为准覆盖数据库中的系统平台（保留用户 API Key）。适合恢复标准状态。
-- **📤 导出DB到YAML**：将当前数据库配置导出为 `llm_mgr_cfg.yaml`，用于版本控制或分发。
+- **📥 从YAML重置DB**：以 `matchbox_cfg.yaml` 为准覆盖数据库中的系统平台（保留用户 API Key）。适合恢复标准状态。
+- **📤 导出DB到YAML**：将当前数据库配置导出为 `matchbox_cfg.yaml`，用于版本控制或分发。
 
 ### 前端管理 API
 
@@ -405,7 +413,7 @@ POST   /api/ai/admin/reload-from-yaml       # 从配置文件强制重置数据�
     - YAML 仅在服务启动时用于初始化，后续不会覆盖数据库中的修改。
 
 2. **API Key 安全性**
-    - **⚠️ 严正警告：绝对禁止**将包含明文 API Key 的 `llm_mgr_cfg.yaml` 或 `.env` 文件提交到公共代码仓库（如 GitHub）。
+    - **⚠️ 严正警告：绝对禁止**将包含明文 API Key 的 `matchbox_cfg.yaml` 或 `.env` 文件提交到公共代码仓库（如 GitHub）。
     - **必须使用 `.gitignore`**：请确保项目根目录下的 `.gitignore` 文件中包含 `*.env`，以防止意外泄露。
     - **最佳实践**：始终使用环境变量。GUI 工具可以帮你轻松实现这一点。
 
@@ -633,7 +641,7 @@ status = matchbox().get_user_quota_status(user_id="user_123")
 
 ## 🔄 迁移到其他框架 (Migration)
 
-虽然本组件目前深度集成了 `LangChain`，但其核心逻辑（数据库管理、安全加密、用量统计）设计得非常独立。如果你需要将 `llm_mgr` 迁移到其他主流 Agent 框架，可以参考以下步骤：
+虽然本组件目前深度集成了 `LangChain`，但其核心逻辑（数据库管理、安全加密、用量统计）设计得非常独立。如果你需要将 `matchbox` 迁移到其他主流 Agent 框架，可以参考以下步骤：
 
 ### 1. 迁移到 AutoGen (Microsoft)
 
@@ -667,7 +675,7 @@ CrewAI 仍然高度兼容 LangChain 对象，但它也提供了原生 `LLM` 类�
   ```python
   from crewai import LLM
 
-  # 从 llm_mgr 获取配置并实例化
+  # 从 matchbox 获取配置并实例化
   crew_llm = LLM(
       model=f"openai/{model_name}", # CrewAI 习惯使用 provider/model 格式
       base_url=base_url,
@@ -679,10 +687,14 @@ CrewAI 仍然高度兼容 LangChain 对象，但它也提供了原生 `LLM` 类�
 
 如果你想做一个完全不依赖 LangChain 的通用后端，推荐使用 **LiteLLM** 作为中间件：
 
-1. **修改依赖**：在 `requirements.txt` 中用 `litellm` 替换 `langchain-openai`。
+1. **修改依赖**：在 `server/requirements.txt` 中用 `litellm` 替换 `langchain-openai`。
 2. **重构适配层**：修改 [`tracked_model.py`](tracked_model.py) 中的 `LLMClient/UsageTrackingCallback`，使其改为直接包装 `litellm.completion` 方法（保留 `.usage` 查询能力）。
 3. **核心复用**：保留 [`manager.py`](manager.py) 和 [`usage_services.py`](usage_services.py)，它们负责的数据库和统计逻辑是 100% 通用的。
 
-通过这种“两层架构”（管理层 + 适配层），你可以非常轻松地将 `llm_mgr` 接入任何新的 AI 生态。
+通过这种“两层架构”（管理层 + 适配层），你可以非常轻松地将 `matchbox` 接入任何新的 AI 生态。
 
+## 📄 许可证
 
+火柴 Agent 网关按本目录内 `LICENSE` 以 Apache License 2.0 单独授权，可作为独立组件复用。
+
+该授权仅适用于 `server/llm/agen_matchbox` 目录中明确受其覆盖的组件，不改变 SparkArc 主项目其他部分的 AGPL-3.0-only 授权。

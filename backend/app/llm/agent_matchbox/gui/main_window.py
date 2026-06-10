@@ -21,7 +21,7 @@ from .dpi import configure_tk_scaling, enable_high_dpi_awareness, prepare_root_w
 from .key_manager import KeyManagerMixin
 from .model_panel import ModelPanelMixin
 from .platform_panel import PlatformPanelMixin
-from .testing import TestingMixin
+from .probe import ProbeMixin
 from .theme import COLORS, apply_theme, style_listbox, style_text_widget
 
 
@@ -30,7 +30,7 @@ class LLMConfigGUI(
     ModelPanelMixin,
     DialogsMixin,
     KeyManagerMixin,
-    TestingMixin,
+    ProbeMixin,
 ):
     """LLM 配置管理器主窗口。"""
 
@@ -49,7 +49,6 @@ class LLMConfigGUI(
         self.user_usage_sort_descending = True
 
         self.header_status_var = tk.StringVar(value="等待初始化配置环境")
-        self.workflow_hint_var = tk.StringVar(value="推荐流程：填写平台密钥 → 探测模型 → 添加并测试模型。")
         self.user_usage_status_var = tk.StringVar(value="双击用户 ID 可查看详情与编辑配额；点击任意列头可排序。")
 
         try:
@@ -62,8 +61,8 @@ class LLMConfigGUI(
         prepare_root_window(
             self.root,
             title="火柴Agent网关 · LLM 配置台",
-            base_size=(1480, 930),
-            min_size=(1320, 820),
+            base_size=(1360,820),
+            min_size=(1360,820),
             ui_scale=self.ui_scale,
         )
         self._build_ui()
@@ -72,6 +71,19 @@ class LLMConfigGUI(
     def _scale(self, value: int) -> int:
         scale = min(max(self.ui_scale, 1.0), 1.35)
         return max(value, int(round(value * scale)))
+
+    @staticmethod
+    def _fmt_tokens(n) -> str:
+        """将 Token 数格式化为 K / M 缩写，精确到小数点 3 位。"""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.3f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.3f}K"
+        return str(n)
 
     def _bootstrap_startup(self):
         """启动自检：强制主密钥、建表初始化、再加载数据库配置。"""
@@ -96,7 +108,7 @@ class LLMConfigGUI(
 
     def _build_ui(self):
         """构建主界面布局。"""
-        shell = ttk.Frame(self.root, style="Shell.TFrame", padding=self._scale(18))
+        shell = ttk.Frame(self.root, style="Shell.TFrame", padding=self._scale(12))
         shell.pack(fill=tk.BOTH, expand=True)
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
@@ -108,8 +120,8 @@ class LLMConfigGUI(
 
         left_frame = ttk.Frame(workspace, style="Shell.TFrame")
         right_frame = ttk.Frame(workspace, style="Shell.TFrame")
-        workspace.add(left_frame, weight=11)
-        workspace.add(right_frame, weight=17)
+        workspace.add(left_frame, weight=13)
+        workspace.add(right_frame, weight=15)
 
         self._build_left_panel(left_frame)
         self._build_right_panel(right_frame)
@@ -117,8 +129,8 @@ class LLMConfigGUI(
 
     def _build_header(self, parent):
         """构建顶部品牌头部与全局操作区。"""
-        header = ttk.Frame(parent, style="Hero.TFrame", padding=(self._scale(22), self._scale(18)))
-        header.grid(row=0, column=0, sticky="ew", pady=(0, self._scale(14)))
+        header = ttk.Frame(parent, style="Hero.TFrame", padding=(self._scale(16), self._scale(12)))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, self._scale(10)))
         header.columnconfigure(0, weight=1)
         header.columnconfigure(1, weight=1)
 
@@ -132,7 +144,7 @@ class LLMConfigGUI(
             style="HeroSubtitle.TLabel",
             wraplength=self._scale(560),
             justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(self._scale(6), self._scale(8)))
+        ).pack(anchor=tk.W, pady=(self._scale(4), self._scale(6)))
         ttk.Label(text_frame, textvariable=self.header_status_var, style="Accent.TLabel").pack(anchor=tk.W)
 
         actions_frame = ttk.Frame(header, style="Hero.TFrame")
@@ -179,12 +191,6 @@ class LLMConfigGUI(
         """构建平台管理面板。"""
         parent.columnconfigure(1, weight=1)
         parent.columnconfigure(2, weight=0)
-
-        ttk.Label(parent, text="选择一个平台后，可在此编辑地址、密钥，并管理平台优先级。", style="SurfaceMuted.TLabel", wraplength=self._scale(360), justify=tk.LEFT).grid(
-            row=0, column=0, columnspan=3, sticky="ew", pady=(0, self._scale(12))
-        )
-        ttk.Label(parent, textvariable=self.workflow_hint_var, style="SurfaceMuted.TLabel", wraplength=self._scale(360), justify=tk.LEFT).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, self._scale(10)))
-
         ttk.Label(parent, text="平台", style="Surface.TLabel").grid(row=2, column=0, sticky=tk.W, pady=(0, self._scale(10)))
         self.platform_var = tk.StringVar()
         self.platform_combo = ttk.Combobox(parent, textvariable=self.platform_var, state="readonly")
@@ -226,20 +232,20 @@ class LLMConfigGUI(
         table_frame.rowconfigure(0, weight=1)
 
         columns = ("user_id", "requests", "tokens", "prompt", "completion", "sys_paid", "self_paid", "errors")
-        self.user_usage_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=14)
+        self.user_usage_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
         headings = {
-            "user_id": ("用户 ID", self._scale(126)),
+            "user_id": ("用户 ID", self._scale(76)),
             "requests": ("调用", self._scale(56)),
-            "tokens": ("总 Token", self._scale(84)),
-            "prompt": ("Prompt", self._scale(72)),
-            "completion": ("Completion", self._scale(84)),
-            "sys_paid": ("站长付费", self._scale(72)),
-            "self_paid": ("用户自费", self._scale(72)),
+            "tokens": ("总 Token", self._scale(92)),
+            "prompt": ("Prompt", self._scale(78)),
+            "completion": ("Completion", self._scale(92)),
+            "sys_paid": ("站长付费", self._scale(78)),
+            "self_paid": ("用户自费", self._scale(78)),
             "errors": ("错误", self._scale(56)),
         }
         for key, (title, width) in headings.items():
             self.user_usage_tree.heading(key, text=title, command=lambda sort_key=key: self.sort_user_usage_overview(sort_key))
-            self.user_usage_tree.column(key, width=width, anchor=tk.W if key == "user_id" else tk.CENTER, stretch=key == "user_id")
+            self.user_usage_tree.column(key, width=width, anchor=tk.W if key == "user_id" else tk.CENTER, stretch=False)
 
         tree_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.user_usage_tree.yview)
         self.user_usage_tree.configure(yscrollcommand=tree_scroll.set)
@@ -262,9 +268,9 @@ class LLMConfigGUI(
                 values=(
                     row.get("user_id", "-"),
                     int(row.get("requests", 0)),
-                    int(row.get("total_tokens", 0)),
-                    int(row.get("prompt_tokens", 0)),
-                    int(row.get("completion_tokens", 0)),
+                    self._fmt_tokens(row.get("total_tokens", 0)),
+                    self._fmt_tokens(row.get("prompt_tokens", 0)),
+                    self._fmt_tokens(row.get("completion_tokens", 0)),
                     int(row.get("sys_paid_requests", 0)),
                     int(row.get("self_paid_requests", 0)),
                     int(row.get("errors", 0)),
@@ -389,7 +395,7 @@ class LLMConfigGUI(
 
         summary_items = [
             ("总请求", f"{int(total_payload.get('requests', 0))} 次"),
-            ("总 Token", str(int(total_payload.get('tokens', 0)))),
+            ("总 Token", self._fmt_tokens(total_payload.get('tokens', 0))),
             ("站长付费", f"{int(quota_payload.get('sys_paid', {}).get('total', {}).get('usage', {}).get('requests', 0))} 次"),
             ("用户自费", f"{int(quota_payload.get('self_paid', {}).get('total', {}).get('usage', {}).get('requests', 0))} 次"),
         ]
@@ -430,9 +436,9 @@ class LLMConfigGUI(
                         row.get("platform_name", "-"),
                         row.get("display_name", "-"),
                         int(row.get("call_count", 0)),
-                        int(row.get("total_tokens", 0)),
-                        int(row.get("prompt_tokens", 0)),
-                        int(row.get("completion_tokens", 0)),
+                        self._fmt_tokens(row.get("total_tokens", 0)),
+                        self._fmt_tokens(row.get("prompt_tokens", 0)),
+                        self._fmt_tokens(row.get("completion_tokens", 0)),
                         int(row.get("success_count", 0)),
                         int(row.get("error_count", 0)),
                     ),
@@ -498,7 +504,7 @@ class LLMConfigGUI(
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
 
-        self.model_listbox = tk.Listbox(list_frame, selectmode=tk.SINGLE)
+        self.model_listbox = tk.Listbox(list_frame, selectmode=tk.SINGLE, height=8)
         style_listbox(self.model_listbox, ui_scale=self.ui_scale)
         model_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.model_listbox.yview)
         self.model_listbox.configure(yscrollcommand=model_scroll.set)
@@ -580,7 +586,7 @@ class LLMConfigGUI(
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
 
-        self.probe_listbox = tk.Listbox(list_frame, selectmode=tk.SINGLE)
+        self.probe_listbox = tk.Listbox(list_frame, selectmode=tk.SINGLE, height=8)
         style_listbox(self.probe_listbox, ui_scale=self.ui_scale)
         probe_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.probe_listbox.yview)
         self.probe_listbox.configure(yscrollcommand=probe_scroll.set)
@@ -613,7 +619,7 @@ class LLMConfigGUI(
         log_body.columnconfigure(0, weight=1)
         log_body.rowconfigure(0, weight=1)
 
-        self.log_text = tk.Text(log_body, height=10, wrap=tk.WORD)
+        self.log_text = tk.Text(log_body, height=7, wrap=tk.WORD)
         style_text_widget(self.log_text, ui_scale=self.ui_scale)
         log_scroll = ttk.Scrollbar(log_body, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
@@ -635,7 +641,6 @@ class LLMConfigGUI(
 
         if not self.current_config:
             self.header_status_var.set("当前尚未加载任何平台配置")
-            self.workflow_hint_var.set("可以先从配置文件重置数据库，或直接新增平台并保存密钥后开始探测模型。")
             return
 
         platform_name = self._resolve_platform_name()
@@ -648,9 +653,6 @@ class LLMConfigGUI(
 
         self.header_status_var.set(
             f"已加载 {platform_count} 个平台 / {total_models} 个模型 · 当前平台：{platform_name or '未选择'} · API Key {'已保存' if has_api_key else '未保存'}"
-        )
-        self.workflow_hint_var.set(
-            f"当前平台已有 {model_count} 个模型。建议先检查 URL 与 Key，再探测模型并完成测试。"
         )
 
     # ------------------------------------------------------------------ #
@@ -689,8 +691,10 @@ class LLMConfigGUI(
                         "model_name": m["model_name"],
                         "is_embedding": bool(m["is_embedding"]),
                         "_db_id": m["_db_id"],
-                        "sys_credit_price_per_million_tokens": m.get("sys_credit_price_per_million_tokens"),
-                        "resolved_sys_credit_price_per_million_tokens": m.get("resolved_sys_credit_price_per_million_tokens"),
+                        "max_context_tokens": m.get("max_context_tokens", 200000),
+                        "max_output_tokens": m.get("max_output_tokens", 64000),
+                        "sys_credit_input_price_per_million": m.get("sys_credit_input_price_per_million"),
+                        "sys_credit_output_price_per_million": m.get("sys_credit_output_price_per_million"),
                     }
                     if m.get("temperature") is not None:
                         model_cfg["temperature"] = m["temperature"]
@@ -761,7 +765,7 @@ class LLMConfigGUI(
         """导出数据库配置到 YAML（调用后端 admin_export_to_yaml）。"""
         if not messagebox.askyesno(
             "确认导出",
-            "这将覆盖当前的 llm_mgr_cfg.yaml 文件。\n确定要导出数据库配置吗？"
+            "这将覆盖当前的 matchbox_cfg.yaml 文件。\n确定要导出数据库配置吗？"
         ):
             return
 
@@ -829,7 +833,7 @@ class LLMConfigGUI(
             return result.value
         if result.is_missing_key:
             raise ValueError("检测到加密 API Key，但当前未设置 LLM_KEY")
-        raise ValueError("API Key 解密失败，请检查 LLM_KEY 或重新配置密钥")
+        raise ValueError("托管密钥与当前站点主密钥不匹配，该平台需要配置 API Key")
 
     def _get_probe_cache_key(self, platform_name, base_url, api_key):
         """生成探测缓存 key。"""

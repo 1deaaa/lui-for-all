@@ -6,11 +6,12 @@ LLM 运行状态与主模型管控 API
 
 import json
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel
 
 from app.llm.agent_matchbox import matchbox, SYSTEM_USER_ID
-from app.llm.agent_matchbox.utils import probe_platform_models, test_platform_chat
+from app.llm.agent_matchbox.utils import probe_platform_models, test_platform_chat, stream_speed_test
 
 router = APIRouter()
 
@@ -645,3 +646,42 @@ async def test_model(payload: TestPayload):
         return {"reply": reply}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"测试失败：{e}")
+
+
+@router.post("/speed-test")
+async def speed_test_model(payload: TestPayload):
+    """流式测速端点，通过 SSE 返回实时速度数据"""
+    api_key_to_use = payload.llm_api_key
+
+    if not api_key_to_use:
+        raise HTTPException(status_code=400, detail="未提供有效的 API Key 进行测速")
+
+    extra_body_dict = None
+    if payload.llm_extra_body and payload.llm_extra_body.strip():
+        try:
+            extra_body_dict = json.loads(payload.llm_extra_body)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Extra Body 格式错误: {e}")
+
+    def event_generator():
+        try:
+            for chunk in stream_speed_test(
+                payload.llm_api_base,
+                api_key_to_use,
+                payload.llm_model_id,
+                timeout=30.0,
+                extra_body=extra_body_dict,
+            ):
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

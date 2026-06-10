@@ -22,6 +22,10 @@ from sqlalchemy.orm import (
 Base = declarative_base()
 
 
+DEFAULT_MAX_CONTEXT_TOKENS = 200_000
+DEFAULT_MAX_OUTPUT_TOKENS = 64_000
+
+
 class LLMPlatform(Base):
     """LLM 平台模型"""
     __tablename__ = "llm_platforms"
@@ -33,8 +37,8 @@ class LLMPlatform(Base):
     is_sys = Column(Integer, default=0) 
     disable = Column(Integer, default=0)
     sort_order = Column(Integer, default=0)
-    # 系统平台默认点数价格：每 1M token 消耗多少点，仅 sys_paid 生效。
-    sys_credit_price_per_million_tokens = Column(Integer, nullable=True)
+    # 系统平台火柴预算；NULL 表示无限，0 表示额度耗尽。
+    sys_credit_balance = Column(Float, nullable=True)
     models = relationship("LLModels", backref="platform", cascade="all, delete-orphan")
 
 
@@ -72,8 +76,22 @@ class LLModels(Base):
     display_name = Column(String(120), nullable=True)
     extra_body = Column(String(1024), nullable=True)
     temperature = Column(Float, nullable=True)
-    # 模型专属点数价格：为空时继承平台默认价格。
-    sys_credit_price_per_million_tokens = Column(Integer, nullable=True)
+    # 模型上下文上限与单次输出上限，供业务侧在发起调用前进行长度校验。
+    max_context_tokens = Column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_MAX_CONTEXT_TOKENS,
+        server_default=text(str(DEFAULT_MAX_CONTEXT_TOKENS)),
+    )
+    max_output_tokens = Column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        server_default=text(str(DEFAULT_MAX_OUTPUT_TOKENS)),
+    )
+    # 模型专属点数价格：输入/输出分别定价，每 1M token 消耗多少点。0 表示免费。
+    sys_credit_input_price_per_million = Column(Float, nullable=True)
+    sys_credit_output_price_per_million = Column(Float, nullable=True)
     disable = Column(Integer, default=0, index=True)
     is_embedding = Column(Integer, default=0, index=True)
     sort_order = Column(Integer, default=0)
@@ -183,9 +201,9 @@ class UserCreditAccount(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False, index=True)
     billing_scope = Column(String(32), nullable=False, default="sys_paid", index=True)
-    credit_balance = Column(Integer, nullable=False, default=0)
-    credit_total_granted = Column(Integer, nullable=False, default=0)
-    credit_total_used = Column(Integer, nullable=False, default=0)
+    credit_balance = Column(Float, nullable=False, default=0)
+    credit_total_granted = Column(Float, nullable=False, default=0)
+    credit_total_used = Column(Float, nullable=False, default=0)
     status = Column(String(32), nullable=False, default="active", index=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -197,8 +215,8 @@ class UserCreditLedger(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False, index=True)
     billing_scope = Column(String(32), nullable=False, default="sys_paid", index=True)
-    delta_credit = Column(Integer, nullable=False)
-    balance_after = Column(Integer, nullable=False)
+    delta_credit = Column(Float, nullable=False)
+    balance_after = Column(Float, nullable=False)
     reason_type = Column(String(32), nullable=False, index=True)
     platform_id = Column(
         Integer,
@@ -277,6 +295,8 @@ class UsageLogEntry(Base):
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
+    # 输入侧命中的提示词缓存 token 数。0 表示未命中或上游未返回该统计。
+    cached_prompt_tokens = Column(Integer, default=0)
     
     # 调用状态 (1=成功, 0=失败)
     success = Column(Integer, default=1)
@@ -288,10 +308,59 @@ class UsageLogEntry(Base):
     # 允许为空，兼容历史日志与外部迁移工具的渐进式加列。
     quota_scope = Column(String(32), nullable=True, index=True)
     # 若本次调用为系统托管调用，可记录本次实际扣减点数；self_paid 为空。
-    credit_cost = Column(Integer, nullable=True, index=True)
+    credit_cost = Column(Float, nullable=True, index=True)
     
     # 时间戳
     created_at = Column(DateTime, default=func.now(), index=True)
     
     # 关系
     model = relationship("LLModels")
+
+
+# ==================== 兑换码系统 ====================
+
+class RedeemCode(Base):
+    """兑换码"""
+    __tablename__ = "redeem_codes"
+
+    id = Column(Integer, primary_key=True)
+    # 兑换码字符串，唯一
+    code = Column(String(64), nullable=False, unique=True, index=True)
+    # 可兑换的点数额度
+    credit_amount = Column(Float, nullable=False)
+    # 兑换码类型：single = 一次性（用完即废）；per_user = 每用户可用一次（全服福利）
+    code_type = Column(String(32), nullable=False, default="single", index=True)
+    # 状态：active / revoked / exhausted
+    status = Column(String(32), nullable=False, default="active", index=True)
+    # 创建者（管理员 user_id）
+    created_by = Column(String(255), nullable=True, index=True)
+    # 备注
+    remark = Column(String(255), nullable=True)
+    # 时间戳
+    created_at = Column(DateTime, default=func.now(), index=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    # 关系
+    usages = relationship("RedeemCodeUsage", backref="redeem_code", cascade="all, delete-orphan")
+
+
+class RedeemCodeUsage(Base):
+    """兑换码使用记录"""
+    __tablename__ = "redeem_code_usages"
+
+    id = Column(Integer, primary_key=True)
+    # 关联兑换码
+    redeem_code_id = Column(
+        Integer,
+        ForeignKey("redeem_codes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # 使用者 user_id
+    user_id = Column(String(255), nullable=False, index=True)
+    # 兑换时的点数变动
+    delta_credit = Column(Float, nullable=False)
+    # 兑换后余额快照
+    balance_after = Column(Float, nullable=False)
+    # 时间戳
+    used_at = Column(DateTime, default=func.now(), index=True)

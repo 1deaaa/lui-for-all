@@ -89,13 +89,13 @@ def load_default_platform_configs_raw() -> Dict[str, Any]:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(template_path, config_path)
         else:
-            raise FileNotFoundError(f"LLM_MGR:预设平台配置文件 '{config_path}' 不存在，请手动创建 llm_mgr_cfg.yaml")
+            raise FileNotFoundError(f"LLM_MGR:预设平台配置文件 '{config_path}' 不存在，请手动创建 matchbox_cfg.yaml")
 
     with config_path.open("r", encoding="utf-8") as f:
         configs = yaml.safe_load(f) or {}
 
     if not isinstance(configs, dict):
-        raise ValueError("llm_mgr_cfg.yaml 顶层结构必须是字典")
+        raise ValueError("matchbox_cfg.yaml 顶层结构必须是字典")
 
     return configs
 
@@ -163,16 +163,16 @@ def _ensure_env_setup():
     key = get_env_var("LLM_KEY")
             
     if not key:
-        gui_path = os.path.join(os.path.dirname(__file__), "llm_mgr_cfg_gui.py")
+        gui_path = os.path.join(os.path.dirname(__file__), "matchbox_cfg_gui.py")
         if os.path.exists(gui_path):
             print("\n" + "!"*80)
-            print("【重要提示】检测到系统未配置 LLM_KEY (API 密钥主密码)")
-            print("所有 API Key 均需主密码加解密，否则将无法使用。")
+            print("🔑【重要提示】检测到系统未配置 LLM_KEY (API 密钥主密码)")
+            print("🔒若初次启动这是正常现象，并非错误。安全起见，所有 API Key 均需主密码加解密，否则将无法使用。")
             print("-" * 80)
             print(f"方法一 (推荐): 运行配置工具\n   python \"{os.path.normpath(gui_path)}\"")
             print("-" * 80)
             print("方法二: 通过 /api/admin/config/llm-key 接口或管理页设置 LLM_KEY")
-            print("方法三: 在前端页面初始化向导中设置（如果有前端的话）")
+            print("方法三: 在程序页面初始化向导中设置")
             print("!"*80 + "\n")
             return
 

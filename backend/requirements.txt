@@ -40,6 +40,12 @@ json-repair>=0.30.0
 fastmcp>=0.2.0
 PyJWT>=2.8.0
 
+# agent-matchbox 依赖
+cryptography>=41.0.0
+PyYAML>=6.0
+tiktoken>=0.7.0
+requests>=2.31.0
+
 # 测试
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

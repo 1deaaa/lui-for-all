@@ -72,11 +72,19 @@ const { t } = useI18n()
 
 const saving = ref(false)
 const testing = ref(false)
+const speedTesting = ref(false)
 const loading = ref(false)
 const fetchingModels = ref(false)
 const testStatus = ref<'success' | 'error' | null>(null)
 const availableModels = ref<string[]>([])
 const currentLocale = ref<AppLocale>(getLocale())
+
+const speedTestResult = ref<{
+  ftl: number | null
+  speed: number
+  totalTokens: number
+  elapsed: number
+} | null>(null)
 
 const managerLoading = ref(false)
 const managerOperating = ref(false)
@@ -527,6 +535,78 @@ async function testConnection() {
   }
 }
 
+async function runSpeedTest() {
+  formatApiBase()
+  formatExtraBody()
+  speedTesting.value = true
+  speedTestResult.value = null
+
+  try {
+    const response = await fetch('/api/llm-status/speed-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        llm_api_base: settings.value.llm_api_base,
+        llm_api_key: settings.value.llm_api_key,
+        llm_model_id: settings.value.llm_model_id,
+        llm_extra_body: settings.value.llm_extra_body,
+      }),
+    })
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error(err.detail || 'Speed test failed')
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('ReadableStream not supported')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6))
+          if (data.error) {
+            throw new Error(data.error)
+          }
+          if (data.type === 'final') {
+            speedTestResult.value = {
+              ftl: data.ftl ?? null,
+              speed: data.speed ?? 0,
+              totalTokens: data.total_tokens ?? data.total_chars ?? 0,
+              elapsed: data.elapsed ?? 0,
+            }
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof Error && parseErr.message !== 'Speed test failed') {
+            // skip parse errors for partial data
+          } else {
+            throw parseErr
+          }
+        }
+      }
+    }
+
+    if (speedTestResult.value) {
+      ElMessage.success(t('settings.llm.speedTestResult'))
+    }
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.testFailed')))
+  } finally {
+    speedTesting.value = false
+  }
+}
+
 async function fetchModels() {
   if (!settings.value.llm_api_base) {
     ElMessage.warning(t('settings.messages.apiBaseRequired'))
@@ -721,6 +801,9 @@ onMounted(loadSettings)
                   <el-button @click="testConnection" :loading="testing" plain round size="default" class="test-btn">
                     <Icon icon="lucide:zap" class="btn-icon" /> {{ t('settings.llm.testConnection') }}
                   </el-button>
+                  <el-button @click="runSpeedTest" :loading="speedTesting" plain round size="default" class="test-btn">
+                    <Icon icon="lucide:gauge" class="btn-icon" /> {{ t('settings.llm.speedTest') }}
+                  </el-button>
                 </div>
               </div>
             </template>
@@ -803,6 +886,33 @@ onMounted(loadSettings)
                 </el-form-item>
               </el-col>
             </el-row>
+
+            <transition name="el-zoom-in-top">
+              <div v-if="speedTestResult" class="speed-test-result">
+                <div class="speed-test-title">
+                  <Icon icon="lucide:gauge" />
+                  {{ t('settings.llm.speedTestResult') }}
+                </div>
+                <div class="speed-test-metrics">
+                  <div class="speed-metric">
+                    <div class="metric-value">{{ speedTestResult.ftl !== null ? Math.round(speedTestResult.ftl) : '-' }}</div>
+                    <div class="metric-label">{{ t('settings.llm.speedTestFirstToken') }} ({{ t('settings.llm.speedTestMs') }})</div>
+                  </div>
+                  <div class="speed-metric">
+                    <div class="metric-value">{{ speedTestResult.speed > 0 ? speedTestResult.speed.toFixed(1) : '-' }}</div>
+                    <div class="metric-label">{{ t('settings.llm.speedTestAvgSpeed') }} ({{ t('settings.llm.speedTestUnit') }})</div>
+                  </div>
+                  <div class="speed-metric">
+                    <div class="metric-value">{{ speedTestResult.totalTokens || '-' }}</div>
+                    <div class="metric-label">{{ t('settings.llm.speedTestTotalTokens') }}</div>
+                  </div>
+                  <div class="speed-metric">
+                    <div class="metric-value">{{ speedTestResult.elapsed > 0 ? speedTestResult.elapsed.toFixed(1) : '-' }}</div>
+                    <div class="metric-label">{{ t('settings.llm.speedTestElapsed') }} ({{ t('settings.llm.speedTestSec') }})</div>
+                  </div>
+                </div>
+              </div>
+            </transition>
 
             <el-divider class="manager-divider" content-position="left">
               {{ t('settings.llm.managerSectionTitle') }}
@@ -1184,6 +1294,47 @@ onMounted(loadSettings)
   margin: 8px 0 12px;
 }
 
+.speed-test-result {
+  margin: 16px 0 8px;
+  padding: 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border: 1px solid var(--el-color-primary-light-7);
+}
+
+.speed-test-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  margin-bottom: 12px;
+}
+
+.speed-test-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.speed-metric {
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--el-color-primary);
+  line-height: 1.2;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+}
+
 .manager-hint {
   margin: 0 0 12px;
   font-size: 12px;
@@ -1399,6 +1550,14 @@ onMounted(loadSettings)
 
   .manager-main-binding {
     line-height: 1.5;
+  }
+
+  .speed-test-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .metric-value {
+    font-size: 20px;
   }
 }
 </style>

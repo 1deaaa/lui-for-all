@@ -157,6 +157,11 @@ async def lifespan(app: FastAPI):
         from app.llm.agent_matchbox import initialize_matchbox
         initialize_matchbox(ensure_defaults=True)
         logger.info("✅ agent-matchbox 初始化完成")
+
+        # 后台预热 LLM 运行时依赖（LangChain/OpenAI SDK 等），不阻塞启动
+        from app.llm.agent_matchbox import warmup_matchbox_runtime
+        warmup_matchbox_runtime(blocking=False)
+        logger.info("🔥 agent-matchbox 运行时预热已启动（后台）")
     except Exception as e:
         logger.warning(f"⚠️ agent-matchbox 初始化失败: {e}")
 

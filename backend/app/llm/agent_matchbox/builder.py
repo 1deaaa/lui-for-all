@@ -7,6 +7,7 @@ LLM 客户端构建 Mixin
 get_user_llm() 和 get_spec_sys_llm() 均返回 LLMClient 对象：
     - llm：原生 LangChain 客户端，完全兼容 OpenAI 协议，已注入用量追踪 Callback
     - usage：轻量句柄，提供 get_usage_last_24h() 等用量查询方法
+    - max_context_tokens / max_output_tokens：当前模型的上下文上限与单次输出上限
 
 关于 streaming 参数
 -------------------
@@ -15,14 +16,28 @@ get_user_llm() 和 get_spec_sys_llm() 均返回 LLMClient 对象：
   - 非流式：llm.invoke() / llm.ainvoke()
   - 流式：  llm.stream() / llm.astream() / llm.astream_events()
 """
+from __future__ import annotations
+
 from typing import Optional, Dict, Any
 
-from langchain_openai import OpenAIEmbeddings
-
-from .models import LLMPlatform, LLModels, UserModelUsage, AgentModelBinding, UserEmbeddingSelection
+from .models import (
+    LLMPlatform,
+    LLModels,
+    UserModelUsage,
+    AgentModelBinding,
+    UserEmbeddingSelection,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+)
 from .config import SYSTEM_USER_ID, DEFAULT_USAGE_KEY
-from .gateway import ChatUniversal, apply_sdk_request_compat
-from .tracked_model import UsageTrackingCallback, LLMUsage, LLMClient
+
+
+def _load_chat_runtime():
+    """延迟加载 LLM 运行时重依赖，避免阻塞服务启动。"""
+    from .gateway import ChatUniversal
+    from .tracked_model import UsageTrackingCallback, LLMUsage, LLMClient
+
+    return ChatUniversal, UsageTrackingCallback, LLMUsage, LLMClient
 
 
 class LLMBuilderMixin:
@@ -30,7 +45,22 @@ class LLMBuilderMixin:
 
     def _apply_sdk_request_compat(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """为 LangChain/OpenAI SDK 调用补充兼容参数。"""
+        from .gateway import apply_sdk_request_compat
+
         return apply_sdk_request_compat(kwargs)
+
+    @staticmethod
+    def _resolve_model_limits(model_obj: Optional[LLModels]) -> Dict[str, int]:
+        """读取模型上下文与输出上限，缺省时回退默认值。"""
+        if model_obj is None:
+            return {
+                "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
+                "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+            }
+        return {
+            "max_context_tokens": int(getattr(model_obj, "max_context_tokens", 0) or DEFAULT_MAX_CONTEXT_TOKENS),
+            "max_output_tokens": int(getattr(model_obj, "max_output_tokens", 0) or DEFAULT_MAX_OUTPUT_TOKENS),
+        }
 
     def _get_fallback_platform_model(self, session, user_id: str):
         """
@@ -173,6 +203,7 @@ class LLMBuilderMixin:
                 返回值：LLMClient(llm, usage)
                     - 默认当作 LLM 直接使用：client.invoke(...) / client.stream(...)
                     - 如需用量查询：client.usage.get_usage_last_24h()
+                    - 如需读取模型上限：client.max_context_tokens / client.max_output_tokens
 
         ⚠️ 关于 streaming 参数：
         不要传入 streaming 参数，它会被静默忽略。
@@ -201,6 +232,7 @@ class LLMBuilderMixin:
             usage = client.usage.get_usage_last_24h()
             print(f"过去24小时: {usage['total_tokens']} tokens, {usage['requests']} 次请求")
         """
+        ChatUniversal, UsageTrackingCallback, LLMUsage, LLMClient = _load_chat_runtime()
         effective_user_id = user_id if user_id is not None else SYSTEM_USER_ID
         
         direct_config = None
@@ -301,6 +333,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                billing_enabled=self.billing_enabled,
             )
  
             # 构建 LLM 客户端（ChatUniversal 子类保留了第三方模型的 reasoning_content）
@@ -324,7 +357,14 @@ class LLMBuilderMixin:
                 quota_scope=quota_scope,
             )
 
-            return LLMClient(llm=llm, usage=usage)
+            model_limits = self._resolve_model_limits(model_obj)
+
+            return LLMClient(
+                llm=llm,
+                usage=usage,
+                max_context_tokens=model_limits["max_context_tokens"],
+                max_output_tokens=model_limits["max_output_tokens"],
+            )
 
     def get_user_embedding(
         self,
@@ -334,6 +374,8 @@ class LLMBuilderMixin:
         **kwargs: Any,
     ) -> OpenAIEmbeddings:
         """获取用户 Embedding 实例。优先使用用户选择，否则回退到首个可用 embedding。"""
+        from langchain_openai import OpenAIEmbeddings
+
         effective_user_id = user_id if user_id is not None else SYSTEM_USER_ID
 
         with self.Session() as session:
@@ -399,6 +441,7 @@ class LLMBuilderMixin:
           - 非流式：llm.invoke() / llm.ainvoke()
           - 流式：  llm.stream() / llm.astream()
         """
+        ChatUniversal, UsageTrackingCallback, LLMUsage, LLMClient = _load_chat_runtime()
         effective_user_id = user_id if user_id is not None else SYSTEM_USER_ID
 
         with self.Session() as session:
@@ -443,6 +486,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                billing_enabled=self.billing_enabled,
             )
  
             llm = ChatUniversal(
@@ -464,4 +508,11 @@ class LLMBuilderMixin:
                 quota_scope=quota_scope,
             )
 
-            return LLMClient(llm=llm, usage=usage)
+            model_limits = self._resolve_model_limits(model)
+
+            return LLMClient(
+                llm=llm,
+                usage=usage,
+                max_context_tokens=model_limits["max_context_tokens"],
+                max_output_tokens=model_limits["max_output_tokens"],
+            )

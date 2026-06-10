@@ -37,27 +37,40 @@ def _normalize_billing_scope(billing_scope: Optional[str]) -> Optional[str]:
 
 
 def calculate_credit_cost(
-    price_per_million_tokens: Optional[int],
+    input_price_per_million: Optional[float],
+    output_price_per_million: Optional[float],
     *,
-    total_tokens: int = 0,
-) -> int:
-    if price_per_million_tokens is None:
-        return 0
-    price = max(int(price_per_million_tokens), 0)
-    tokens = max(int(total_tokens), 0)
-    return (tokens * price + 999_999) // 1_000_000
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> float:
+    """分别按输入/输出价格精确计算点数消耗（float）。"""
+    input_price = max(float(input_price_per_million or 0), 0)
+    output_price = max(float(output_price_per_million or 0), 0)
+    p_tokens = max(int(prompt_tokens), 0)
+    c_tokens = max(int(completion_tokens), 0)
+    input_cost = p_tokens * input_price / 1_000_000
+    output_cost = c_tokens * output_price / 1_000_000
+    return input_cost + output_cost
 
 
-def resolve_credit_price_per_million(model: Optional[LLModels], platform: Optional[LLMPlatform]) -> Optional[int]:
-    if model is not None and getattr(model, "sys_credit_price_per_million_tokens", None) is not None:
-        return int(model.sys_credit_price_per_million_tokens)
-    if platform is not None and getattr(platform, "sys_credit_price_per_million_tokens", None) is not None:
-        return int(platform.sys_credit_price_per_million_tokens)
-    return None
+def resolve_input_price_per_million(model: Optional[LLModels]) -> float:
+    """获取模型输入价格，None 视为 0（免费）。"""
+    val = getattr(model, "sys_credit_input_price_per_million", None)
+    return max(float(val), 0) if val is not None else 0.0
 
 
-def settle_usage_entry_credit(session, usage_entry: UsageLogEntry) -> int:
+def resolve_output_price_per_million(model: Optional[LLModels]) -> float:
+    """获取模型输出价格，None 视为 0（免费）。"""
+    val = getattr(model, "sys_credit_output_price_per_million", None)
+    return max(float(val), 0) if val is not None else 0.0
+
+
+def _settle_usage_entry_credit(session, usage_entry: UsageLogEntry, *, billing_enabled: bool) -> float:
     """对单条 usage 记录进行系统点数结算。"""
+    if not billing_enabled:
+        usage_entry.credit_cost = None
+        return 0
+
     billing_scope = _normalize_billing_scope(getattr(usage_entry, "quota_scope", None))
     if billing_scope != "sys_paid":
         usage_entry.credit_cost = None
@@ -68,15 +81,24 @@ def settle_usage_entry_credit(session, usage_entry: UsageLogEntry) -> int:
         usage_entry.credit_cost = 0
         return 0
 
-    platform = session.query(LLMPlatform).filter_by(id=model.platform_id).first()
-    price_per_million = resolve_credit_price_per_million(model, platform)
-    if price_per_million is None:
+    if (
+        model.sys_credit_input_price_per_million is None
+        or model.sys_credit_output_price_per_million is None
+    ):
+        usage_entry.credit_cost = None
+        return 0
+
+    input_price = resolve_input_price_per_million(model)
+    output_price = resolve_output_price_per_million(model)
+    if input_price == 0 and output_price == 0:
         usage_entry.credit_cost = 0
         return 0
 
     cost = calculate_credit_cost(
-        price_per_million,
-        total_tokens=int(usage_entry.total_tokens or 0),
+        input_price,
+        output_price,
+        prompt_tokens=int(usage_entry.prompt_tokens or 0),
+        completion_tokens=int(usage_entry.completion_tokens or 0),
     )
     usage_entry.credit_cost = cost
 
@@ -89,14 +111,18 @@ def settle_usage_entry_credit(session, usage_entry: UsageLogEntry) -> int:
         session.add(account)
         session.flush()
 
-    account.credit_balance = int(account.credit_balance or 0) - cost
-    account.credit_total_used = int(account.credit_total_used or 0) + cost
+    account.credit_balance = float(account.credit_balance or 0) - cost
+    account.credit_total_used = float(account.credit_total_used or 0) + cost
+
+    platform = session.query(LLMPlatform).filter_by(id=model.platform_id).first()
+    if platform and platform.sys_credit_balance is not None:
+        platform.sys_credit_balance = float(platform.sys_credit_balance or 0) - cost
 
     ledger = UserCreditLedger(
         user_id=str(usage_entry.user_id),
         billing_scope="sys_paid",
         delta_credit=-cost,
-        balance_after=int(account.credit_balance or 0),
+        balance_after=float(account.credit_balance or 0),
         reason_type="consume",
         platform_id=model.platform_id,
         model_id=model.id,
@@ -105,6 +131,11 @@ def settle_usage_entry_credit(session, usage_entry: UsageLogEntry) -> int:
     )
     session.add(ledger)
     return cost
+
+
+def settle_usage_entry_credit(session, usage_entry: UsageLogEntry, *, billing_enabled: bool = True) -> float:
+    """对单条 usage 记录进行系统点数结算。"""
+    return _settle_usage_entry_credit(session, usage_entry, billing_enabled=billing_enabled)
 
 
 class CreditServicesMixin:
@@ -123,9 +154,9 @@ class CreditServicesMixin:
         return {
             "user_id": str(user_id),
             "billing_scope": billing_scope,
-            "credit_balance": int(getattr(account, "credit_balance", 0) or 0),
-            "credit_total_granted": int(getattr(account, "credit_total_granted", 0) or 0),
-            "credit_total_used": int(getattr(account, "credit_total_used", 0) or 0),
+            "credit_balance": float(getattr(account, "credit_balance", 0) or 0),
+            "credit_total_granted": float(getattr(account, "credit_total_granted", 0) or 0),
+            "credit_total_used": float(getattr(account, "credit_total_used", 0) or 0),
             "status": getattr(account, "status", "active") if account else "active",
             "updated_at": getattr(account, "updated_at", None).isoformat() if getattr(account, "updated_at", None) else None,
         }
@@ -145,9 +176,8 @@ class CreditServicesMixin:
                     "platform_id": platform.id,
                     "model_id": model.id,
                     "billing_scope": scope,
-                    "platform_credit_price_per_million_tokens": platform.sys_credit_price_per_million_tokens,
-                    "model_credit_price_per_million_tokens": model.sys_credit_price_per_million_tokens,
-                    "resolved_credit_price_per_million_tokens": resolve_credit_price_per_million(model, platform),
+                    "model_input_price_per_million": model.sys_credit_input_price_per_million,
+                    "model_output_price_per_million": model.sys_credit_output_price_per_million,
                     "display_name": model.display_name,
                     "model_name": model.model_name,
                     "platform_name": platform.name,
@@ -160,13 +190,15 @@ class CreditServicesMixin:
         model_id: int,
         *,
         billing_scope: str = "sys_paid",
-        platform_credit_price_per_million_tokens: Optional[int] = None,
-        model_credit_price_per_million_tokens: Optional[int] = None,
+        model_input_price_per_million: Optional[int] = None,
+        model_output_price_per_million: Optional[int] = None,
         remark: Optional[str] = None,
     ) -> Dict[str, Any]:
         scope = _normalize_billing_scope(billing_scope)
         if scope != "sys_paid":
             raise ValueError("当前仅支持为 sys_paid 配置模型点数定价")
+        if not getattr(self, "billing_enabled", False):
+            raise ValueError("请先开启计费系统，再设置模型火柴价格")
 
         with self.Session() as session:
             platform = session.query(LLMPlatform).filter_by(id=platform_id, is_sys=1).first()
@@ -174,19 +206,18 @@ class CreditServicesMixin:
             if not platform or not model:
                 raise ValueError("系统平台或模型不存在")
 
-            if platform_credit_price_per_million_tokens is not None:
-                platform.sys_credit_price_per_million_tokens = max(int(platform_credit_price_per_million_tokens), 0)
-            if model_credit_price_per_million_tokens is not None:
-                model.sys_credit_price_per_million_tokens = max(int(model_credit_price_per_million_tokens), 0)
+            if model_input_price_per_million is not None:
+                model.sys_credit_input_price_per_million = max(float(model_input_price_per_million), 0)
+            if model_output_price_per_million is not None:
+                model.sys_credit_output_price_per_million = max(float(model_output_price_per_million), 0)
             session.commit()
 
             return {
                 "platform_id": platform.id,
                 "model_id": model.id,
                 "billing_scope": scope,
-                "platform_credit_price_per_million_tokens": platform.sys_credit_price_per_million_tokens,
-                "model_credit_price_per_million_tokens": model.sys_credit_price_per_million_tokens,
-                "resolved_credit_price_per_million_tokens": resolve_credit_price_per_million(model, platform),
+                "model_input_price_per_million": model.sys_credit_input_price_per_million,
+                "model_output_price_per_million": model.sys_credit_output_price_per_million,
                 "remark": remark,
             }
 
@@ -213,16 +244,16 @@ class CreditServicesMixin:
 
         with self.Session() as session:
             account = self._get_or_create_credit_account(session, str(user_id), scope)
-            delta = int(delta_credit)
-            new_balance = int(account.credit_balance or 0) + delta
+            delta = float(delta_credit)
+            new_balance = float(account.credit_balance or 0) + delta
             if new_balance < 0:
                 raise CreditBalanceExceededError(f"用户 '{user_id}' 的系统点数余额不足，无法扣减 {abs(delta)} 点")
 
             account.credit_balance = new_balance
             if delta > 0:
-                account.credit_total_granted = int(account.credit_total_granted or 0) + delta
+                account.credit_total_granted = float(account.credit_total_granted or 0) + delta
             else:
-                account.credit_total_used = int(account.credit_total_used or 0) + abs(delta)
+                account.credit_total_used = float(account.credit_total_used or 0) + abs(delta)
 
             session.add(UserCreditLedger(
                 user_id=str(user_id),
@@ -249,8 +280,8 @@ class CreditServicesMixin:
             return [
                 {
                     "id": row.id,
-                    "delta_credit": int(row.delta_credit or 0),
-                    "balance_after": int(row.balance_after or 0),
+                    "delta_credit": float(row.delta_credit or 0),
+                    "balance_after": float(row.balance_after or 0),
                     "reason_type": row.reason_type,
                     "platform_id": row.platform_id,
                     "model_id": row.model_id,
@@ -276,7 +307,7 @@ class CreditServicesMixin:
             session.commit()
             return {
                 **self._serialize_credit_account(account, str(user_id), scope),
-                "credit_used_from_usage": int(usage.credit_used or 0),
+                "credit_used_from_usage": float(usage.credit_used or 0),
                 "requests": int(usage.requests or 0),
             }
 
@@ -288,21 +319,40 @@ class CreditServicesMixin:
         model_id: int,
         billing_scope: Optional[str],
     ) -> None:
+        if not getattr(self, "billing_enabled", False):
+            return
+
         scope = _normalize_billing_scope(billing_scope)
         if scope != "sys_paid":
             return
 
         model = session.query(LLModels).filter_by(id=int(model_id), platform_id=int(platform_id)).first()
-        platform = session.query(LLMPlatform).filter_by(id=int(platform_id)).first()
-        price_per_million = resolve_credit_price_per_million(model, platform)
-        if price_per_million is None:
+        if not model:
             return
 
+        if (
+            model.sys_credit_input_price_per_million is None
+            or model.sys_credit_output_price_per_million is None
+        ):
+            raise CreditBalanceExceededError("管理员尚未设置此模型价格")
+
+        platform = session.query(LLMPlatform).filter_by(id=int(platform_id)).first()
+        if platform and platform.sys_credit_balance is not None and float(platform.sys_credit_balance or 0) <= 0:
+            raise CreditBalanceExceededError("该平台的额度已被耗尽，请稍等片刻或更换模型")
+
+        input_price = resolve_input_price_per_million(model)
+        output_price = resolve_output_price_per_million(model)
+
         account = self._get_or_create_credit_account(session, str(user_id), "sys_paid")
-        estimated_cost = max(int(price_per_million), 1)
+        # 预估最低消耗：按 1 token 计算实际消耗（价格是每百万 token 的）
+        estimated_cost = calculate_credit_cost(input_price, output_price, prompt_tokens=1, completion_tokens=1)
         if str(account.status or "active") != "active":
             raise CreditBalanceExceededError(f"用户 '{user_id}' 的系统点数账户当前不可用")
-        if int(account.credit_balance or 0) < estimated_cost:
+        if estimated_cost == 0:
+            return
+        if float(account.credit_balance or 0) < estimated_cost:
             raise CreditBalanceExceededError(
-                f"用户 '{user_id}' 的系统点数余额不足，当前余额 {int(account.credit_balance or 0)}，至少需要 {estimated_cost} 点"
+                f"用户 '{user_id}' 的系统点数余额不足，当前余额 {float(account.credit_balance or 0):.2f}，至少需要 {estimated_cost:.2f} 点"
             )
+        if platform and platform.sys_credit_balance is not None and float(platform.sys_credit_balance or 0) < estimated_cost:
+            raise CreditBalanceExceededError("该平台的额度已被耗尽，请稍等片刻或更换模型")

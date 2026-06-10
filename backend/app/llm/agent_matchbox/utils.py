@@ -130,6 +130,48 @@ def format_extra_body(data: Optional[Dict[str, Any]], indent: int = 2) -> str:
 
 
 # ─────────────────────────────────────────────
+# Token 上限提取
+# ─────────────────────────────────────────────
+
+def extract_model_token_limits(raw_item: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """从 /models 端点返回的单条 raw 数据中提取 token 上限。
+
+    各平台字段名不一，按优先级依次尝试：
+    - 上下文上限: max_model_context > context_length > context_window
+      (vLLM 返回 max_model_context；Ollama / 部分兼容端点返回 context_length)
+    - 单次输出上限: max_tokens > max_completion_tokens > max_output_tokens
+      (OpenAI 协议中 max_tokens 指最大生成/completion token 数，非上下文窗口)
+
+    返回 {"max_context_tokens": int|None, "max_output_tokens": int|None}。
+    """
+    max_context: Optional[int] = None
+    max_output: Optional[int] = None
+
+    # 上下文上限候选字段（按优先级）
+    for key in ("max_model_context", "context_length", "context_window"):
+        val = raw_item.get(key)
+        if val is not None:
+            try:
+                max_context = int(val)
+                break
+            except (TypeError, ValueError):
+                pass
+
+    # 单次输出上限候选字段（按优先级）
+    # OpenAI 协议: max_tokens = 最大生成 token 数 (completion/output)
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        val = raw_item.get(key)
+        if val is not None:
+            try:
+                max_output = int(val)
+                break
+            except (TypeError, ValueError):
+                pass
+
+    return {"max_context_tokens": max_context, "max_output_tokens": max_output}
+
+
+# ─────────────────────────────────────────────
 # 平台探测 / 测试
 # ─────────────────────────────────────────────
 
@@ -191,7 +233,13 @@ def probe_platform_models(
         out: List[Dict[str, Any]] = []
         for it in items:
             if isinstance(it, dict) and 'id' in it:
-                out.append({'id': it['id'], 'raw': it})
+                token_limits = extract_model_token_limits(it)
+                out.append({
+                    'id': it['id'],
+                    'raw': it,
+                    'max_context_tokens': token_limits.get('max_context_tokens'),
+                    'max_output_tokens': token_limits.get('max_output_tokens'),
+                })
             elif isinstance(it, str):
                 out.append({'id': it, 'raw': {}})
 
@@ -209,7 +257,7 @@ def test_platform_chat(
     base_url: str,
     api_key: str,
     model_name: str,
-    timeout: float = 10.0,
+    timeout: float = 30.0,
     extra_body: Dict[str, Any] = None,
     return_json: bool = False,
 ) -> Any:
@@ -226,7 +274,7 @@ def test_platform_chat(
     }
     payload = {
         "model": model_name,
-        "messages": [{"role": "user", "content": "Hello!"}],
+        "messages": [{"role": "user", "content": "本次请求无任何要求 仅供测试连通性 无需任何思考 无需任何组织和计划 以最快的速度回答:OK"}],
         "max_tokens": 10
     }
     if extra_body:
@@ -260,23 +308,46 @@ def test_platform_embedding(
     api_key: str,
     model_name: str,
     input_text: str = "你好，这是一段测试文本。",
+    extra_body: Dict[str, Any] | None = None,
 ):
-    """测试 Embedding 可用性"""
+    """测试 Embedding 可用性
+
+    增强：
+    - 支持 extra_body 参数（部分模型需要额外请求体字段）
+    - 验证返回向量非零（空/全零向量视为异常）
+    - 通过 httpx 超时控制避免无限等待
+    """
     try:
         from langchain_openai import OpenAIEmbeddings
     except ImportError as exc:
         raise ImportError("缺少 langchain_openai 库") from exc
+
+    kwargs: Dict[str, Any] = {}
+    if extra_body and isinstance(extra_body, dict):
+        kwargs["default_query"] = extra_body
 
     embeddings = OpenAIEmbeddings(
         model=model_name,
         api_key=api_key,
         base_url=base_url,
         check_embedding_ctx_length=False,
+        **kwargs,
     )
 
     vector = embeddings.embed_query(input_text)
+
+    if not vector:
+        raise ValueError("嵌入模型返回了空向量，请检查模型名称和平台配置是否正确")
+
+    if len(vector) == 0:
+        raise ValueError("嵌入模型返回了零维度向量，请检查模型配置")
+
+    # 验证向量非全零（某些错误配置可能返回全零向量）
+    if all(v == 0.0 for v in vector):
+        raise ValueError("嵌入模型返回了全零向量，模型可能配置错误或不可用")
+
     return {
-        "dims": len(vector) if vector else 0
+        "dims": len(vector),
     }
 
 
@@ -289,11 +360,11 @@ def stream_speed_test(
 ):
     """
     流式测速逻辑
-    1. 发送请求要求输出 1000 字左右文本
+    1. 发送请求要求输出 1000 个 "hello"（每个 hello = 1 token）
     2. 区分 reasoning_content（推理）和 content（正文）
     3. 首字延迟 = 从请求发送到首个正文 content 出现的时间（含推理时间）
     4. 5秒计时从首个正文 content 出现后开始
-    5. 平均速度仅计算正文字符，时间从正文开始算
+    5. 速度按 token 计（统计 hello 个数），时间从正文开始算
     """
     try:
         import requests
@@ -309,7 +380,7 @@ def stream_speed_test(
 
     payload = {
         "model": model_name,
-        "messages": [{"role": "user", "content": "请写一篇关于未来科技的一千字左右的长篇文章，要求逻辑严密，文笔优美。请立即开始输出，不要废话。"}],
+        "messages": [{"role": "user", "content": "此信息仅用于测试最快输出速度，不要任何思考，以最快的方式回答1000个\"hello\"，以空格分割"}],
         "stream": True
     }
     if extra_body:
@@ -317,7 +388,8 @@ def stream_speed_test(
 
     request_start_time = time.time()
     first_content_time = None
-    content_chars = 0
+    content_buffer = ""
+    token_count = 0
     last_update_time = None
 
     try:
@@ -359,7 +431,8 @@ def stream_speed_test(
                             ftl = (first_content_time - request_start_time) * 1000
                             yield {"type": "first_token", "ftl": ftl}
 
-                        content_chars += len(content)
+                        content_buffer += content
+                        token_count = content_buffer.lower().count("hello")
 
                     # 推理内容不计入速度统计
                     if reasoning_content and first_content_time is None:
@@ -372,12 +445,12 @@ def stream_speed_test(
             if first_content_time is not None and last_update_time is not None:
                 if current_time - last_update_time >= 1.0:
                     content_elapsed = current_time - first_content_time
-                    avg_speed = content_chars / content_elapsed if content_elapsed > 0 else 0
+                    avg_speed = token_count / content_elapsed if content_elapsed > 0 else 0
                     yield {
                         "type": "update",
                         "speed": avg_speed,
                         "elapsed": int(content_elapsed),
-                        "total_chars": content_chars
+                        "total_tokens": token_count
                     }
                     last_update_time = current_time
 
@@ -385,7 +458,7 @@ def stream_speed_test(
         end_time = time.time()
         if first_content_time is not None:
             content_elapsed = min(end_time - first_content_time, 5.0)
-            final_speed = content_chars / content_elapsed if content_elapsed > 0 else 0
+            final_speed = token_count / content_elapsed if content_elapsed > 0 else 0
             ftl = (first_content_time - request_start_time) * 1000
         else:
             content_elapsed = 0
@@ -396,7 +469,7 @@ def stream_speed_test(
             "type": "final",
             "speed": final_speed,
             "ftl": ftl,
-            "total_chars": content_chars,
+            "total_tokens": token_count,
             "elapsed": content_elapsed
         }
 
