@@ -685,3 +685,33 @@ async def speed_test_model(payload: TestPayload):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/llm-key-status")
+async def get_llm_key_status():
+    """检查 LLM_KEY 是否已配置"""
+    mgr = _require_matchbox()
+    from app.llm.agent_matchbox.security import SecurityManager
+    sec = SecurityManager.get_instance()
+    return {"configured": sec.has_active_key()}
+
+
+class LLMKeyPayload(BaseModel):
+    key: str
+
+
+@router.post("/set-llm-key")
+async def set_llm_key(payload: LLMKeyPayload):
+    """设置主密钥 LLM_KEY"""
+    key = payload.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="主密钥不能为空")
+    if len(key) < 8:
+        raise HTTPException(status_code=400, detail="主密钥长度至少 8 位")
+
+    mgr = _require_matchbox()
+    try:
+        mgr.set_llm_key(key, persist=True)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

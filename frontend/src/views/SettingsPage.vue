@@ -79,6 +79,11 @@ const testStatus = ref<'success' | 'error' | null>(null)
 const availableModels = ref<string[]>([])
 const currentLocale = ref<AppLocale>(getLocale())
 
+const llmKeyConfigured = ref(true)
+const llmKeyDialogVisible = ref(false)
+const llmKeyValue = ref('')
+const llmKeySaving = ref(false)
+
 const speedTestResult = ref<{
   ftl: number | null
   speed: number
@@ -256,7 +261,6 @@ async function saveSettings(silent = false) {
 
   saving.value = true
   try {
-    formatApiBase()
     formatExtraBody()
 
     await Promise.all([
@@ -514,6 +518,7 @@ async function switchPlatformAsMain(platformId: number) {
 }
 
 async function testConnection() {
+  await loadMainModelConfig(false)
   formatApiBase()
   formatExtraBody()
   testing.value = true
@@ -536,15 +541,22 @@ async function testConnection() {
 }
 
 async function runSpeedTest() {
+  await loadMainModelConfig(false)
   formatApiBase()
   formatExtraBody()
   speedTesting.value = true
   speedTestResult.value = null
 
   try {
+    const token = localStorage.getItem('lui_jwt')
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
     const response = await fetch('/api/llm-status/speed-test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         llm_api_base: settings.value.llm_api_base,
         llm_api_key: settings.value.llm_api_key,
@@ -608,6 +620,7 @@ async function runSpeedTest() {
 }
 
 async function fetchModels() {
+  await loadMainModelConfig(false)
   if (!settings.value.llm_api_base) {
     ElMessage.warning(t('settings.messages.apiBaseRequired'))
     return
@@ -732,7 +745,47 @@ function highlightJson(code: string) {
   return code
 }
 
-onMounted(loadSettings)
+async function checkLlmKeyStatus() {
+  try {
+    const resp = await axios.get<{ configured: boolean }>('/api/llm-status/llm-key-status')
+    llmKeyConfigured.value = resp.data.configured
+  } catch {
+    llmKeyConfigured.value = false
+  }
+}
+
+function openLlmKeyDialog() {
+  llmKeyValue.value = ''
+  llmKeyDialogVisible.value = true
+}
+
+async function submitLlmKey() {
+  const key = llmKeyValue.value.trim()
+  if (!key) {
+    ElMessage.warning(t('settings.llm.llmKeyEmptyHint'))
+    return
+  }
+  if (key.length < 8) {
+    ElMessage.warning(t('settings.llm.llmKeyTooShort'))
+    return
+  }
+  llmKeySaving.value = true
+  try {
+    await axios.post('/api/llm-status/set-llm-key', { key })
+    llmKeyConfigured.value = true
+    llmKeyDialogVisible.value = false
+    ElMessage.success(t('settings.llm.llmKeySetSuccess'))
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    llmKeySaving.value = false
+  }
+}
+
+onMounted(async () => {
+  await loadSettings()
+  await checkLlmKeyStatus()
+})
 </script>
 
 <template>
@@ -776,6 +829,29 @@ onMounted(loadSettings)
               </div>
             </el-form-item>
           </el-card>
+
+          <!-- LLM Key Warning Banner -->
+          <transition name="el-zoom-in-top">
+            <el-alert
+              v-if="!llmKeyConfigured"
+              :title="t('settings.llm.llmKeyNotConfigured')"
+              type="warning"
+              show-icon
+              :closable="false"
+              class="llm-key-alert fade-in-up"
+              style="animation-delay: 0.03s;"
+            >
+              <template #default>
+                <div class="llm-key-alert-content">
+                  <span>{{ t('settings.llm.llmKeyRequiredHint') }}</span>
+                  <el-button type="primary" size="small" @click="openLlmKeyDialog" plain>
+                    <Icon icon="lucide:key-round" style="margin-right: 4px;" />
+                    {{ t('settings.llm.setLlmKey') }}
+                  </el-button>
+                </div>
+              </template>
+            </el-alert>
+          </transition>
           
           <!-- LLM Config Card -->
           <el-card class="setting-card fade-in-up llm-card" shadow="never" style="animation-delay: 0.05s;">
@@ -808,40 +884,6 @@ onMounted(loadSettings)
               </div>
             </template>
             
-            <el-row :gutter="24">
-              <el-col :span="24" :md="12">
-                <el-form-item :label="t('settings.llm.apiBaseLabel')">
-                  <el-input 
-                    v-model="settings.llm_api_base" 
-                    :placeholder="t('settings.llm.apiBasePlaceholder')" 
-                    autocomplete="off"
-                    @blur="formatApiBase"
-                    @change="() => saveSettings(false)"
-                  >
-                    <template #prefix>
-                      <Icon icon="lucide:globe" />
-                    </template>
-                  </el-input>
-                </el-form-item>
-              </el-col>
-              <el-col :span="24" :md="12">
-                <el-form-item :label="t('settings.llm.apiKeyLabel')">
-                  <el-input 
-                    v-model="settings.llm_api_key" 
-                    type="password" 
-                    show-password 
-                    autocomplete="off"
-                    :placeholder="t('settings.llm.apiKeyPlaceholder')" 
-                    @change="() => saveSettings(false)"
-                  >
-                    <template #prefix>
-                      <Icon icon="lucide:key" />
-                    </template>
-                  </el-input>
-                </el-form-item>
-              </el-col>
-            </el-row>
-
             <el-row :gutter="24">
               <el-col :span="24" :md="12">
                 <el-form-item :label="t('settings.llm.modelIdLabel')">
@@ -1133,6 +1175,31 @@ onMounted(loadSettings)
         </template>
       </el-dialog>
 
+      <!-- LLM Key Dialog -->
+      <el-dialog v-model="llmKeyDialogVisible" :title="t('settings.llm.setLlmKey')" width="480px" destroy-on-close>
+        <el-form label-position="top" @submit.prevent>
+          <el-form-item :label="t('settings.llm.llmKeyLabel')">
+            <el-input
+              v-model="llmKeyValue"
+              type="password"
+              show-password
+              :placeholder="t('settings.llm.llmKeyPlaceholder')"
+              autocomplete="off"
+              @keyup.enter="submitLlmKey"
+            />
+            <div class="llm-key-hint">{{ t('settings.llm.llmKeyDesc') }}</div>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="llmKeyDialogVisible = false">{{ t('common.cancel') }}</el-button>
+            <el-button type="primary" :loading="llmKeySaving" @click="submitLlmKey">
+              {{ t('common.submit') }}
+            </el-button>
+          </div>
+        </template>
+      </el-dialog>
+
     </div>
   </div>
 </template>
@@ -1390,6 +1457,22 @@ onMounted(loadSettings)
 
 .dialog-checkbox {
   margin-top: 10px;
+}
+
+.llm-key-alert {
+  margin-bottom: 0;
+}
+.llm-key-alert-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.llm-key-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 
 .dialog-footer {
