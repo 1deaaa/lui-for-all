@@ -11,7 +11,7 @@
 
 > Languages: [简体中文](README.md) | **English** | [日本語](README.ja-JP.md)
 
-> Developer Protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md)
+> Developer Protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md) (Custom GUI) | [Management API Reference](MANAGEMENT_API.en-US.md) (Projects, Auth, Settings)
 
 ## What Problem Does It Solve?
 
@@ -26,6 +26,31 @@ sorted by amount descending, and highlight items above 50,000."
 LUI: [Understand intent -> call existing APIs -> render table + highlights]
      ✓ No modifications to your existing system code
 ```
+
+---
+
+### LUI-for-All's Role in the Claw Ecosystem
+
+In early 2026, the open-source AI agent **OpenClaw** took the world by storm — surpassing 300K GitHub stars to claim the #1 spot, sparking a global "lobster-raising" craze. OpenClaw evolved AI from "Q&A chatbot" to "24/7 digital worker": it receives commands through WhatsApp, Telegram, and other messaging platforms, autonomously operating your computer — running shell commands, controlling browsers, managing files, sending emails — truly achieving **natural-language-driven local automation**.
+
+The Claw ecosystem rapidly spawned variants like ClawMobile (mobile), enterprise WorkBuddy, AutoClaw, and more. Tencent Cloud and Alibaba Cloud offer one-click deployments. Chinese model vendors (Kimi, MiniMax, Step) race to integrate. A brand-new Agent ecosystem has taken shape.
+
+**But all Claws share one blind spot: they can't reach into your business systems.**
+
+Claws excel at general desktop automation — opening browsers, clicking buttons, filling forms. But enterprise core systems operate on **API endpoints and databases**, not GUI elements. For ERP purchase approvals, CRM customer order management, or multi-level OA approval chains — Claws can only degrade to "simulated clicking," which is neither reliable nor secure.
+
+**LUI-for-All completes this final link in the Claw ecosystem:**
+
+| | Claw Family | LUI-for-All |
+|---|---|---|
+| Operates on | Local devices, browsers, file systems | Enterprise business system APIs |
+| Interaction | GUI automation (clicks/screenshots) | Native API calls (structured, auditable) |
+| Security model | OS-level permissions | 5-tier safety classification + human approval gates |
+| Use cases | Personal productivity, general automation | Enterprise business operations, multi-system orchestration |
+
+When a Claw connects to LUI-for-All through the MCP protocol, it gains **hands that can reach into enterprise systems** — not simulated clicks, but interface-understanding through capability maps, risk management through safety policy matrices, and critical operation protection through human-in-the-loop approval flows. Claws handle "when to do it," LUI handles "how to do it safely."
+
+This means: when you tell your Claw on Telegram "list all pending purchase orders from last week sorted by amount," the Claw relays this command to LUI-for-All via MCP. LUI automatically identifies the intent, calls the ERP API, and returns a structured data table — fully auditable, traceable, with write operations requiring your confirmation.
 
 ## Core Highlights
 
@@ -187,8 +212,16 @@ At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄
 - Developers can directly integrate with `chat` endpoints and replace the built-in frontend without changing backend execution logic
 - Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 8 UI block types
 - Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
+- `/api/chat/*` is the **only recommended interface** for custom GUIs; the built-in frontend's `/api/sessions/*` is an internal legacy interface
+
+Detailed protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md)
+
+Management APIs (projects, auth, settings, LLM config, audit): [Management API Reference](MANAGEMENT_API.en-US.md)
 
 12. MCP integration with OpenClaw (multi-channel execution gateway)
+
+> See [LUI-for-All's Role in the Claw Ecosystem](#lui-for-alls-role-in-the-claw-ecosystem) above for product positioning.
+
 OpenClaw's biggest value is fully automated, unattended execution from natural language. You give it a task, and it keeps working across its own computer, accounts, and channels without needing a human to click through every step.
 
 The combined value with LUI-for-All is more practical:
