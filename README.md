@@ -11,7 +11,7 @@
 
 > 文档语言：**简体中文** | [English](README.en-US.md) | [日本語](README.ja-JP.md)
 
-> 开发者协议文档：[Chat 端点集成协议](CHAT_ENDPOINT_INTEGRATION.md)（自定义 GUI 接入）| [管理 API 参考](MANAGEMENT_API.md)（项目管理、认证、设置等）
+> 开发者协议文档：[API 参考](API_REFERENCE.md)（聊天端点 `/api/chat/*` + 管理端点，英文版单一文档）
 
 ## 它解决什么问题？
 
@@ -320,9 +320,9 @@ LUI-for-All 将"聊天能力内核"与"前端呈现层"解耦：
 - 数据类型边界清晰：流式事件走 SSE，历史/审计回放走普通 JSON 接口
 - `/api/chat/*` 是自定义 GUI 的**唯一推荐接入接口**；内部前端使用的 `/api/sessions/*` 为遗留内部接口
 
-详细字段与事件清单见：[Chat 端点集成协议](CHAT_ENDPOINT_INTEGRATION.md)
+详细字段与事件清单见：[API 参考 — 聊天端点 Part A](API_REFERENCE.md#part-a--chat-endpoints)
 
-管理类接口（项目管理、认证、设置、LLM 配置、审计查询等）见：[管理 API 参考](MANAGEMENT_API.md)
+管理类接口（项目管理、认证、设置、LLM 配置、审计查询等）见：[API 参考 — 管理端点 Part B](API_REFERENCE.md#part-b--management-endpoints)
 
 ### 11. 通过 MCP 与 OpenClaw 联动（跨渠道执行入口）
 

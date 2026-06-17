@@ -11,7 +11,7 @@
 
 > Languages: [简体中文](README.md) | **English** | [日本語](README.ja-JP.md)
 
-> Developer Protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md) (Custom GUI) | [Management API Reference](MANAGEMENT_API.en-US.md) (Projects, Auth, Settings)
+> Developer Protocol: [API Reference](API_REFERENCE.md) (Chat endpoints `/api/chat/*` + Management endpoints — single English doc)
 
 ## What Problem Does It Solve?
 
@@ -214,9 +214,9 @@ At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄
 - Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
 - `/api/chat/*` is the **only recommended interface** for custom GUIs; the built-in frontend's `/api/sessions/*` is an internal legacy interface
 
-Detailed protocol: [Chat Endpoint Integration](CHAT_ENDPOINT_INTEGRATION.en-US.md)
+Detailed protocol: [API Reference — Chat Endpoints (Part A)](API_REFERENCE.md#part-a--chat-endpoints)
 
-Management APIs (projects, auth, settings, LLM config, audit): [Management API Reference](MANAGEMENT_API.en-US.md)
+Management APIs (projects, auth, settings, LLM config, audit): [API Reference — Management Endpoints (Part B)](API_REFERENCE.md#part-b--management-endpoints)
 
 12. MCP integration with OpenClaw (multi-channel execution gateway)
 

@@ -11,7 +11,7 @@
 
 > 言語: [简体中文](README.md) | [English](README.en-US.md) | **日本語**
 
-> 開発者プロトコル: [Chat エンドポイント統合](CHAT_ENDPOINT_INTEGRATION.ja-JP.md)（カスタム GUI）| [管理 API リファレンス](MANAGEMENT_API.ja-JP.md)（プロジェクト管理・認証・設定等）
+> 開発者プロトコル: [API リファレンス](API_REFERENCE.md)（チャット `/api/chat/*` + 管理エンドポイント、英語版単一ドキュメント）
 
 ## 解決する課題
 
@@ -215,9 +215,9 @@ flowchart TD
 - 伝送境界を明確化: ストリーミングは SSE、履歴/監査リプレイは通常 JSON API
 - `/api/chat/*` はカスタム GUI の**唯一推奨インターフェース**。内蔵フロントエンドの `/api/sessions/*` は内部レガシーインターフェース
 
-詳細プロトコル: [Chat エンドポイント統合プロトコル](CHAT_ENDPOINT_INTEGRATION.ja-JP.md)
+詳細プロトコル: [API リファレンス — チャットエンドポイント Part A](API_REFERENCE.md#part-a--chat-endpoints)
 
-管理 API（プロジェクト管理・認証・設定・LLM 設定・監査等）: [管理 API リファレンス](MANAGEMENT_API.ja-JP.md)
+管理 API（プロジェクト管理・認証・設定・LLM 設定・監査等）: [API リファレンス — 管理エンドポイント Part B](API_REFERENCE.md#part-b--management-endpoints)
 
 12. OpenClaw との MCP 連携（マルチチャネル実行ゲートウェイ）
 
