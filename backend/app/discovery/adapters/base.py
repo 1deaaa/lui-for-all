@@ -24,9 +24,50 @@ from typing import Any, Iterator
 from app.discovery.adapters.paradigms import normalize_ast_paradigms
 
 try:
-    _ts_module = importlib.import_module("tree_sitter_languages")
-    get_language = getattr(_ts_module, "get_language")
+    try:
+        _ts_module = importlib.import_module("tree_sitter_languages")
+    except ImportError:
+        _ts_module = importlib.import_module("tree_sitter_language_pack")
+    
+    _raw_get_language = getattr(_ts_module, "get_language")
     get_parser = getattr(_ts_module, "get_parser")
+
+    class QueryWrapper:
+        def __init__(self, raw_query):
+            self._raw_query = raw_query
+            
+        def captures(self, node):
+            import tree_sitter
+            cursor = tree_sitter.QueryCursor(self._raw_query)
+            raw_captures = cursor.captures(node)
+            result = []
+            for name, nodes in raw_captures.items():
+                for n in nodes:
+                    result.append((n, name))
+            result.sort(key=lambda x: x[0].start_byte)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self._raw_query, name)
+
+    class LanguageWrapper:
+        def __init__(self, raw_lang):
+            self._raw_lang = raw_lang
+            
+        def query(self, query_text):
+            import tree_sitter
+            raw_query = tree_sitter.Query(self._raw_lang, query_text)
+            return QueryWrapper(raw_query)
+
+        def __getattr__(self, name):
+            return getattr(self._raw_lang, name)
+
+    def get_language(name):
+        lang = _raw_get_language(name)
+        if not hasattr(lang, "query"):
+            return LanguageWrapper(lang)
+        return lang
+
 except Exception as exc:  # pragma: no cover - 依赖缺失时走降级路径
     get_language = None
     get_parser = None
