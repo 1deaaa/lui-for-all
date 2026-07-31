@@ -3,11 +3,13 @@
 定义所有 SQLAlchemy ORM 模型
 """
 
+import json
 from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     Float,
     String,
     UniqueConstraint,
@@ -22,8 +24,138 @@ from sqlalchemy.orm import (
 Base = declarative_base()
 
 
-DEFAULT_MAX_CONTEXT_TOKENS = 200_000
+DEFAULT_MAX_CONTEXT_TOKENS = 256_000
 DEFAULT_MAX_OUTPUT_TOKENS = 64_000
+
+MODALITY_TEXT = "text"
+MODALITY_IMAGE = "image"
+MODALITY_EMBEDDING = "embedding"
+
+MODEL_INPUT_MODALITY_ORDER = (MODALITY_TEXT, MODALITY_IMAGE)
+MODEL_OUTPUT_MODALITY_ORDER = (MODALITY_TEXT, MODALITY_IMAGE, MODALITY_EMBEDDING)
+DEFAULT_MODEL_INPUT_MODALITIES = (MODALITY_TEXT,)
+DEFAULT_MODEL_OUTPUT_MODALITIES = (MODALITY_TEXT,)
+EMBEDDING_MODEL_INPUT_MODALITIES = (MODALITY_TEXT,)
+EMBEDDING_MODEL_OUTPUT_MODALITIES = (MODALITY_EMBEDDING,)
+
+
+def _modality_tokens(raw_modalities, *, field_name: str):
+    """把数据库、YAML、API 入参中的模态值拆成候选 token。"""
+    if raw_modalities is None:
+        return []
+    if isinstance(raw_modalities, (list, tuple, set)):
+        return list(raw_modalities)
+    if isinstance(raw_modalities, dict):
+        return _modality_tokens(raw_modalities.get(field_name, []), field_name=field_name)
+    if isinstance(raw_modalities, str):
+        value = raw_modalities.strip()
+        if not value:
+            return []
+        if value[0] in "[{":
+            try:
+                return _modality_tokens(json.loads(value), field_name=field_name)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return [part for part in value.replace(";", ",").replace("|", ",").split(",") if part.strip()]
+    return [raw_modalities]
+
+
+def _normalize_modalities(raw_modalities, *, field_name: str, order: tuple[str, ...]) -> list[str]:
+    """按稳定顺序过滤未知模态。"""
+    allowed = set(order)
+    modalities = set()
+    for token in _modality_tokens(raw_modalities, field_name=field_name):
+        key = str(token).strip().lower()
+        if key in allowed:
+            modalities.add(key)
+    return [modality for modality in order if modality in modalities]
+
+
+def normalize_input_modalities(raw_modalities=None) -> list[str]:
+    """规范化输入模态；所有已支持模型都必须接收文本输入。"""
+    modalities = _normalize_modalities(
+        raw_modalities,
+        field_name="input_modalities",
+        order=MODEL_INPUT_MODALITY_ORDER,
+    )
+    if MODALITY_TEXT not in modalities:
+        modalities.insert(0, MODALITY_TEXT)
+    return modalities
+
+
+def normalize_output_modalities(raw_modalities=None) -> list[str]:
+    """规范化输出模态；向量输出与文本、图片输出互斥。"""
+    modalities = _normalize_modalities(
+        raw_modalities,
+        field_name="output_modalities",
+        order=MODEL_OUTPUT_MODALITY_ORDER,
+    )
+    if not modalities:
+        return list(DEFAULT_MODEL_OUTPUT_MODALITIES)
+    if MODALITY_EMBEDDING in modalities:
+        return list(EMBEDDING_MODEL_OUTPUT_MODALITIES)
+    return modalities
+
+
+def normalize_model_modalities(input_modalities=None, output_modalities=None) -> tuple[list[str], list[str]]:
+    """原子规范化模型输入与输出模态。"""
+    normalized_output = normalize_output_modalities(output_modalities)
+    if normalized_output == list(EMBEDDING_MODEL_OUTPUT_MODALITIES):
+        return list(EMBEDDING_MODEL_INPUT_MODALITIES), normalized_output
+    return normalize_input_modalities(input_modalities), normalized_output
+
+
+def get_model_modalities(model) -> dict[str, list[str]]:
+    """读取模型输入与输出模态。"""
+    # 兼容旧版本只有 is_embedding 字段的模型记录。
+    legacy_embedding = bool(getattr(model, "is_embedding", 0))
+    raw_output_modalities = getattr(model, "output_modalities", None)
+    if legacy_embedding and not raw_output_modalities:
+        raw_output_modalities = [MODALITY_EMBEDDING]
+    input_modalities, output_modalities = normalize_model_modalities(
+        getattr(model, "input_modalities", None),
+        raw_output_modalities,
+    )
+    if legacy_embedding and MODALITY_EMBEDDING not in output_modalities:
+        input_modalities = list(EMBEDDING_MODEL_INPUT_MODALITIES)
+        output_modalities = list(EMBEDDING_MODEL_OUTPUT_MODALITIES)
+    return {
+        "input_modalities": input_modalities,
+        "output_modalities": output_modalities,
+    }
+
+
+def set_model_modalities(model, input_modalities=None, output_modalities=None) -> dict[str, list[str]]:
+    """原子写入模型输入与输出模态。"""
+    normalized_input, normalized_output = normalize_model_modalities(input_modalities, output_modalities)
+    model.input_modalities = json.dumps(normalized_input, ensure_ascii=False)
+    model.output_modalities = json.dumps(normalized_output, ensure_ascii=False)
+    if hasattr(model, "is_embedding"):
+        model.is_embedding = 1 if MODALITY_EMBEDDING in normalized_output else 0
+    return {
+        "input_modalities": normalized_input,
+        "output_modalities": normalized_output,
+    }
+
+
+def model_accepts(model, modality: str) -> bool:
+    return str(modality).strip().lower() in get_model_modalities(model)["input_modalities"]
+
+
+def model_outputs(model, modality: str) -> bool:
+    return str(modality).strip().lower() in get_model_modalities(model)["output_modalities"]
+
+
+def is_chat_model(model) -> bool:
+    return model_outputs(model, MODALITY_TEXT)
+
+
+def is_embedding_model(model) -> bool:
+    return model_outputs(model, MODALITY_EMBEDDING)
+
+
+def is_image_generation_model(model) -> bool:
+    return model_outputs(model, MODALITY_IMAGE)
 
 
 class LLMPlatform(Base):
@@ -33,6 +165,8 @@ class LLMPlatform(Base):
     name = Column(String(80), default="未命名平台", index=True)
     user_id = Column(String(255), nullable=True, index=True)
     base_url = Column(String(255), nullable=False)
+    # 平台充值入口；为空时前端不显示低频充值按钮。
+    recharge_url = Column(String(512), nullable=True)
     api_key = Column(String(512), nullable=True)
     is_sys = Column(Integer, default=0) 
     disable = Column(Integer, default=0)
@@ -62,6 +196,21 @@ class LLMSysPlatformKey(Base):
     platform = relationship("LLMPlatform", backref="sys_keys")
 
 
+class SearchProviderUserConfig(Base):
+    """用户对系统搜索提供商的 URL 与密钥覆盖。"""
+
+    __tablename__ = "search_provider_user_configs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_search_provider_user_provider"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    provider = Column(String(32), nullable=False, index=True)
+    url = Column(String(1024), nullable=False)
+    api_key = Column(String(1024), nullable=True)
+
+
 class LLModels(Base):
     """LLM 模型配置"""
     __tablename__ = "llm_platform_models"
@@ -75,6 +224,7 @@ class LLModels(Base):
     model_name = Column(String(120), nullable=False, index=True)
     display_name = Column(String(120), nullable=True)
     extra_body = Column(String(1024), nullable=True)
+    image_generation_adapter = Column(String(64), nullable=True)
     temperature = Column(Float, nullable=True)
     # 模型上下文上限与单次输出上限，供业务侧在发起调用前进行长度校验。
     max_context_tokens = Column(
@@ -95,7 +245,20 @@ class LLModels(Base):
     sys_credit_cached_input_price_per_million = Column(Float, nullable=True)
     sys_credit_output_price_per_million = Column(Float, nullable=True)
     disable = Column(Integer, default=0, index=True)
+    # 历史字段保留用于旧 API/查询；新代码以输入输出模态为准。
     is_embedding = Column(Integer, default=0, index=True)
+    input_modalities = Column(
+        String(256),
+        nullable=False,
+        default='["text"]',
+        server_default=text("'[\"text\"]'"),
+    )
+    output_modalities = Column(
+        String(256),
+        nullable=False,
+        default='["text"]',
+        server_default=text("'[\"text\"]'"),
+    )
     sort_order = Column(Integer, default=0)
 
 
@@ -283,6 +446,12 @@ class UsageLogEntry(Base):
     用于支持时间范围查询，如"过去24小时的用量"。
     """
     __tablename__ = "usage_log_entries"
+    __table_args__ = (
+        Index("idx_usage_user_context", "user_id", "context_key"),
+        Index("idx_usage_user_created", "user_id", "created_at"),
+        Index("idx_usage_user_model_created", "user_id", "model_id", "created_at"),
+        Index("idx_usage_user_scope_created", "user_id", "quota_scope", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False, index=True)
@@ -292,6 +461,8 @@ class UsageLogEntry(Base):
         nullable=False,
         index=True,
     )
+    # 用途槽位：main/reason 等；历史日志为空表示升级前未记录用途。
+    usage_key = Column(String(64), nullable=True, index=True)
     
     # Token 详情
     prompt_tokens = Column(Integer, default=0)
@@ -336,8 +507,12 @@ class RedeemCode(Base):
     code = Column(String(64), nullable=False, unique=True, index=True)
     # 可兑换的点数额度
     credit_amount = Column(Float, nullable=False)
-    # 兑换码类型：single = 一次性（用完即废）；per_user = 每用户可用一次（全服福利）
+    # 兑换码类型：single = 一次性；limited = 指定总次数；per_user = 每用户一次且不限总人数
     code_type = Column(String(32), nullable=False, default="single", index=True)
+    # 最大兑换次数；NULL 表示不限总次数。每个用户仍只能兑换一次。
+    max_redemptions = Column(Integer, nullable=True)
+    # 已成功占用的兑换次数，用于并发场景下原子控制总次数。
+    redemption_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
     # 状态：active / revoked / exhausted
     status = Column(String(32), nullable=False, default="active", index=True)
     # 创建者（管理员 user_id）
@@ -355,6 +530,9 @@ class RedeemCode(Base):
 class RedeemCodeUsage(Base):
     """兑换码使用记录"""
     __tablename__ = "redeem_code_usages"
+    __table_args__ = (
+        UniqueConstraint("redeem_code_id", "user_id", name="uq_redeem_code_usage_code_user"),
+    )
 
     id = Column(Integer, primary_key=True)
     # 关联兑换码
@@ -372,3 +550,40 @@ class RedeemCodeUsage(Base):
     balance_after = Column(Float, nullable=False)
     # 时间戳
     used_at = Column(DateTime, default=func.now(), index=True)
+
+
+class CreditGrantCampaign(Base):
+    """管理员额度发放活动。"""
+    __tablename__ = "credit_grant_campaigns"
+
+    id = Column(Integer, primary_key=True)
+    credit_amount = Column(Float, nullable=False)
+    # current_users = 创建时立即向现有用户发放；future_users = 自动向之后注册的用户发放
+    grant_scope = Column(String(32), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    created_by = Column(String(255), nullable=True, index=True)
+    remark = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    recipients = relationship("CreditGrantRecipient", backref="campaign", cascade="all, delete-orphan")
+
+
+class CreditGrantRecipient(Base):
+    """额度发放活动的用户领取记录，用于审计和幂等保护。"""
+    __tablename__ = "credit_grant_recipients"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "user_id", name="uq_credit_grant_recipient_campaign_user"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(
+        Integer,
+        ForeignKey("credit_grant_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(String(255), nullable=False, index=True)
+    delta_credit = Column(Float, nullable=False)
+    balance_after = Column(Float, nullable=False)
+    granted_at = Column(DateTime, default=func.now(), index=True)

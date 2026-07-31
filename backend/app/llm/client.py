@@ -30,8 +30,9 @@ class LLMClient:
         response_format: dict[str, Any] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        usage_key: str = "main",
     ) -> tuple[str, dict[str, int], int]:
-        llm = self._get_llm(usage_key="main")
+        llm = self._get_llm(usage_key=usage_key)
         kwargs = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
@@ -60,6 +61,7 @@ class LLMClient:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        usage_key: str = "main",
     ):
         """
         流式对话补全。
@@ -67,7 +69,7 @@ class LLMClient:
             ("reasoning", token) - 推理内容（来自 reasoning_content / <think> 标签）
             ("token", token)     - 正文内容
         """
-        llm = self._get_llm(usage_key="main")
+        llm = self._get_llm(usage_key=usage_key)
         kwargs = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
@@ -126,6 +128,7 @@ class LLMClient:
         messages: list[dict[str, str]],
         schema: type[BaseModel],
         temperature: float | None = None,
+        usage_key: str = "main",
     ) -> BaseModel:
         system_prompt = """你是一个结构化数据提取助手。
 请严格按照指定的 JSON Schema 格式输出，不要添加任何额外的文本或解释。
@@ -140,6 +143,7 @@ class LLMClient:
             full_messages,
             response_format={"type": "json_object"},
             temperature=temperature,
+            usage_key=usage_key,
         )
 
         repaired = self._try_repair_json(content)
@@ -158,6 +162,7 @@ class LLMClient:
         on_token: Any = None,  # 回调函数: (token: str) -> None
         on_reasoning: Any = None,  # 回调函数: (token: str) -> None
         temperature: float | None = None,
+        usage_key: str = "main",
     ) -> BaseModel:
         """
         流式解析 JSON 响应。
@@ -177,6 +182,7 @@ class LLMClient:
         async for chunk_type, token in self.stream_chat_completion(
             full_messages,
             temperature=temperature,
+            usage_key=usage_key,
         ):
             if chunk_type == "reasoning":
                 if on_reasoning:
@@ -201,6 +207,7 @@ class LLMClient:
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        usage_key: str = "main",
     ) -> str:
         messages = []
         if system_prompt:
@@ -209,7 +216,8 @@ class LLMClient:
         content, _, _ = await self.chat_completion(
             messages, 
             temperature=temperature, 
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            usage_key=usage_key,
         )
         return content
 
@@ -219,6 +227,7 @@ class LLMClient:
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        usage_key: str = "main",
     ):
         """
         流式简单完成。
@@ -232,6 +241,7 @@ class LLMClient:
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            usage_key=usage_key,
         ):
             yield chunk
 

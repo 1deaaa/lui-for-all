@@ -44,6 +44,8 @@
 - 登录测试账号: 111
 - 登录测试密码: 111111
 
+两个可运行样例都提供 `POST /v1/chat/completions` 模拟 AI 端口：请求 `stream=true` 时返回带 assistant 首帧、逐字符增量、usage 结束帧和 `[DONE]` 的 OpenAI 兼容 SSE；请求 `stream=false` 时返回普通 JSON。
+
 ### Node 示例
 
 - Base URL: http://localhost:8020

@@ -27,10 +27,17 @@ interface MainModelConfigResponse {
   llm_api_key?: string
   llm_model_id?: string
   llm_extra_body?: string
+  usage_key?: string
+  usage_label?: string
+  platform_id?: number | null
+  model_id?: number | null
 }
 
 interface ManagedModel {
   model_id: number
+  model_name: string
+  display_name: string
+  extra_body: string
 }
 
 interface ManagedPlatform {
@@ -45,6 +52,25 @@ interface LLMManagerSnapshot {
   selected_platform_id: number | null
   selected_model_id: number | null
   platforms: ManagedPlatform[]
+  usage_bindings?: MainModelConfigResponse[]
+}
+
+interface UsageTokenStats {
+  usage_key: string
+  tokens: number
+  total_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  requests: number
+  errors: number
+}
+
+interface UsageTokenSnapshot {
+  usage_key: string
+  usage_label: string
+  last_24h: UsageTokenStats
+  last_7d: UsageTokenStats
+  total: UsageTokenStats
 }
 
 interface PlatformProbeSyncResponse {
@@ -72,7 +98,6 @@ const { t } = useI18n()
 
 const saving = ref(false)
 const testing = ref(false)
-const speedTesting = ref(false)
 const loading = ref(false)
 const fetchingModels = ref(false)
 const testStatus = ref<'success' | 'error' | null>(null)
@@ -84,12 +109,20 @@ const llmKeyDialogVisible = ref(false)
 const llmKeyValue = ref('')
 const llmKeySaving = ref(false)
 
-const speedTestResult = ref<{
-  ftl: number | null
-  speed: number
-  totalTokens: number
-  elapsed: number
-} | null>(null)
+const tokenSpeed = ref<number | null>(null)
+const usageSnapshots = ref<UsageTokenSnapshot[]>([])
+const reasonConfig = ref<MainModelConfigResponse>({
+  usage_key: 'reason',
+  usage_label: '',
+  llm_api_base: '',
+  llm_api_key: '',
+  llm_model_id: '',
+  llm_extra_body: '',
+  platform_id: null,
+  model_id: null,
+})
+const mainExtraBodyExpanded = ref<string[]>([])
+const reasonExtraBodyExpanded = ref<string[]>([])
 
 const managerLoading = ref(false)
 const managerOperating = ref(false)
@@ -99,6 +132,7 @@ const managerSnapshot = ref<LLMManagerSnapshot>({
   platforms: [],
 })
 const selectedPlatformId = ref<number | null>(null)
+const reasonPlatformId = ref<number | null>(null)
 
 const platformDialogVisible = ref(false)
 const platformDialogMode = ref<LlmManagerDialogMode>('create')
@@ -129,6 +163,12 @@ const platformOptions = computed(() => managerSnapshot.value.platforms)
 const selectedPlatform = computed(() =>
   platformOptions.value.find((platform) => platform.platform_id === selectedPlatformId.value) ?? null,
 )
+const reasonSelectedPlatform = computed(() =>
+  platformOptions.value.find((platform) => platform.platform_id === reasonPlatformId.value) ?? null,
+)
+const reasonModelOptions = computed(() => reasonSelectedPlatform.value?.models ?? [])
+const mainUsageSnapshot = computed(() => usageSnapshots.value.find((item) => item.usage_key === 'main'))
+const reasonUsageSnapshot = computed(() => usageSnapshots.value.find((item) => item.usage_key === 'reason'))
 
 const currentMainSelectionText = computed(() => {
   const currentPlatform = platformOptions.value.find(
@@ -195,10 +235,31 @@ function applyMainModelConfig(config: MainModelConfigResponse) {
   settings.value.llm_extra_body = config.llm_extra_body || ''
 }
 
+function applyReasonModelConfig(config: MainModelConfigResponse) {
+  reasonConfig.value = {
+    ...reasonConfig.value,
+    ...config,
+    usage_key: 'reason',
+    llm_api_base: config.llm_api_base || '',
+    llm_api_key: '',
+    llm_model_id: config.llm_model_id || '',
+    llm_extra_body: config.llm_extra_body || '',
+    platform_id: config.platform_id ?? null,
+    model_id: config.model_id ?? null,
+  }
+  reasonPlatformId.value = config.platform_id ?? null
+}
+
 function applyManagerSnapshot(snapshot: LLMManagerSnapshot) {
   managerSnapshot.value = snapshot
   syncingPlatformSelection = true
   selectedPlatformId.value = snapshot.selected_platform_id ?? snapshot.platforms[0]?.platform_id ?? null
+  const reasonBinding = snapshot.usage_bindings?.find((item) => item.usage_key === 'reason')
+  if (reasonBinding) {
+    reasonPlatformId.value = reasonBinding.platform_id ?? null
+    reasonConfig.value.model_id = reasonBinding.model_id ?? null
+    reasonConfig.value.llm_model_id = reasonBinding.llm_model_id || ''
+  }
   syncingPlatformSelection = false
 }
 
@@ -216,6 +277,28 @@ async function loadMainModelConfig(showError = true) {
   } catch (error: unknown) {
     if (showError) {
       ElMessage.error(getErrorMessage(error, t('settings.messages.loadFailed')))
+    }
+  }
+}
+
+async function loadReasonModelConfig(showError = true) {
+  try {
+    const response = await axios.get<MainModelConfigResponse>('/api/llm-status/usage/reason')
+    applyReasonModelConfig(response.data)
+  } catch (error: unknown) {
+    if (showError) {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.loadFailed')))
+    }
+  }
+}
+
+async function loadUsageSnapshots(showError = true) {
+  try {
+    const response = await axios.get<UsageTokenSnapshot[]>('/api/llm-status/usage')
+    usageSnapshots.value = response.data || []
+  } catch (error: unknown) {
+    if (showError) {
+      ElMessage.error(getErrorMessage(error, t('settings.messages.usageLoadFailed')))
     }
   }
 }
@@ -239,16 +322,20 @@ async function refreshManagerSnapshot(showError = true) {
 async function loadSettings() {
   loading.value = true
   try {
-    const [settingsRes, llmRes, managerRes] = await Promise.all([
+    const [settingsRes, llmRes, reasonRes, managerRes, usageRes] = await Promise.all([
       axios.get<SettingsResponse>('/api/settings'),
       axios.get<MainModelConfigResponse>('/api/llm-status/main'),
+      axios.get<MainModelConfigResponse>('/api/llm-status/usage/reason'),
       axios.get<LLMManagerSnapshot>('/api/llm-status/manager'),
+      axios.get<UsageTokenSnapshot[]>('/api/llm-status/usage'),
     ])
 
     settings.value.safety_default_action = normalizeSafetyAction(settingsRes.data.safety_default_action)
     settings.value.mcp_api_token = settingsRes.data.mcp_api_token || ''
     applyMainModelConfig(llmRes.data)
+    applyReasonModelConfig(reasonRes.data)
     applyManagerSnapshot(managerRes.data)
+    usageSnapshots.value = usageRes.data || []
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, t('settings.messages.loadFailed')))
   } finally {
@@ -285,6 +372,75 @@ async function saveSettings(silent = false) {
   } finally {
     saving.value = false
   }
+}
+
+async function saveReasonModelConfig(silent = false) {
+  if (loading.value) return
+
+  saving.value = true
+  try {
+    formatReasonExtraBody()
+    const response = await axios.put<MainModelConfigResponse>('/api/llm-status/usage/reason', {
+      llm_api_base: reasonConfig.value.llm_api_base || '',
+      llm_api_key: '',
+      llm_model_id: reasonConfig.value.llm_model_id || '',
+      llm_extra_body: reasonConfig.value.llm_extra_body || '',
+    })
+    applyReasonModelConfig(response.data)
+    if (!silent) {
+      ElMessage.success(t('settings.messages.mappingModelSaved'))
+    }
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveUsageSelection(usageKey: 'main' | 'reason', platformId: number, modelId: number) {
+  managerOperating.value = true
+  try {
+    const response = await axios.post<LLMManagerSnapshot>('/api/llm-status/manager/usage-selection', {
+      usage_key: usageKey,
+      platform_id: platformId,
+      model_id: modelId,
+    })
+    applyManagerSnapshot(response.data)
+    if (usageKey === 'reason') {
+      await loadReasonModelConfig(false)
+    } else {
+      await loadMainModelConfig(false)
+    }
+    ElMessage.success(
+      usageKey === 'reason'
+        ? t('settings.messages.mappingSelectionSaved')
+        : t('settings.messages.mainSelectionSaved'),
+    )
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
+  } finally {
+    managerOperating.value = false
+  }
+}
+
+async function handleReasonModelChange(modelId: number | null) {
+  if (modelId === null || reasonPlatformId.value === null) {
+    return
+  }
+  await saveUsageSelection('reason', reasonPlatformId.value, modelId)
+}
+
+async function handleReasonPlatformChange(platformId: number | null) {
+  if (platformId === null) {
+    return
+  }
+  const platform = platformOptions.value.find((item) => item.platform_id === platformId)
+  const firstModel = platform?.models[0]
+  if (!firstModel) {
+    ElMessage.warning(t('settings.llm.noModelsHint'))
+    return
+  }
+  await saveUsageSelection('reason', platformId, firstModel.model_id)
 }
 
 async function saveMcpToken(silent = false) {
@@ -328,6 +484,23 @@ function formatExtraBody() {
   } catch {
     ElMessage.warning(t('settings.messages.formatJsonWarning'))
     settings.value.llm_extra_body = body
+  }
+}
+
+function formatReasonExtraBody() {
+  let body = (reasonConfig.value.llm_extra_body || '').trim()
+  if (!body) {
+    reasonConfig.value.llm_extra_body = ''
+    return
+  }
+  if (!body.startsWith('{')) body = `{${body}`
+  if (!body.endsWith('}')) body = `${body}}`
+  try {
+    const parsed = JSON.parse(body)
+    reasonConfig.value.llm_extra_body = JSON.stringify(parsed, null, 2)
+  } catch {
+    ElMessage.warning(t('settings.messages.formatJsonWarning'))
+    reasonConfig.value.llm_extra_body = body
   }
 }
 
@@ -524,12 +697,13 @@ async function testConnection() {
   testing.value = true
   testStatus.value = null
   try {
-    const response = await axios.post<{ reply?: string }>('/api/llm-status/test', {
+    const response = await axios.post<{ reply?: string; speed?: number | null }>('/api/llm-status/test', {
       llm_api_base: settings.value.llm_api_base,
       llm_api_key: settings.value.llm_api_key,
       llm_model_id: settings.value.llm_model_id,
       llm_extra_body: settings.value.llm_extra_body,
     })
+    tokenSpeed.value = typeof response.data.speed === 'number' ? response.data.speed : null
     ElMessage.success(t('settings.messages.testSuccess', { reply: response.data.reply || '' }))
     testStatus.value = 'success'
   } catch (error: unknown) {
@@ -537,85 +711,6 @@ async function testConnection() {
     testStatus.value = 'error'
   } finally {
     testing.value = false
-  }
-}
-
-async function runSpeedTest() {
-  await loadMainModelConfig(false)
-  formatApiBase()
-  formatExtraBody()
-  speedTesting.value = true
-  speedTestResult.value = null
-
-  try {
-    const token = localStorage.getItem('lui_jwt')
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
-
-    const response = await fetch('/api/llm-status/speed-test', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        llm_api_base: settings.value.llm_api_base,
-        llm_api_key: settings.value.llm_api_key,
-        llm_model_id: settings.value.llm_model_id,
-        llm_extra_body: settings.value.llm_extra_body,
-      }),
-    })
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: response.statusText }))
-      throw new Error(err.detail || 'Speed test failed')
-    }
-
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('ReadableStream not supported')
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          const data = JSON.parse(line.slice(6))
-          if (data.error) {
-            throw new Error(data.error)
-          }
-          if (data.type === 'final') {
-            speedTestResult.value = {
-              ftl: data.ftl ?? null,
-              speed: data.speed ?? 0,
-              totalTokens: data.total_tokens ?? data.total_chars ?? 0,
-              elapsed: data.elapsed ?? 0,
-            }
-          }
-        } catch (parseErr) {
-          if (parseErr instanceof Error && parseErr.message !== 'Speed test failed') {
-            // skip parse errors for partial data
-          } else {
-            throw parseErr
-          }
-        }
-      }
-    }
-
-    if (speedTestResult.value) {
-      ElMessage.success(t('settings.llm.speedTestResult'))
-    }
-  } catch (error: unknown) {
-    ElMessage.error(getErrorMessage(error, t('settings.messages.testFailed')))
-  } finally {
-    speedTesting.value = false
   }
 }
 
@@ -865,6 +960,12 @@ onMounted(async () => {
                 
                 <div class="llm-actions">
                   <transition name="el-fade-in">
+                    <div v-if="tokenSpeed !== null" class="token-speed-indicator">
+                      <Icon icon="lucide:gauge" />
+                      <span>{{ tokenSpeed.toFixed(1) }} {{ t('settings.llm.speedTestUnit') }}</span>
+                    </div>
+                  </transition>
+                  <transition name="el-fade-in">
                     <div v-if="testStatus === 'success'" class="status-indicator success">
                       <Icon icon="lucide:check-circle-2" /> <span>{{ t('settings.llm.statusConnected') }}</span>
                     </div>
@@ -877,84 +978,143 @@ onMounted(async () => {
                   <el-button @click="testConnection" :loading="testing" plain round size="default" class="test-btn">
                     <Icon icon="lucide:zap" class="btn-icon" /> {{ t('settings.llm.testConnection') }}
                   </el-button>
-                  <el-button @click="runSpeedTest" :loading="speedTesting" plain round size="default" class="test-btn">
-                    <Icon icon="lucide:gauge" class="btn-icon" /> {{ t('settings.llm.speedTest') }}
-                  </el-button>
                 </div>
               </div>
             </template>
             
-            <el-row :gutter="24">
-              <el-col :span="24" :md="12">
-                <el-form-item :label="t('settings.llm.modelIdLabel')">
-                  <div class="model-select-wrap">
-                    <el-select 
-                      v-model="settings.llm_model_id" 
-                      :placeholder="t('settings.llm.modelIdPlaceholder')" 
-                      filterable 
-                      allow-create 
-                      default-first-option
-                      :loading="fetchingModels"
-                      @visible-change="handleModelSelectVisible"
-                      @change="() => saveSettings(false)"
-                      class="model-select"
+            <el-row :gutter="24" class="model-config-grid">
+              <el-col :span="24" :lg="12">
+                <div class="model-config-column">
+                  <div class="model-config-heading">
+                    <Icon icon="lucide:bot" />
+                    <div>
+                      <strong>{{ t('settings.llm.primaryModelTitle') }}</strong>
+                      <span>{{ t('settings.llm.primaryModelDesc') }}</span>
+                    </div>
+                  </div>
+
+                  <el-form-item :label="t('settings.llm.apiBaseLabel')">
+                    <el-input v-model="settings.llm_api_base" :placeholder="t('settings.llm.apiBasePlaceholder')" @blur="formatApiBase" />
+                  </el-form-item>
+                  <el-form-item :label="t('settings.llm.apiKeyLabel')">
+                    <el-input v-model="settings.llm_api_key" type="password" show-password :placeholder="t('settings.llm.apiKeyPlaceholder')" />
+                  </el-form-item>
+                  <el-form-item :label="t('settings.llm.modelIdLabel')">
+                    <div class="model-select-wrap">
+                      <el-select
+                        v-model="settings.llm_model_id"
+                        :placeholder="t('settings.llm.modelIdPlaceholder')"
+                        filterable
+                        allow-create
+                        default-first-option
+                        :loading="fetchingModels"
+                        @visible-change="handleModelSelectVisible"
+                        @change="() => saveSettings(false)"
+                        class="model-select"
+                      >
+                        <template #prefix><Icon icon="lucide:bot" /></template>
+                        <el-option v-for="model in availableModels" :key="model" :label="model" :value="model" />
+                      </el-select>
+                      <el-button @click="fetchModels" :loading="fetchingModels" plain>
+                        <Icon icon="lucide:radar" /> {{ t('settings.llm.probeModels') }}
+                      </el-button>
+                    </div>
+                  </el-form-item>
+                  <el-collapse v-model="mainExtraBodyExpanded" class="extra-body-collapse">
+                    <el-collapse-item name="main">
+                      <template #title><Icon icon="lucide:braces" /> {{ t('settings.llm.extraBodyLabel') }}</template>
+                      <el-input
+                        v-model="settings.llm_extra_body"
+                        type="textarea"
+                        :rows="4"
+                        :placeholder="t('settings.llm.extraBodyPlaceholder')"
+                        @blur="formatExtraBody"
+                        @change="() => saveSettings(false)"
+                      />
+                    </el-collapse-item>
+                  </el-collapse>
+                </div>
+              </el-col>
+
+              <el-col :span="24" :lg="12">
+                <div class="model-config-column mapping-model-column">
+                  <div class="model-config-heading">
+                    <Icon icon="lucide:workflow" />
+                    <div>
+                      <strong>{{ t('settings.llm.mappingModelTitle') }}</strong>
+                      <span>{{ t('settings.llm.mappingModelDesc') }}</span>
+                    </div>
+                  </div>
+
+                  <el-form-item :label="t('settings.llm.mappingPlatformLabel')">
+                    <el-select
+                      v-model="reasonPlatformId"
+                      class="manager-select"
+                      :placeholder="t('settings.llm.platformPlaceholder')"
+                      :disabled="platformOptions.length === 0"
+                      @change="handleReasonPlatformChange"
                     >
-                      <template #prefix>
-                        <Icon icon="lucide:bot" />
-                      </template>
+                      <el-option v-for="platform in platformOptions" :key="platform.platform_id" :label="formatPlatformLabel(platform)" :value="platform.platform_id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item :label="t('settings.llm.mappingModelLabel')">
+                    <el-select
+                      :model-value="reasonConfig.model_id"
+                      class="manager-select"
+                      :placeholder="t('settings.llm.modelPlaceholder')"
+                      :disabled="reasonModelOptions.length === 0"
+                      @change="handleReasonModelChange"
+                    >
                       <el-option
-                        v-for="model in availableModels"
-                        :key="model"
-                        :label="model"
-                        :value="model"
+                        v-for="model in reasonModelOptions"
+                        :key="model.model_id"
+                        :label="model.display_name || model.model_name"
+                        :value="model.model_id"
                       />
                     </el-select>
-                    <el-button @click="fetchModels" :loading="fetchingModels" plain>
-                      <Icon icon="lucide:radar" /> {{ t('settings.llm.probeModels') }}
-                    </el-button>
-                  </div>
-                </el-form-item>
-              </el-col>
-              <el-col :span="24" :md="12">
-                <el-form-item :label="t('settings.llm.extraBodyLabel')">
-                  <el-input 
-                    v-model="settings.llm_extra_body" 
-                    type="textarea"
-                    :rows="2"
-                    :placeholder="t('settings.llm.extraBodyPlaceholder')"
-                    @blur="formatExtraBody"
-                    @change="() => saveSettings(false)"
-                  />
-                </el-form-item>
+                  </el-form-item>
+                  <el-collapse v-model="reasonExtraBodyExpanded" class="extra-body-collapse">
+                    <el-collapse-item name="reason">
+                      <template #title><Icon icon="lucide:braces" /> {{ t('settings.llm.extraBodyLabel') }}</template>
+                      <el-input
+                        v-model="reasonConfig.llm_extra_body"
+                        type="textarea"
+                        :rows="4"
+                        :placeholder="t('settings.llm.extraBodyPlaceholder')"
+                        @blur="saveReasonModelConfig(false)"
+                      />
+                    </el-collapse-item>
+                  </el-collapse>
+                </div>
               </el-col>
             </el-row>
 
-            <transition name="el-zoom-in-top">
-              <div v-if="speedTestResult" class="speed-test-result">
-                <div class="speed-test-title">
-                  <Icon icon="lucide:gauge" />
-                  {{ t('settings.llm.speedTestResult') }}
+            <div class="usage-summary">
+              <div class="usage-summary-heading">
+                <div>
+                  <strong>{{ t('settings.llm.tokenUsageTitle') }}</strong>
+                  <span>{{ t('settings.llm.tokenUsageDesc') }}</span>
                 </div>
-                <div class="speed-test-metrics">
-                  <div class="speed-metric">
-                    <div class="metric-value">{{ speedTestResult.ftl !== null ? Math.round(speedTestResult.ftl) : '-' }}</div>
-                    <div class="metric-label">{{ t('settings.llm.speedTestFirstToken') }} ({{ t('settings.llm.speedTestMs') }})</div>
-                  </div>
-                  <div class="speed-metric">
-                    <div class="metric-value">{{ speedTestResult.speed > 0 ? speedTestResult.speed.toFixed(1) : '-' }}</div>
-                    <div class="metric-label">{{ t('settings.llm.speedTestAvgSpeed') }} ({{ t('settings.llm.speedTestUnit') }})</div>
-                  </div>
-                  <div class="speed-metric">
-                    <div class="metric-value">{{ speedTestResult.totalTokens || '-' }}</div>
-                    <div class="metric-label">{{ t('settings.llm.speedTestTotalTokens') }}</div>
-                  </div>
-                  <div class="speed-metric">
-                    <div class="metric-value">{{ speedTestResult.elapsed > 0 ? speedTestResult.elapsed.toFixed(1) : '-' }}</div>
-                    <div class="metric-label">{{ t('settings.llm.speedTestElapsed') }} ({{ t('settings.llm.speedTestSec') }})</div>
-                  </div>
+                <el-button text @click="loadUsageSnapshots(false)"><Icon icon="lucide:refresh-cw" /></el-button>
+              </div>
+              <div class="usage-summary-grid">
+                <div class="usage-summary-item">
+                  <span>{{ t('settings.llm.primaryModelTitle') }}</span>
+                  <strong>{{ mainUsageSnapshot?.last_24h.total_tokens?.toLocaleString() || '0' }}</strong>
+                  <small>{{ t('settings.llm.tokenUsage24h') }}</small>
+                </div>
+                <div class="usage-summary-item">
+                  <span>{{ t('settings.llm.mappingModelTitle') }}</span>
+                  <strong>{{ reasonUsageSnapshot?.last_24h.total_tokens?.toLocaleString() || '0' }}</strong>
+                  <small>{{ t('settings.llm.tokenUsage24h') }}</small>
+                </div>
+                <div class="usage-summary-item">
+                  <span>{{ t('settings.llm.tokenUsageTotal') }}</span>
+                  <strong>{{ ((mainUsageSnapshot?.total.total_tokens || 0) + (reasonUsageSnapshot?.total.total_tokens || 0)).toLocaleString() }}</strong>
+                  <small>{{ t('settings.llm.tokenUsageAllTime') }}</small>
                 </div>
               </div>
-            </transition>
+            </div>
 
             <el-divider class="manager-divider" content-position="left">
               {{ t('settings.llm.managerSectionTitle') }}
@@ -1311,6 +1471,17 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.token-speed-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--el-color-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-indicator {
@@ -1357,49 +1528,134 @@ onMounted(async () => {
   flex-grow: 1;
 }
 
+.model-config-grid {
+  align-items: stretch;
+}
+
+.model-config-column {
+  height: 100%;
+  padding: 18px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color-extra-light);
+}
+
+.mapping-model-column {
+  background: var(--el-bg-color);
+}
+
+.model-config-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 18px;
+  color: var(--el-color-primary);
+}
+
+.model-config-heading > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  font-size: 18px;
+}
+
+.model-config-heading strong,
+.model-config-heading span {
+  display: block;
+}
+
+.model-config-heading strong {
+  color: var(--el-text-color-primary);
+  font-size: 15px;
+}
+
+.model-config-heading span {
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.extra-body-collapse {
+  border-top: 1px solid var(--el-border-color-lighter);
+  border-bottom: 0;
+}
+
+.extra-body-collapse :deep(.el-collapse-item__header) {
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.extra-body-collapse :deep(.el-collapse-item__wrap) {
+  background: transparent;
+}
+
+.usage-summary {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-bg-color);
+}
+
+.usage-summary-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.usage-summary-heading strong,
+.usage-summary-heading span {
+  display: block;
+}
+
+.usage-summary-heading strong {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+}
+
+.usage-summary-heading span {
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.usage-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.usage-summary-item {
+  min-width: 0;
+  padding: 12px;
+  border-left: 2px solid var(--el-color-primary-light-5);
+  background: var(--el-fill-color-extra-light);
+}
+
+.usage-summary-item span,
+.usage-summary-item small,
+.usage-summary-item strong {
+  display: block;
+}
+
+.usage-summary-item span,
+.usage-summary-item small {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.usage-summary-item strong {
+  margin: 6px 0 3px;
+  color: var(--el-text-color-primary);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
 .manager-divider {
   margin: 8px 0 12px;
-}
-
-.speed-test-result {
-  margin: 16px 0 8px;
-  padding: 16px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-  border: 1px solid var(--el-color-primary-light-7);
-}
-
-.speed-test-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-color-primary);
-  margin-bottom: 12px;
-}
-
-.speed-test-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-
-.speed-metric {
-  text-align: center;
-}
-
-.metric-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--el-color-primary);
-  line-height: 1.2;
-}
-
-.metric-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-top: 4px;
 }
 
 .manager-hint {
@@ -1635,12 +1891,8 @@ onMounted(async () => {
     line-height: 1.5;
   }
 
-  .speed-test-metrics {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .metric-value {
-    font-size: 20px;
+  .usage-summary-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

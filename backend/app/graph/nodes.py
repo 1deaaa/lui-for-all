@@ -17,7 +17,7 @@ from app.graph.llm_client import llm_client
 from app.graph.state import GraphState
 from app.llm.prompts import AGENT_ENTRY_PROMPT, SUMMARY_PROMPT
 from app.runtime import get_runtime_emitter
-from app.schemas.task import ExecutionArtifact
+from app.schemas.ui_block import A2UIAction, A2UIBlock, A2UIComponent
 
 
 def emit_runtime_event(event: str, **payload: Any):
@@ -221,7 +221,121 @@ async def summarize_node(state: GraphState) -> dict[str, Any]:
 
 # ==================== UI Block 生成节点 ====================
 
+
+def _build_a2ui_fallback(state: GraphState) -> A2UIBlock:
+    """在结构化模型输出不可用时，生成同样经过 schema 约束的结果界面。"""
+    summary = str(state.get("summary_text") or "没有可展示的结果。").strip()
+    components: list[A2UIComponent] = [
+        A2UIComponent(
+            component_id="result-title",
+            component_type="heading",
+            props={"text": "执行结果", "level": 2},
+        ),
+        A2UIComponent(
+            component_id="result-summary",
+            component_type="text",
+            props={"text": summary, "tone": "default"},
+            actions=[
+                A2UIAction(
+                    action_type="copy",
+                    label="复制结果",
+                    payload={"text": summary},
+                )
+            ],
+        ),
+    ]
+
+    artifacts = state.get("execution_artifacts", []) or []
+    rows = []
+    for artifact in artifacts[:20]:
+        item = artifact.model_dump() if hasattr(artifact, "model_dump") else dict(artifact)
+        rows.append(
+            {
+                "method": str(item.get("method") or ""),
+                "route": str(item.get("route_id") or ""),
+                "status": item.get("status_code") if item.get("status_code") is not None else "失败",
+                "duration": f"{item.get('duration_ms')} ms" if item.get("duration_ms") is not None else "-",
+            }
+        )
+
+    if rows:
+        components.append(
+            A2UIComponent(
+                component_id="execution-table",
+                component_type="table",
+                props={
+                    "columns": [
+                        {"key": "method", "label": "方法"},
+                        {"key": "route", "label": "路由"},
+                        {"key": "status", "label": "状态"},
+                        {"key": "duration", "label": "耗时"},
+                    ],
+                    "rows": rows,
+                },
+            )
+        )
+
+    return A2UIBlock(
+        surface_id=f"task-{str(state.get('session_id') or 'result')[:64]}",
+        components=components,
+    )
+
+
 async def emit_blocks_node(state: GraphState) -> dict[str, Any]:
-    """UI Block 生成节点（仅保留审批类 block，执行记录由运行时事件流承载）"""
+    """使用模型生成受控 A2UI，并在服务端校验后交给 SSE 事件流。"""
     emit_runtime_event("task_progress", node_name="emit_blocks", progress=0.98, message="正在组织前端展示结构")
-    return {"ui_blocks": [], "current_node": "emit_blocks"}
+
+    artifacts = state.get("execution_artifacts", []) or []
+    artifact_summary = []
+    for artifact in artifacts[:20]:
+        item = artifact.model_dump() if hasattr(artifact, "model_dump") else dict(artifact)
+        artifact_summary.append(
+            {
+                "method": item.get("method"),
+                "route_id": item.get("route_id"),
+                "status_code": item.get("status_code"),
+                "duration_ms": item.get("duration_ms"),
+                "error": item.get("error"),
+            }
+        )
+
+    prompt = {
+        "user_request": str(state.get("user_message") or ""),
+        "summary": str(state.get("summary_text") or "没有可展示的结果。"),
+        "execution_artifacts": artifact_summary,
+    }
+    generation_messages = [
+        {
+            "role": "user",
+            "content": (
+                "请为下面的任务结果生成一个 LUI 受控 A2UI 界面。只能输出符合给定结构的 JSON，"
+                "不得输出 HTML、Markdown、JavaScript、模板表达式、URL 或自定义事件处理器。"
+                "组件只能使用 heading、text、metric、table、status、button；属性只能使用各组件目录中允许的字段。"
+                "优先生成简洁的结果摘要；只有在确有执行记录时才生成 table。"
+                "button 只能使用 copy 或 submit 动作，copy 的 payload 只能包含 text。"
+                "如果没有适合的交互动作，可以不生成 button。\n\n"
+                "JSON 结构："
+                '{"block_type":"a2ui","version":"0.1","surface_id":"task-result",'
+                '"components":[{"component_id":"summary","component_type":"text",'
+                '"props":{"text":"...","tone":"default"},"actions":[]}]}\n\n'
+                f"任务数据：{json.dumps(prompt, ensure_ascii=False)}"
+            ),
+        }
+    ]
+
+    try:
+        generated = await llm_client.parse_json_response(
+            generation_messages,
+            A2UIBlock,
+            temperature=0.2,
+            usage_key="main",
+        )
+        block = generated
+    except Exception as exc:
+        logger.warning("[emit_blocks] A2UI 结构化生成失败，使用受控兜底: %s", exc)
+        block = _build_a2ui_fallback(state)
+
+    return {
+        "ui_blocks": [block.model_dump(mode="json")],
+        "current_node": "emit_blocks",
+    }

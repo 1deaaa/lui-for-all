@@ -15,6 +15,54 @@ from .reasoning_compat import (
 )
 
 
+def _normalize_json_schema_required(schema: Any) -> Any:
+    """递归补齐对象 Schema 的 ``required`` 数组。"""
+    if isinstance(schema, list):
+        return [_normalize_json_schema_required(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    normalized = {
+        key: _normalize_json_schema_required(value)
+        for key, value in schema.items()
+    }
+    is_object_schema = (
+        normalized.get("type") == "object"
+        or isinstance(normalized.get("properties"), dict)
+    )
+    if is_object_schema and normalized.get("required") is None:
+        normalized["required"] = []
+    return normalized
+
+
+def normalize_openai_tool_schemas(tools: Any) -> Any:
+    """将函数工具参数规范化为严格提供商也接受的合法 JSON Schema。
+
+    OpenAI 兼容实现通常允许对象 Schema 省略 ``required``，但部分提供商会把
+    缺失值按 ``null`` 校验并拒绝请求。空数组仍属于标准 JSON Schema，因此可在
+    统一协议层安全补齐，无需按模型名称或端点域名建立供应商分支。
+    """
+    if not isinstance(tools, list):
+        return tools
+
+    normalized_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            normalized_tools.append(tool)
+            continue
+
+        normalized_tool = dict(tool)
+        function = tool.get("function")
+        if isinstance(function, dict):
+            normalized_function = dict(function)
+            parameters = function.get("parameters")
+            if isinstance(parameters, dict):
+                normalized_function["parameters"] = _normalize_json_schema_required(parameters)
+            normalized_tool["function"] = normalized_function
+        normalized_tools.append(normalized_tool)
+    return normalized_tools
+
+
 def _env_flag_enabled(name: str, default: bool) -> bool:
     """读取布尔环境变量，支持 1/0、true/false、yes/no、on/off。"""
     raw = get_env_var(name)
@@ -48,14 +96,22 @@ def build_sdk_compat_headers(
     return headers
 
 
-def apply_sdk_request_compat(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """统一注入 SDK 兼容参数。"""
+def apply_sdk_request_compat(kwargs: Dict[str, Any], *, include_stream_usage: bool = True) -> Dict[str, Any]:
+    """统一注入 SDK 兼容参数。
+
+    Args:
+        kwargs: 待注入的 SDK 参数。
+        include_stream_usage: 是否注入 ``stream_usage``。
+            Embedding 接口（如 ``OpenAIEmbeddings.embed_documents``）不支持该参数，
+            需要显式传 ``False`` 避免 ``Embeddings.create()`` 报错。
+    """
     compat_headers = build_sdk_compat_headers(kwargs.get("default_headers"))
     if compat_headers is not None:
         kwargs["default_headers"] = compat_headers
-    stream_usage_mode = str(get_env_var("SPARKARC_OPENAI_COMPAT_STREAM_USAGE", "auto") or "auto").strip().lower()
-    if stream_usage_mode in {"1", "true", "yes", "on", "auto"}:
-        kwargs.setdefault("stream_usage", True)
+    if include_stream_usage:
+        stream_usage_mode = str(get_env_var("SPARKARC_OPENAI_COMPAT_STREAM_USAGE", "auto") or "auto").strip().lower()
+        if stream_usage_mode in {"1", "true", "yes", "on", "auto"}:
+            kwargs.setdefault("stream_usage", True)
     return kwargs
 
 
@@ -90,6 +146,9 @@ class ChatUniversal(ChatOpenAI):
         **kwargs: Any,
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if "tools" in payload:
+            payload["tools"] = normalize_openai_tool_schemas(payload.get("tools"))
+
         payload_messages = payload.get("messages")
         if not isinstance(payload_messages, list):
             return payload
@@ -181,7 +240,7 @@ def create_quick_embedding(
 ) -> OpenAIEmbeddings:
     """创建轻量 Embedding 客户端，不触发 AIManager/数据库逻辑。"""
     payload = dict(kwargs)
-    payload = apply_sdk_request_compat(payload)
+    payload = apply_sdk_request_compat(payload, include_stream_usage=False)
     return OpenAIEmbeddings(
         model=model_name,
         api_key=api_key,

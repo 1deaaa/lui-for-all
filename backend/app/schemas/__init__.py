@@ -47,6 +47,9 @@ from app.schemas.task import (
     TaskStep,
 )
 from app.schemas.ui_block import (
+    A2UIAction,
+    A2UIBlock,
+    A2UIComponent,
     BlockType,
     ConfirmPanel,
     DataTable,
@@ -106,6 +109,9 @@ __all__ = [
     "TaskStatus",
     "TaskStep",
     # UIBlock
+    "A2UIAction",
+    "A2UIBlock",
+    "A2UIComponent",
     "BlockType",
     "ConfirmPanel",
     "DataTable",

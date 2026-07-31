@@ -54,7 +54,7 @@ def parse_sse_lines(raw: bytes) -> list[dict]:
     return events
 
 
-def test_notification_sse(token: str):
+def manual_test_notification_sse(token: str):
     """测试1：让 AI 采集 /api/stream/notifications 的 SSE 数据"""
     print("\n" + "=" * 60)
     print("测试1：AI 采集通知流 SSE → /api/stream/notifications")
@@ -160,7 +160,7 @@ def test_notification_sse(token: str):
     return all_pass
 
 
-def test_alerts_sse(token: str):
+def manual_test_alerts_sse(token: str):
     """测试2：让 AI 采集 /api/stream/alerts 的 SSE 数据"""
     print("\n" + "=" * 60)
     print("测试2：AI 采集告警流 SSE → /api/stream/alerts")
@@ -267,8 +267,8 @@ def main():
     print(f"JWT Token 已生成")
 
     results = {}
-    results["通知流SSE"] = test_notification_sse(token)
-    results["告警流SSE"] = test_alerts_sse(token)
+    results["通知流SSE"] = manual_test_notification_sse(token)
+    results["告警流SSE"] = manual_test_alerts_sse(token)
 
     print("\n" + "=" * 60)
     print("测试结果汇总")

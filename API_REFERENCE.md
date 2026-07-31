@@ -733,7 +733,7 @@ data: <json_payload>
 
 ## 5. UI Block Whitelist
 
-Custom GUIs only need to implement renderers for the following 8 `block_type` values:
+Custom GUIs should implement renderers for the following 9 `block_type` values. The `a2ui` entry is a LUI controlled A2UI subset: it is declarative JSON, is validated server-side, and is rendered through the client's fixed component catalog. It does not permit HTML, JavaScript, template expressions, URLs, or arbitrary event handlers.
 
 | block_type | Description | Core fields |
 |---|---|---|
@@ -745,6 +745,22 @@ Custom GUIs only need to implement renderers for the following 8 `block_type` va
 | `filter_form` | Parameter form | `title`, `description`, `fields[]` (contains `key`, `label`, `type`, `required`, `options`), `session_id`, `request_id` |
 | `timeline_card` | Timeline | `title`, `events[]` (contains `timestamp`, `title`, `description`, `status`) |
 | `diff_card` | Diff comparison | `title`, `description`, `items[]` (contains `key`, `old_value`, `new_value`, `change_type`) |
+| `a2ui` | Controlled declarative GenUI surface | `version` (`0.1`), `surface_id`, `components[]` |
+
+### 5.1 Controlled A2UI Component Catalog
+
+Each `a2ui.components[]` item contains `component_id`, `component_type`, `props`, and optional `actions[]`. Supported component types and properties are fixed:
+
+| component_type | Allowed props | Description |
+|---|---|---|
+| `heading` | `text`, `level` (`1`/`2`/`3`) | Heading |
+| `text` | `text`, `tone` | Plain text; clients must not interpret it as HTML |
+| `metric` | `label`, `value`, `unit`, `trend` | Single metric |
+| `status` | `label`, `value`, `tone` | Status indicator |
+| `table` | `columns`, `rows` | Fixed-column data table |
+| `button` | `label`, `variant`, `disabled` | Button with fixed local action mapping |
+
+Allowed actions are `copy` and `submit`. `copy` may carry a text payload; `submit` is an application event and must be mapped by the client to a known local command. Action payloads cannot contain scripts, templates, URLs, or arbitrary callbacks.
 
 ---
 
@@ -2302,8 +2318,12 @@ Source: `backend/app/api/llm_status.py`
 |---|---|---|---|
 | `GET` | `/api/llm-status/main` | Admin | Read main model config |
 | `PUT` | `/api/llm-status/main` | Admin | Update main model config |
+| `GET` | `/api/llm-status/usage/{usage_key}` | Admin | Read a purpose model config (`main` or `reason`) |
+| `PUT` | `/api/llm-status/usage/{usage_key}` | Admin | Update a purpose model config (`main` or `reason`) |
+| `GET` | `/api/llm-status/usage` | Admin | Read Token usage snapshots by purpose |
 | `GET` | `/api/llm-status/manager` | Admin | Get LLM manager snapshot |
 | `POST` | `/api/llm-status/manager/main-selection` | Admin | Set main model selection |
+| `POST` | `/api/llm-status/manager/usage-selection` | Admin | Set a purpose model selection |
 | `POST` | `/api/llm-status/manager/platforms` | Admin | Create LLM platform |
 | `PUT` | `/api/llm-status/manager/platforms/{platform_id}` | Admin | Update LLM platform |
 | `DELETE` | `/api/llm-status/manager/platforms/{platform_id}` | Admin | Delete LLM platform |
@@ -2327,6 +2347,22 @@ Source: `backend/app/api/llm_status.py`
 | | `llm_extra_body` | `string` | Extra Body JSON string |
 | `MainSelectionPayload` | `platform_id` | `int` | Platform ID |
 | | `model_id` | `int` | Model ID |
+| `UsageSelectionPayload` | `usage_key` | `string` | Purpose key (`main` or `reason`) |
+| | `platform_id` | `int` | Platform ID |
+| | `model_id` | `int` | Model ID |
+| `UsageTokenStats` | `usage_key` | `string` | Purpose key |
+| | `tokens` | `int` | Total billable token count |
+| | `total_tokens` | `int` | Prompt plus completion tokens |
+| | `prompt_tokens` | `int` | Prompt tokens |
+| | `completion_tokens` | `int` | Completion tokens |
+| | `cached_prompt_tokens` | `int` | Cached prompt tokens |
+| | `requests` | `int` | Request count |
+| | `errors` | `int` | Error count |
+| `UsageTokenSnapshot` | `usage_key` | `string` | Purpose key |
+| | `usage_label` | `string` | Purpose display name |
+| | `last_24h` | `UsageTokenStats` | Last 24 hours |
+| | `last_7d` | `UsageTokenStats` | Last 7 days |
+| | `total` | `UsageTokenStats` | All-time total |
 | `PlatformCreatePayload` | `name` | `string` | Platform name |
 | | `base_url` | `string` | Base URL |
 | | `api_key` | `string \| null` | API Key |
@@ -2356,6 +2392,10 @@ Source: `backend/app/api/llm_status.py`
 | | `llm_api_key` | `string \| null` | API Key |
 | | `llm_model_id` | `string` | Model ID |
 | | `llm_extra_body` | `string \| null` | Extra Body JSON string |
+| `TestConnectionResponse` | `reply` | `string` | Test model response |
+| | `speed` | `float \| null` | Measured generation speed |
+| | `speed_unit` | `string` | Always `tokens/s` |
+| | `speed_error` | `string \| null` | Speed test error, if the connection test itself succeeded |
 | `PlatformProbeSyncResult` | `snapshot` | `LLMManagerSnapshot` | Snapshot |
 | | `probed` | `int` | Number of models probed |
 | | `created` | `int` | Number of new models created |
@@ -2390,7 +2430,54 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `MainModelConfig`
 - **Response**: Updated `MainModelConfig`
 
-#### 7.3.3 Get LLM Manager Snapshot
+#### 7.3.3 Read Purpose Model Config
+
+`GET /api/llm-status/usage/{usage_key}`
+
+- **Auth**: Admin JWT
+- **Path Parameter**: `usage_key` must be `main` or `reason`.
+- **Description**: Read the model bound to a purpose. `main` is used for normal conversations and `reason` is used by project capability mapping.
+- **Response**: `UsageModelConfig`, including `usage_key`, `usage_label`, `platform_id`, and `model_id`.
+
+#### 7.3.4 Update Purpose Model Config
+
+`PUT /api/llm-status/usage/{usage_key}`
+
+- **Auth**: Admin JWT
+- **Path Parameter**: `usage_key` must be `main` or `reason`.
+- **Request Body**: `MainModelConfig`
+- **Response**: Updated `UsageModelConfig`
+
+#### 7.3.5 Get Token Usage Snapshots
+
+`GET /api/llm-status/usage`
+
+- **Auth**: Admin JWT
+- **Description**: Return Matchbox usage statistics for the `main` and `reason` purposes over the last 24 hours, last 7 days, and all time.
+- **Response**: `UsageTokenSnapshot[]`
+
+```json
+[
+  {
+    "usage_key": "main",
+    "usage_label": "主模型",
+    "last_24h": {
+      "usage_key": "main",
+      "tokens": 1200,
+      "total_tokens": 1200,
+      "prompt_tokens": 900,
+      "completion_tokens": 300,
+      "cached_prompt_tokens": 0,
+      "requests": 4,
+      "errors": 0
+    },
+    "last_7d": { "...": "同一结构" },
+    "total": { "...": "同一结构" }
+  }
+]
+```
+
+#### 7.3.6 Get LLM Manager Snapshot
 
 `GET /api/llm-status/manager`
 
@@ -2399,7 +2486,7 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: None
 - **Response**: `LLMManagerSnapshot`
 
-#### 7.3.4 Set Main Model Selection
+#### 7.3.7 Set Main Model Selection
 
 `POST /api/llm-status/manager/main-selection`
 
@@ -2408,7 +2495,16 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `MainSelectionPayload`
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.5 Create LLM Platform
+#### 7.3.8 Set Purpose Model Selection
+
+`POST /api/llm-status/manager/usage-selection`
+
+- **Auth**: Admin JWT
+- **Description**: Bind an existing platform/model pair to `main` or `reason`.
+- **Request Body**: `UsageSelectionPayload`
+- **Response**: Updated `LLMManagerSnapshot`
+
+#### 7.3.9 Create LLM Platform
 
 `POST /api/llm-status/manager/platforms`
 
@@ -2417,7 +2513,7 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `PlatformCreatePayload`
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.6 Update LLM Platform
+#### 7.3.10 Update LLM Platform
 
 `PUT /api/llm-status/manager/platforms/{platform_id}`
 
@@ -2432,7 +2528,7 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `PlatformUpdatePayload`
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.7 Delete LLM Platform
+#### 7.3.11 Delete LLM Platform
 
 `DELETE /api/llm-status/manager/platforms/{platform_id}`
 
@@ -2446,7 +2542,7 @@ Source: `backend/app/api/llm_status.py`
 
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.8 Add Model
+#### 7.3.12 Add Model
 
 `POST /api/llm-status/manager/platforms/{platform_id}/models`
 
@@ -2461,7 +2557,7 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `ModelCreatePayload`
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.9 Update Model
+#### 7.3.13 Update Model
 
 `PUT /api/llm-status/manager/models/{model_id}`
 
@@ -2476,7 +2572,7 @@ Source: `backend/app/api/llm_status.py`
 - **Request Body**: `ModelUpdatePayload`
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.10 Delete Model
+#### 7.3.14 Delete Model
 
 `DELETE /api/llm-status/manager/models/{model_id}`
 
@@ -2490,7 +2586,7 @@ Source: `backend/app/api/llm_status.py`
 
 - **Response**: Updated `LLMManagerSnapshot`
 
-#### 7.3.11 Probe and Sync Platform Models
+#### 7.3.15 Probe and Sync Platform Models
 
 `POST /api/llm-status/manager/platforms/{platform_id}/probe-and-sync`
 
@@ -2512,7 +2608,7 @@ Source: `backend/app/api/llm_status.py`
 }
 ```
 
-#### 7.3.12 Probe Available Models
+#### 7.3.16 Probe Available Models
 
 `POST /api/llm-status/probe`
 
@@ -2525,7 +2621,7 @@ Source: `backend/app/api/llm_status.py`
 { "models": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"] }
 ```
 
-#### 7.3.13 Test Model Connection
+#### 7.3.17 Test Model Connection
 
 `POST /api/llm-status/test`
 
@@ -2535,10 +2631,15 @@ Source: `backend/app/api/llm_status.py`
 - **Response**:
 
 ```json
-{ "reply": "Hello! How can I help you?" }
+{
+  "reply": "Hello! How can I help you?",
+  "speed": 42.5,
+  "speed_unit": "tokens/s",
+  "speed_error": null
+}
 ```
 
-#### 7.3.14 Streaming Speed Test
+#### 7.3.18 Streaming Speed Test
 
 `POST /api/llm-status/speed-test`
 
@@ -2553,7 +2654,7 @@ data: {"chunk": " world", "tokens_per_second": 45.0, ...}
 data: [DONE]
 ```
 
-#### 7.3.15 Check LLM_KEY Status
+#### 7.3.19 Check LLM_KEY Status
 
 `GET /api/llm-status/llm-key-status`
 
@@ -2566,7 +2667,7 @@ data: [DONE]
 { "configured": true }
 ```
 
-#### 7.3.16 Set Master Key
+#### 7.3.20 Set Master Key
 
 `POST /api/llm-status/set-llm-key`
 

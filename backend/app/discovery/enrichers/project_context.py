@@ -70,7 +70,8 @@ async def generate_project_context(
     try:
         content, _, _ = await llm_client.chat_completion(
             [{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.3,
+            usage_key="reason",
         )
         global_context = content.strip()
     except Exception as e:

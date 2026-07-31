@@ -11,12 +11,13 @@ import shutil
 import yaml
 from typing import Dict, Any, Optional
 
-from .env_utils import load_env, get_env_var
-from .paths import get_config_file_path, get_packaged_config_template_path, ensure_mgr_home_exists
+from .env_utils import load_env, get_env_var, get_env_path
+from .paths import get_config_file_path, get_key_file_path, get_packaged_config_template_path, ensure_mgr_home_exists
 from .security import SecurityManager
 
 
 _API_KEY_PLACEHOLDER_RE = re.compile(r"^\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}$")
+_STARTUP_KEY_NOTICE_PRINTED = False
 
 
 # ---------------- 配置常量 ----------------
@@ -40,15 +41,45 @@ BUILTIN_USAGE_SLOTS = [
 
 # ---------------- 配置加载 ----------------
 
-def _safe_decrypt(sec_mgr: SecurityManager, value: str) -> Any:
+def _safe_decrypt(sec_mgr: SecurityManager, value: str, stats: Optional[Dict[str, int]] = None) -> Any:
     if not value:
         return None
     if value.startswith("ENC:"):
         # 注意：仓库同步下发的 YAML 中可能携带其他环境生成的 ENC 密文。
         # 这类值在新站点首次拉取后无法直接解开属于正常现象；
         # 配置加载层统一将其视为“当前不可用”，等待管理员设置本机 LLM_KEY 并重新配置托管密钥。
-        return sec_mgr.decrypt(value).to_optional_plaintext()
+        result = sec_mgr.decrypt(value)
+        if stats is not None:
+            stats[result.status] = stats.get(result.status, 0) + 1
+        return result.to_optional_plaintext()
     return value
+
+
+def _emit_startup_key_notice(stats: Dict[str, int]) -> None:
+    """启动期聚合提示密钥状态，避免每个平台逐条刷屏。"""
+    global _STARTUP_KEY_NOTICE_PRINTED
+    if _STARTUP_KEY_NOTICE_PRINTED:
+        return
+
+    missing_key = int(stats.get("missing_key", 0) or 0)
+    failed = int(stats.get("failed", 0) or 0)
+    if missing_key <= 0 and failed <= 0:
+        return
+
+    _STARTUP_KEY_NOTICE_PRINTED = True
+    parts = []
+    if missing_key:
+        parts.append(f"{missing_key} 个托管密钥等待设置 LLM_KEY")
+    if failed:
+        parts.append(f"{failed} 个托管密钥需要重新配置")
+
+    print(
+        "🔑 Matchbox key notice: "
+        + "，".join(parts)
+        + "。这在首次克隆或迁移环境时通常是正常现象；平台/模型结构会继续同步，"
+        + "请在管理后台设置主密钥并重新录入需要使用的平台 API Key。",
+        flush=True,
+    )
 
 
 def is_api_key_placeholder(value: Any) -> bool:
@@ -79,7 +110,7 @@ def resolve_api_key_reference(value: Any) -> Optional[str]:
 
 
 def load_default_platform_configs_raw() -> Dict[str, Any]:
-    """从配置文件加载原始平台配置，保留 api_key 的原始形态。"""
+    """从 matchbox_cfg.yaml 加载原始平台配置（不合并 matchbox_key.yaml）。"""
     ensure_mgr_home_exists()
     config_path: Path = get_config_file_path()
 
@@ -100,21 +131,89 @@ def load_default_platform_configs_raw() -> Dict[str, Any]:
     return configs
 
 
-def save_default_platform_configs_raw(configs: Dict[str, Any]) -> str:
-    """将平台配置原样写回 YAML 文件。"""
+def load_key_yaml_raw() -> Dict[str, Any]:
+    """从 matchbox_key.yaml 加载原始密钥配置。
+
+    结构示例（使用 base_url 作为唯一键）：
+        https://api.example.com/v1:
+          api_key: sk-xxx
+        https://other.example.com/v1:
+          api_key: ENC:...
+
+    也兼容简写形式：
+        https://api.example.com/v1: sk-xxx
+
+    文件不存在时返回空字典，表示没有外部密钥文件。
+    """
+    key_path: Path = get_key_file_path()
+    if not key_path.exists():
+        return {}
+
+    with key_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError("matchbox_key.yaml 顶层结构必须是字典")
+
+    return data
+
+
+def _extract_api_key_from_key_entry(key_entry: Any) -> Optional[str]:
+    """从 matchbox_key.yaml 中单个平台的条目提取 api_key 原始字符串。"""
+    if isinstance(key_entry, str):
+        raw = key_entry.strip()
+        return raw or None
+    if isinstance(key_entry, dict):
+        raw = key_entry.get("api_key")
+        if isinstance(raw, str):
+            raw = raw.strip()
+            return raw or None
+    return None
+
+
+def merge_key_yaml_into_configs(configs: Dict[str, Any]) -> Dict[str, Any]:
+    """将 matchbox_key.yaml 中的 api_key 合并到平台配置字典中（原地修改）。
+
+    匹配逻辑：使用平台的 base_url 作为唯一键从 matchbox_key.yaml 中查找密钥。
+    合并后会清除平台配置中内嵌的 api_key，确保运行时密钥唯一来源是 matchbox_key.yaml。
+    """
+    key_data = load_key_yaml_raw()
+    for name, cfg in configs.items():
+        if not isinstance(cfg, dict):
+            continue
+        # 平台结构配置文件中不应再包含 api_key；若存在则忽略。
+        cfg.pop("api_key", None)
+        base_url = cfg.get("base_url")
+        if not base_url:
+            continue
+        key_entry = key_data.get(base_url)
+        key_val = _extract_api_key_from_key_entry(key_entry)
+        if key_val is not None:
+            cfg["api_key"] = key_val
+    return configs
+
+
+def save_key_yaml_raw(key_data: Dict[str, Any]) -> str:
+    """将密钥配置写回 matchbox_key.yaml 文件。"""
     ensure_mgr_home_exists()
-    config_path = get_config_file_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(configs, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-    return str(config_path)
+    key_path = get_key_file_path()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    with key_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(key_data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    return str(key_path)
 
 
 def load_default_platform_configs() -> Dict[str, Any]:
-    """从配置文件加载并解析平台配置（缺少 LLM_KEY 也不中断）。"""
+    """从配置文件加载并解析平台配置（缺少 LLM_KEY 也不中断）。
+
+    密钥唯一来源：matchbox_key.yaml 中对应平台 base_url 的 api_key。
+    matchbox_cfg.yaml 中内嵌的 api_key 已被废弃，不再读取。
+    """
     configs = deepcopy(load_default_platform_configs_raw())
+    merge_key_yaml_into_configs(configs)
 
     sec_mgr = SecurityManager.get_instance()
+    decrypt_stats: Dict[str, int] = {}
 
     for name, cfg in configs.items():
         api_val = cfg.get("api_key")
@@ -125,14 +224,14 @@ def load_default_platform_configs() -> Dict[str, Any]:
         api_val = api_val.strip()
         # 情况1: 已加密值
         if api_val.startswith("ENC:"):
-            cfg["api_key"] = _safe_decrypt(sec_mgr, api_val)
+            cfg["api_key"] = _safe_decrypt(sec_mgr, api_val, decrypt_stats)
             continue
 
         # 情况2: 占位符 {ENV_VAR}
         if is_api_key_placeholder(api_val):
             env_val = resolve_api_key_reference(api_val)
             if env_val:
-                cfg["api_key"] = _safe_decrypt(sec_mgr, env_val)
+                cfg["api_key"] = _safe_decrypt(sec_mgr, env_val, decrypt_stats)
             else:
                 cfg["api_key"] = None
             continue
@@ -140,6 +239,7 @@ def load_default_platform_configs() -> Dict[str, Any]:
         # 情况3: 纯明文
         cfg["api_key"] = api_val
 
+    _emit_startup_key_notice(decrypt_stats)
     return configs
 
 
@@ -163,18 +263,11 @@ def _ensure_env_setup():
     key = get_env_var("LLM_KEY")
             
     if not key:
-        gui_path = os.path.join(os.path.dirname(__file__), "matchbox_cfg_gui.py")
-        if os.path.exists(gui_path):
-            print("\n" + "!"*80)
-            print("🔑【重要提示】检测到系统未配置 LLM_KEY (API 密钥主密码)")
-            print("🔒若初次启动这是正常现象，并非错误。安全起见，所有 API Key 均需主密码加解密，否则将无法使用。")
-            print("-" * 80)
-            print(f"方法一 (推荐): 运行配置工具\n   python \"{os.path.normpath(gui_path)}\"")
-            print("-" * 80)
-            print("方法二: 通过 /api/admin/config/llm-key 接口或管理页设置 LLM_KEY")
-            print("方法三: 在程序页面初始化向导中设置")
-            print("!"*80 + "\n")
-            return
+        print(
+            f"🔑 Matchbox LLM_KEY is not configured yet. First startup can continue; set it later via admin page or {get_env_path()}.",
+            flush=True,
+        )
+        return
 
 
 def get_decrypted_api_key(platform_name: str = None, base_url: str = None):

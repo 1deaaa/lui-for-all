@@ -4,7 +4,9 @@ LLM 运行状态与主模型管控 API
 底层仍与 Agent Matchbox 中的结构同步。
 """
 
+import asyncio
 import json
+from datetime import timedelta
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Any, Dict
@@ -20,6 +22,32 @@ class MainModelConfig(BaseModel):
     llm_api_key: str = ""
     llm_model_id: str = ""
     llm_extra_body: str = ""
+
+
+class UsageModelConfig(MainModelConfig):
+    usage_key: str
+    usage_label: str
+    platform_id: Optional[int] = None
+    model_id: Optional[int] = None
+
+
+class UsageTokenStats(BaseModel):
+    usage_key: str
+    tokens: int = 0
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    requests: int = 0
+    errors: int = 0
+
+
+class UsageTokenSnapshot(BaseModel):
+    usage_key: str
+    usage_label: str
+    last_24h: UsageTokenStats
+    last_7d: UsageTokenStats
+    total: UsageTokenStats
 
 
 class ManagedModel(BaseModel):
@@ -41,11 +69,16 @@ class LLMManagerSnapshot(BaseModel):
     selected_platform_id: Optional[int] = None
     selected_model_id: Optional[int] = None
     platforms: List[ManagedPlatform]
+    usage_bindings: List[UsageModelConfig] = []
 
 
 class MainSelectionPayload(BaseModel):
     platform_id: int
     model_id: int
+
+
+class UsageSelectionPayload(MainSelectionPayload):
+    usage_key: str = "main"
 
 
 class PlatformCreatePayload(BaseModel):
@@ -104,6 +137,122 @@ def _stringify_extra_body(extra_body_obj: Any) -> str:
     return json.dumps(extra_body_obj, ensure_ascii=False, indent=2)
 
 
+def _normalize_usage_key(usage_key: str) -> str:
+    normalized = str(usage_key or "").strip().lower()
+    if normalized not in {"main", "reason"}:
+        raise HTTPException(status_code=400, detail="usage_key 仅支持 main 或 reason")
+    return normalized
+
+
+def _read_usage_model_config(mgr, usage_key: str) -> UsageModelConfig:
+    """读取用途绑定及其模型附加参数。"""
+    normalized_usage = _normalize_usage_key(usage_key)
+    details = mgr.get_user_selection_detail(SYSTEM_USER_ID, normalized_usage)
+    current = details.get("current", {})
+    platform_id = current.get("platform_id")
+    model_id = current.get("model_id")
+    if not isinstance(platform_id, int) or platform_id <= 0:
+        platform_id = None
+    if not isinstance(model_id, int) or model_id <= 0:
+        model_id = None
+
+    api_base = str(current.get("base_url") or "")
+    model_name = str(current.get("model_name") or "")
+    usage_label = str(current.get("usage_label") or ("主模型" if normalized_usage == "main" else "建图模型"))
+    extra_body_json = ""
+    actual_api_key = ""
+
+    if platform_id is not None:
+        with mgr.Session() as session:
+            from app.llm.agent_matchbox.models import LLMPlatform, LLMSysPlatformKey, LLModels
+
+            if model_id is not None:
+                model = session.query(LLModels).filter_by(id=model_id, platform_id=platform_id).first()
+                if model and model.extra_body:
+                    try:
+                        extra_body_json = json.dumps(
+                            json.loads(model.extra_body),
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+                    except (TypeError, json.JSONDecodeError):
+                        extra_body_json = str(model.extra_body)
+
+            platform = session.query(LLMPlatform).filter_by(id=platform_id).first()
+            if platform:
+                cipher = None
+                if platform.is_sys:
+                    credential = session.query(LLMSysPlatformKey).filter_by(
+                        user_id=SYSTEM_USER_ID,
+                        platform_id=platform_id,
+                    ).first()
+                    cipher = credential.api_key if credential and credential.api_key else platform.api_key
+                else:
+                    cipher = platform.api_key
+
+                if cipher:
+                    from app.llm.agent_matchbox.security import SecurityManager
+
+                    decrypted = SecurityManager.get_instance().decrypt(cipher)
+                    if decrypted.has_plaintext:
+                        actual_api_key = decrypted.value
+
+    return UsageModelConfig(
+        usage_key=normalized_usage,
+        usage_label=usage_label,
+        platform_id=platform_id,
+        model_id=model_id,
+        llm_api_base=api_base,
+        llm_api_key=actual_api_key,
+        llm_model_id=model_name,
+        llm_extra_body=extra_body_json,
+    )
+
+
+def _update_usage_model_config(mgr, usage_key: str, payload: MainModelConfig) -> UsageModelConfig:
+    """更新用途对应的模型与 extra body。平台和密钥仍由系统平台共享。"""
+    normalized_usage = _normalize_usage_key(usage_key)
+    extra_body_dict = _parse_extra_body(payload.llm_extra_body, field_name="llm_extra_body")
+    details = mgr.get_user_selection_detail(SYSTEM_USER_ID, normalized_usage)
+    current = details.get("current", {})
+    platform_id = current.get("platform_id")
+    model_id = current.get("model_id")
+    if not isinstance(platform_id, int) or platform_id <= 0 or not isinstance(model_id, int) or model_id <= 0:
+        raise HTTPException(status_code=400, detail="该用途尚未绑定可用的平台和模型")
+
+    with mgr.Session() as session:
+        from app.llm.agent_matchbox.models import LLMPlatform, LLModels, LLMSysPlatformKey
+        from app.llm.agent_matchbox.security import SecurityManager
+
+        platform = session.query(LLMPlatform).filter_by(id=platform_id, is_sys=1, disable=0).first()
+        model = session.query(LLModels).filter_by(id=model_id, platform_id=platform_id, disable=0).first()
+        if not platform or not model:
+            raise HTTPException(status_code=400, detail="该用途绑定的平台或模型已失效")
+
+        if payload.llm_api_base.strip():
+            platform.base_url = payload.llm_api_base.strip()
+        if payload.llm_api_key.strip():
+            encrypted_key = SecurityManager.get_instance().encrypt(payload.llm_api_key.strip())
+            credential = session.query(LLMSysPlatformKey).filter_by(
+                user_id=SYSTEM_USER_ID,
+                platform_id=platform_id,
+            ).first()
+            if credential:
+                credential.api_key = encrypted_key
+            else:
+                platform.api_key = encrypted_key
+
+        if payload.llm_model_id.strip():
+            model.model_name = payload.llm_model_id.strip()
+            model.display_name = payload.llm_model_id.strip()
+        model.extra_body = json.dumps(extra_body_dict, ensure_ascii=False) if extra_body_dict is not None else None
+        session.commit()
+
+    with mgr._cache_lock:
+        mgr._sys_platforms_cache = None
+    return _read_usage_model_config(mgr, normalized_usage)
+
+
 def _build_manager_snapshot(mgr) -> LLMManagerSnapshot:
     platform_items = mgr.admin_get_sys_platforms(include_disabled=False, include_models=True)
     details = mgr.get_user_selection_detail(SYSTEM_USER_ID, "main")
@@ -123,7 +272,8 @@ def _build_manager_snapshot(mgr) -> LLMManagerSnapshot:
         for model in plat.get("models", []):
             if model.get("disabled"):
                 continue
-            if model.get("is_embedding"):
+            output_modalities = model.get("output_modalities") or ["text"]
+            if "text" not in output_modalities:
                 continue
             models.append(
                 ManagedModel(
@@ -144,10 +294,25 @@ def _build_manager_snapshot(mgr) -> LLMManagerSnapshot:
             )
         )
 
+    usage_bindings: List[UsageModelConfig] = []
+    for usage_key in ("main", "reason"):
+        try:
+            usage_config = _read_usage_model_config(mgr, usage_key)
+            usage_config.llm_api_key = ""
+            usage_bindings.append(usage_config)
+        except (HTTPException, ValueError):
+            usage_bindings.append(
+                UsageModelConfig(
+                    usage_key=usage_key,
+                    usage_label="主模型" if usage_key == "main" else "建图模型",
+                )
+            )
+
     return LLMManagerSnapshot(
         selected_platform_id=selected_platform_id,
         selected_model_id=selected_model_id,
         platforms=platforms,
+        usage_bindings=usage_bindings,
     )
 
 
@@ -341,6 +506,56 @@ async def update_main_model_config(payload: MainModelConfig):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/usage/{usage_key}", response_model=UsageModelConfig)
+async def get_usage_model_config(usage_key: str):
+    """获取主模型或建图模型用途配置。"""
+    mgr = _require_matchbox()
+    try:
+        return _read_usage_model_config(mgr, usage_key)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put("/usage/{usage_key}", response_model=UsageModelConfig)
+async def update_usage_model_config(usage_key: str, payload: MainModelConfig):
+    """更新主模型或建图模型用途配置。"""
+    mgr = _require_matchbox()
+    try:
+        return _update_usage_model_config(mgr, usage_key, payload)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/usage", response_model=List[UsageTokenSnapshot])
+async def get_llm_usage_snapshot():
+    """获取主模型与建图模型的 Token 用量统计。"""
+    mgr = _require_matchbox()
+    result: List[UsageTokenSnapshot] = []
+    for usage_key in ("main", "reason"):
+        label = "主模型" if usage_key == "main" else "建图模型"
+        stats_24h = mgr.get_user_usage_by_key(SYSTEM_USER_ID, usage_key, since=timedelta(hours=24))
+        stats_7d = mgr.get_user_usage_by_key(SYSTEM_USER_ID, usage_key, since=timedelta(days=7))
+        stats_total = mgr.get_user_usage_by_key(SYSTEM_USER_ID, usage_key, since=None)
+        result.append(
+            UsageTokenSnapshot(
+                usage_key=usage_key,
+                usage_label=label,
+                last_24h=UsageTokenStats(**stats_24h),
+                last_7d=UsageTokenStats(**stats_7d),
+                total=UsageTokenStats(**stats_total),
+            )
+        )
+    return result
+
+
 @router.get("/manager", response_model=LLMManagerSnapshot)
 async def get_llm_manager_snapshot():
     mgr = _require_matchbox()
@@ -352,21 +567,19 @@ async def get_llm_manager_snapshot():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/manager/main-selection", response_model=LLMManagerSnapshot)
-async def set_main_model_selection(payload: MainSelectionPayload):
-    mgr = _require_matchbox()
-
+def _save_usage_selection(mgr, usage_key: str, platform_id: int, model_id: int) -> None:
+    normalized_usage = _normalize_usage_key(usage_key)
     try:
         with mgr.Session() as session:
             from app.llm.agent_matchbox.models import LLMPlatform, LLModels
 
-            platform = session.query(LLMPlatform).filter_by(id=payload.platform_id, is_sys=1, disable=0).first()
+            platform = session.query(LLMPlatform).filter_by(id=platform_id, is_sys=1, disable=0).first()
             if not platform:
                 raise HTTPException(status_code=404, detail="平台不存在或已禁用")
 
             model = session.query(LLModels).filter_by(
-                id=payload.model_id,
-                platform_id=payload.platform_id,
+                id=model_id,
+                platform_id=platform_id,
                 is_embedding=0,
                 disable=0,
             ).first()
@@ -375,17 +588,30 @@ async def set_main_model_selection(payload: MainSelectionPayload):
 
         mgr.save_user_selection(
             user_id=SYSTEM_USER_ID,
-            platform_id=payload.platform_id,
-            model_id=payload.model_id,
-            usage_key="main",
+            platform_id=platform_id,
+            model_id=model_id,
+            usage_key=normalized_usage,
         )
-        return _build_manager_snapshot(mgr)
     except HTTPException:
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/manager/main-selection", response_model=LLMManagerSnapshot)
+async def set_main_model_selection(payload: MainSelectionPayload):
+    mgr = _require_matchbox()
+    _save_usage_selection(mgr, "main", payload.platform_id, payload.model_id)
+    return _build_manager_snapshot(mgr)
+
+
+@router.post("/manager/usage-selection", response_model=LLMManagerSnapshot)
+async def set_usage_model_selection(payload: UsageSelectionPayload):
+    mgr = _require_matchbox()
+    _save_usage_selection(mgr, payload.usage_key, payload.platform_id, payload.model_id)
+    return _build_manager_snapshot(mgr)
 
 
 @router.post("/manager/platforms", response_model=LLMManagerSnapshot)
@@ -639,13 +865,56 @@ async def test_model(payload: TestPayload):
 
     extra_body_dict = None
     if payload.llm_extra_body and payload.llm_extra_body.strip():
-        extra_body_dict = json.loads(payload.llm_extra_body)
+        try:
+            extra_body_dict = json.loads(payload.llm_extra_body)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Extra Body 格式错误: {e}") from e
          
     try:
         reply = test_platform_chat(payload.llm_api_base, api_key_to_use, payload.llm_model_id, timeout=15.0, extra_body=extra_body_dict)
-        return {"reply": reply}
+        speed = None
+        speed_error = None
+        try:
+            speed_result = await asyncio.to_thread(
+                _collect_speed_test_result,
+                payload.llm_api_base,
+                api_key_to_use,
+                payload.llm_model_id,
+                extra_body_dict,
+            )
+            speed = speed_result.get("speed")
+        except Exception as speed_exc:
+            speed_error = str(speed_exc)
+        return {
+            "reply": reply,
+            "speed": speed,
+            "speed_unit": "tokens/s",
+            "speed_error": speed_error,
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"测试失败：{e}")
+
+
+def _collect_speed_test_result(
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    extra_body: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """同步消费 Matchbox 流式测速生成器，供异步路由放入工作线程。"""
+    final_result: Dict[str, Any] = {}
+    for item in stream_speed_test(
+        base_url,
+        api_key,
+        model_name,
+        timeout=30.0,
+        extra_body=extra_body,
+    ):
+        if item.get("type") == "final":
+            final_result = item
+        if item.get("error"):
+            raise RuntimeError(str(item["error"]))
+    return final_result
 
 
 @router.post("/speed-test")

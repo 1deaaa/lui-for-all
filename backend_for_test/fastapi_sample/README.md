@@ -13,6 +13,7 @@ uvicorn app:app --reload --port 8010
 
 - 文档页: `http://localhost:8010/docs`
 - OpenAPI: `http://localhost:8010/openapi.json`
+- 模拟 AI SSE: `POST http://localhost:8010/v1/chat/completions`，兼容 `stream=true` 和非流式 JSON；流式输出约 50 字符/秒，末帧带 `usage`，最后发送 `[DONE]`。
 
 ## 覆盖范围
 

@@ -20,6 +20,41 @@ const LOGIN_ACCOUNTS = {
   '222': { password: '222222', role: 'user' },
 };
 
+const SSE_TEST_CONTENT =
+  '这是lui for all的SSE测试端口。 只在还原当前AI应用最常用的agent交互标准.... ' +
+  '客户端通过 POST /v1/chat/completions 发起请求，用 stream=true 订阅事件流。' +
+  '服务端先发送 assistant 角色首帧，再逐字返回内容，前端按顺序合并 delta.content。' +
+  '每个数据帧使用 data: JSON，客户端应处理边界、断开和重连。' +
+  '结束时发送 stop 与 usage 完成帧，最后用 data: [DONE] 结束生成。' +
+  '端口不调用外部模型，用于验证解析、刷新、取消、重连和字符速率。' +
+  '完整接收这段约三百字文本，说明客户端具备接入常见 AI 流式接口的基本能力。' +
+  '接入真实模型时只需保留事件结构，再替换内容、模型名和 token 统计。';
+
+function chatUsage(messages) {
+  const promptText = (Array.isArray(messages) ? messages : [])
+    .map((message) => String(message?.content || ''))
+    .join('');
+  const promptTokens = Math.max(1, promptText.length);
+  const completionTokens = [...SSE_TEST_CONTENT].length;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+  };
+}
+
+function chatChunk(completionId, created, model, delta, finishReason = null, usage = undefined) {
+  const payload = {
+    id: completionId,
+    object: 'chat.completion.chunk',
+    created,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+  if (usage) payload.usage = usage;
+  return payload;
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -129,6 +164,35 @@ function buildOpenApiSpec(serverUrl) {
     paths: {
       '/health': {
         get: { summary: '健康检查', responses: { '200': { description: 'OK' } } },
+      },
+      '/v1/chat/completions': {
+        post: {
+          summary: 'OpenAI 兼容模拟 AI 流式输出',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    model: { type: 'string' },
+                    messages: { type: 'array', items: { type: 'object' } },
+                    stream: { type: 'boolean', default: false },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'OpenAI 兼容 JSON 或 SSE 响应',
+              content: {
+                'application/json': { schema: { type: 'object' } },
+                'text/event-stream': { schema: { type: 'string' } },
+              },
+            },
+          },
+        },
       },
       '/api/auth/login': {
         post: {
@@ -266,6 +330,72 @@ app.get('/health', (req, res) => {
 app.get('/openapi.json', (req, res) => {
   const serverUrl = `${req.protocol}://${req.get('host')}`;
   res.json(buildOpenApiSpec(serverUrl));
+});
+
+app.post('/v1/chat/completions', (req, res) => {
+  const model = String(req.body?.model || 'lui-sse-test');
+  const stream = req.body?.stream === true;
+  const completionId = `chatcmpl-${crypto.randomUUID().replace(/-/g, '')}`;
+  const created = Math.floor(Date.now() / 1000);
+  const usage = chatUsage(req.body?.messages);
+
+  if (!stream) {
+    res.json({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: SSE_TEST_CONTENT },
+        finish_reason: 'stop',
+      }],
+      usage,
+    });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  send(chatChunk(completionId, created, model, { role: 'assistant' }));
+
+  let index = 0;
+  let closed = false;
+  const characters = [...SSE_TEST_CONTENT];
+  const firstCharacterAt = performance.now() + 20;
+  let timer = null;
+  const emitNext = () => {
+    if (closed) return;
+    if (index >= characters.length) {
+      send(chatChunk(completionId, created, model, {}, 'stop', usage));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      closed = true;
+      return;
+    }
+
+    const character = characters[index];
+    index += 1;
+    send(chatChunk(completionId, created, model, { content: character }));
+    const nextDelay = Math.max(0, firstCharacterAt + index * 20 - performance.now());
+    timer = setTimeout(emitNext, nextDelay);
+  };
+  timer = setTimeout(emitNext, 20);
+
+  const stopOnDisconnect = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+  };
+  req.on('aborted', stopOnDisconnect);
+  res.on('close', () => {
+    if (!res.writableEnded) stopOnDisconnect();
+  });
 });
 
 app.post('/api/auth/login', (req, res) => {

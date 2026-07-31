@@ -14,6 +14,7 @@ npm run start
 ## OpenAPI
 
 - OpenAPI: `http://localhost:8020/openapi.json`
+- 模拟 AI SSE: `POST http://localhost:8020/v1/chat/completions`，兼容 `stream=true` 和非流式 JSON；流式输出约 50 字符/秒，末帧带 `usage`，最后发送 `[DONE]`。
 
 ## 覆盖范围
 

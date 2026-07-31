@@ -45,7 +45,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult, ChatGenerationChunk
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import sessionmaker
 
 from .models import UsageLogEntry, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS
@@ -114,6 +114,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         session_maker: sessionmaker,
         agent_name: Optional[str] = None,
         quota_scope: Optional[str] = None,
+        usage_key: Optional[str] = None,
         billing_enabled: bool = False,
     ):
         super().__init__()
@@ -124,6 +125,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         self.platform_name = platform_name
         self.agent_name = agent_name
         self.quota_scope = quota_scope
+        self.usage_key = str(usage_key or "main").strip().lower() or "main"
         self.billing_enabled = bool(billing_enabled)
         self._session_maker = session_maker
 
@@ -260,12 +262,6 @@ class UsageTrackingCallback(BaseCallbackHandler):
         """写入用量日志到数据库"""
         if self._session_maker is None:
             return
-        usage_context = None
-        try:
-            from core.request_context import current_llm_usage_context
-            usage_context = current_llm_usage_context.get()
-        except Exception:
-            usage_context = None
         total_tokens = prompt_tokens + completion_tokens
         with self._session_maker() as session:
             entry = UsageLogEntry(
@@ -280,7 +276,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
                 cache_source=str(cache_source) if cache_source else None,
                 success=1 if success else 0,
                 agent_name=self.agent_name,
-                context_key=str(usage_context) if usage_context else None,
+                usage_key=self.usage_key,
                 quota_scope=self.quota_scope,
             )
             session.add(entry)
@@ -568,6 +564,7 @@ class LLMUsage:
         session_maker: sessionmaker,
         agent_name: Optional[str] = None,
         quota_scope: Optional[str] = None,
+        usage_key: Optional[str] = None,
     ):
         self.user_id = user_id
         self.model_id = model_id
@@ -576,6 +573,7 @@ class LLMUsage:
         self.platform_name = platform_name
         self.agent_name = agent_name
         self.quota_scope = quota_scope
+        self.usage_key = str(usage_key or "main").strip().lower() or "main"
         self._session_maker = session_maker
 
     def get_usage_last_24h(self) -> Dict[str, Any]:
@@ -630,6 +628,7 @@ class LLMUsage:
                 UsageLogEntry.user_id == self.user_id,
                 UsageLogEntry.model_id == self.model_id,
             )
+            query = self._filter_usage_key(query)
             if start_time is not None:
                 query = query.filter(UsageLogEntry.created_at >= start_time)
             if end_time is not None:
@@ -654,6 +653,7 @@ class LLMUsage:
                 UsageLogEntry.user_id == self.user_id,
                 UsageLogEntry.model_id == self.model_id,
             )
+            query = self._filter_usage_key(query)
             if delta is not None:
                 cutoff = datetime.now(UTC) - delta
                 query = query.filter(UsageLogEntry.created_at >= cutoff)
@@ -661,6 +661,17 @@ class LLMUsage:
                 query = query.filter(UsageLogEntry.quota_scope == quota_scope)
             result = query.first()
             return self._format_result(result)
+
+    def _filter_usage_key(self, query):
+        """按用途过滤统计；升级前没有用途字段的历史日志归入主模型。"""
+        if self.usage_key == "main":
+            return query.filter(
+                or_(
+                    UsageLogEntry.usage_key == "main",
+                    UsageLogEntry.usage_key.is_(None),
+                )
+            )
+        return query.filter(UsageLogEntry.usage_key == self.usage_key)
 
     @staticmethod
     def _format_result(result) -> Dict[str, Any]:

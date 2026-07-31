@@ -10,7 +10,7 @@
 from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Dict, Any
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import selectinload
 
 from .models import UsageLogEntry, LLModels
@@ -189,6 +189,53 @@ class UsageServicesMixin:
     ) -> Dict[str, Any]:
         """按计费范围汇总用户用量。quota_scope 支持 sys_paid / self_paid / total。"""
         return self._get_user_usage_summary(user_id, since, quota_scope=quota_scope)
+
+    def get_user_usage_by_key(
+        self,
+        user_id: str,
+        usage_key: str = "main",
+        since: Optional[timedelta] = None,
+    ) -> Dict[str, Any]:
+        """按用途槽位汇总用户 Token 用量；升级前日志按主模型兼容统计。"""
+        normalized_key = str(usage_key or "main").strip().lower() or "main"
+        with self.Session() as session:
+            query = session.query(
+                func.coalesce(func.sum(UsageLogEntry.total_tokens), 0).label("tokens"),
+                func.coalesce(func.sum(UsageLogEntry.prompt_tokens), 0).label("prompt_tokens"),
+                func.coalesce(func.sum(UsageLogEntry.completion_tokens), 0).label("completion_tokens"),
+                func.coalesce(func.sum(UsageLogEntry.cached_prompt_tokens), 0).label("cached_prompt_tokens"),
+                func.coalesce(func.sum(UsageLogEntry.cache_miss_prompt_tokens), 0).label("cache_miss_prompt_tokens"),
+                func.count(UsageLogEntry.id).label("requests"),
+                func.coalesce(func.sum(1 - UsageLogEntry.success), 0).label("errors"),
+            ).filter(UsageLogEntry.user_id == str(user_id))
+
+            if normalized_key == "main":
+                query = query.filter(
+                    or_(
+                        UsageLogEntry.usage_key == "main",
+                        UsageLogEntry.usage_key.is_(None),
+                    )
+                )
+            else:
+                query = query.filter(UsageLogEntry.usage_key == normalized_key)
+
+            if since is not None:
+                query = query.filter(
+                    UsageLogEntry.created_at >= datetime.now(UTC) - since
+                )
+
+            result = query.first()
+            return {
+                "usage_key": normalized_key,
+                "tokens": int(result.tokens or 0),
+                "total_tokens": int(result.tokens or 0),
+                "prompt_tokens": int(result.prompt_tokens or 0),
+                "completion_tokens": int(result.completion_tokens or 0),
+                "cached_prompt_tokens": int(result.cached_prompt_tokens or 0),
+                "cache_miss_prompt_tokens": int(result.cache_miss_prompt_tokens or 0),
+                "requests": int(result.requests or 0),
+                "errors": int(result.errors or 0),
+            }
 
     def _get_user_usage_summary(
         self, 

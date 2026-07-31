@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 import json
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -111,6 +112,27 @@ class PaymentRequest(BaseModel):
     remark: str | None = None
 
 
+class ChatCompletionRequest(BaseModel):
+    """OpenAI 兼容聊天请求的最小字段集合。"""
+
+    model: str = "lui-sse-test"
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    stream: bool = False
+    stream_options: dict[str, Any] | None = None
+
+
+SSE_TEST_CONTENT = (
+    "这是lui for all的SSE测试端口。 只在还原当前AI应用最常用的agent交互标准.... "
+    "客户端通过 POST /v1/chat/completions 发起请求，用 stream=true 订阅事件流。"
+    "服务端先发送 assistant 角色首帧，再逐字返回内容，前端按顺序合并 delta.content。"
+    "每个数据帧使用 data: JSON，客户端应处理边界、断开和重连。"
+    "结束时发送 stop 与 usage 完成帧，最后用 data: [DONE] 结束生成。"
+    "端口不调用外部模型，用于验证解析、刷新、取消、重连和字符速率。"
+    "完整接收这段约三百字文本，说明客户端具备接入常见 AI 流式接口的基本能力。"
+    "接入真实模型时只需保留事件结构，再替换内容、模型名和 token 统计。"
+)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -154,6 +176,91 @@ def _must_get_user(user_id: str) -> dict[str, Any]:
     if not user:
         raise HTTPException(status_code=404, detail=f"用户 {user_id} 不存在")
     return user
+
+
+def _chat_usage(request: ChatCompletionRequest) -> dict[str, int]:
+    """提供稳定的测试用 usage 字段，不依赖外部 tokenizer。"""
+    prompt_text = "".join(str(message.get("content") or "") for message in request.messages)
+    prompt_tokens = max(1, len(prompt_text))
+    completion_tokens = len(SSE_TEST_CONTENT)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
+def _chat_chunk(
+    completion_id: str,
+    created: int,
+    model: str,
+    delta: dict[str, Any],
+    finish_reason: str | None = None,
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """构造 OpenAI 兼容的流式响应帧。"""
+    payload: dict[str, Any] = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return payload
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest) -> Response:
+    """模拟最常见的 OpenAI 兼容聊天接口，支持流式和非流式响应。"""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(datetime.now(UTC).timestamp())
+    usage = _chat_usage(request)
+
+    if not request.stream:
+        return Response(
+            content=json.dumps(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": SSE_TEST_CONTENT},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": usage,
+                },
+                ensure_ascii=False,
+            ),
+            media_type="application/json",
+        )
+
+    async def event_generator():
+        yield f"data: {json.dumps(_chat_chunk(completion_id, created, request.model, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
+        next_emit_at = time.perf_counter() + 0.02
+        for character in SSE_TEST_CONTENT:
+            delay = next_emit_at - time.perf_counter()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            yield f"data: {json.dumps(_chat_chunk(completion_id, created, request.model, {'content': character}), ensure_ascii=False)}\n\n"
+            next_emit_at += 0.02
+        yield f"data: {json.dumps(_chat_chunk(completion_id, created, request.model, {} , 'stop', usage), ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.on_event("startup")

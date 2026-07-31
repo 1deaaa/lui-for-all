@@ -9,34 +9,64 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import selectinload
 
 from .models import (
+    MODALITY_EMBEDDING,
+    MODALITY_IMAGE,
+    MODALITY_TEXT,
     LLMPlatform,
     LLModels,
     LLMSysPlatformKey,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    get_model_modalities,
+    is_chat_model,
+    is_embedding_model,
+    is_image_generation_model,
+    normalize_model_modalities,
+    set_model_modalities,
 )
 from .config import DEFAULT_PLATFORM_CONFIGS, SYSTEM_USER_ID
+from .image_adapters import (
+    DEFAULT_IMAGE_GENERATION_ADAPTER,
+    normalize_image_generation_adapter,
+    strip_internal_image_generation_fields,
+)
 from .security import SecurityManager
-from .utils import normalize_base_url
+from .utils import normalize_base_url, normalize_recharge_url
 
 
-def _parse_extra_body_for_response(extra_body_str: Optional[str]) -> Optional[Dict]:
-    """将数据库中的 extra_body 字符串解析为 Python 对象，用于 API 响应。
-    
-    返回:
-        - None: 如果输入为 None、空字符串、"null" 或 "{}"
-        - dict: 解析后的 JSON 对象
-    """
+def _parse_extra_body_raw(extra_body_str: Optional[str]) -> Optional[Dict[str, Any]]:
+    """解析数据库中的 extra_body 原始对象。"""
     if not extra_body_str:
         return None
     try:
         parsed = json.loads(extra_body_str)
-        # 如果解析后是 None 或空字典，统一返回 None
-        if parsed is None or parsed == {}:
+        if parsed is None or parsed == {} or not isinstance(parsed, dict):
             return None
         return parsed
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def _parse_extra_body_for_response(extra_body_str: Optional[str]) -> Optional[Dict]:
+    """解析并清理数据库中的 extra_body。"""
+    return strip_internal_image_generation_fields(_parse_extra_body_raw(extra_body_str))
+
+
+def _normalize_model_image_generation_adapter(
+    *,
+    output_modalities: Optional[List[str]],
+    image_generation_adapter: Optional[str],
+    existing_value: Optional[str] = None,
+) -> Optional[str]:
+    """按模型输出模态决定是否保存生图协议字段。"""
+    _, normalized_output = normalize_model_modalities(None, output_modalities)
+    if MODALITY_IMAGE not in normalized_output:
+        return None
+    return (
+        normalize_image_generation_adapter(image_generation_adapter)
+        or normalize_image_generation_adapter(existing_value)
+        or DEFAULT_IMAGE_GENERATION_ADAPTER
+    )
 
 
 def _normalize_non_negative_limit(raw_value: Optional[int], *, field_label: str, default_value: int) -> int:
@@ -63,6 +93,29 @@ def _normalize_nullable_credit_balance(raw_value: Optional[float], *, field_labe
     if parsed < 0:
         raise ValueError(f"{field_label} 不能小于 0，留空表示无限")
     return parsed
+
+
+def _model_payload_for_response(model: LLModels) -> Dict[str, Any]:
+    """构建前端与 GUI 共用的模型响应字段。"""
+    raw_extra_body = _parse_extra_body_raw(model.extra_body)
+    response_extra_body = strip_internal_image_generation_fields(raw_extra_body)
+    return {
+        "model_id": model.id,
+        "model_name": model.model_name,
+        "display_name": model.display_name,
+        **get_model_modalities(model),
+        "extra_body": response_extra_body,
+        "image_generation_adapter": _normalize_model_image_generation_adapter(
+            output_modalities=get_model_modalities(model)["output_modalities"],
+            image_generation_adapter=getattr(model, "image_generation_adapter", None),
+        ),
+        "temperature": model.temperature,
+        "max_context_tokens": int(model.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS),
+        "max_output_tokens": int(model.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
+        "sys_credit_input_price_per_million": model.sys_credit_input_price_per_million,
+        "sys_credit_cached_input_price_per_million": model.sys_credit_cached_input_price_per_million,
+        "sys_credit_output_price_per_million": model.sys_credit_output_price_per_million,
+    }
 
 
 class AdminMixin:
@@ -136,7 +189,8 @@ class AdminMixin:
         sys_key_info: Optional[Dict[str, Any]],
         api_key_available: bool,
     ) -> Dict[str, str]:
-        can_use_sys_key = user_id == SYSTEM_USER_ID or self.llm_auto_key
+        can_use_sys_key = self._can_use_system_hosted_key(user_id)
+        is_owner_call = self._is_system_hosted_key_owner_call(user_id)
 
         if user_key_saved and user_key_info and user_key_info.get("available"):
             return {
@@ -147,8 +201,12 @@ class AdminMixin:
         if user_key_saved and user_key_info and not user_key_info.get("available"):
             if sys_key_info and sys_key_info.get("available") and can_use_sys_key and api_key_available:
                 return {
-                    "status": "managed_fallback",
-                    "message": f"{user_key_info.get('message')} 当前已自动回退到站长托管 API Key。",
+                    "status": "managed_owner_fallback" if is_owner_call else "managed_fallback",
+                    "message": (
+                        f"{user_key_info.get('message')} 当前已回退到您作为站长配置的托管 API Key。"
+                        if is_owner_call
+                        else f"{user_key_info.get('message')} 当前已自动回退到站长托管 API Key。"
+                    ),
                 }
             return {
                 "status": "user_override_missing_key" if user_key_info.get("status") == "missing_key" else "user_override_needs_reconfigure",
@@ -156,6 +214,11 @@ class AdminMixin:
             }
 
         if sys_key_info and sys_key_info.get("available") and can_use_sys_key and api_key_available:
+            if is_owner_call:
+                return {
+                    "status": "managed_owner_ok",
+                    "message": "当前使用您作为站长配置的托管 API Key。关闭全体用户共享不会影响站长本人使用。",
+                }
             return {
                 "status": "managed_ok",
                 "message": "当前使用站长托管 API Key。",
@@ -190,6 +253,7 @@ class AdminMixin:
         base_url: str,
         api_key: Optional[str] = None,
         user_id: str = None,
+        recharge_url: Optional[str] = None,
     ):
         self._ensure_mutable()
         if not (name and base_url):
@@ -199,6 +263,7 @@ class AdminMixin:
         
         user_id = str(user_id)
         base_url = normalize_base_url(base_url)
+        recharge_url = normalize_recharge_url(recharge_url)
         
         if api_key:
             api_key = SecurityManager.get_instance().encrypt(api_key)
@@ -209,6 +274,7 @@ class AdminMixin:
             if existing_same_url and existing_same_url.disable:
                 existing_same_url.name = name
                 existing_same_url.api_key = api_key
+                existing_same_url.recharge_url = recharge_url
                 existing_same_url.disable = 0
                 session.commit()
                 return existing_same_url
@@ -222,7 +288,12 @@ class AdminMixin:
                 raise ValueError("您已创建过使用该base_url的平台")
             
             p = LLMPlatform(
-                name=name, base_url=base_url, api_key=api_key, user_id=user_id, is_sys=0
+                name=name,
+                base_url=base_url,
+                recharge_url=recharge_url,
+                api_key=api_key,
+                user_id=user_id,
+                is_sys=0,
             )
             session.add(p)
             session.commit()
@@ -234,7 +305,7 @@ class AdminMixin:
         - admin_mode=True: 管理员禁用系统平台
         - admin_mode=False: 用户禁用自定义平台，需要 user_id
 
-        注意：删除平台不属于"创建/修改"范畴，不受 USE_SYS_LLM_CONFIG 锁定限制。
+        注意：软禁用平台不属于"创建/修改"范畴，不受 USE_SYS_LLM_CONFIG 锁定限制。
         """
         # 不调用 _ensure_mutable()：删除 ≠ 创建，锁定模式下也应允许删除
         with self.Session() as session:
@@ -258,7 +329,15 @@ class AdminMixin:
 
             return True
 
-    def update_platform_details(self, user_id: str, platform_id: int, new_name: str, new_base_url: str):
+    def update_platform_details(
+        self,
+        user_id: str,
+        platform_id: int,
+        new_name: str,
+        new_base_url: str,
+        recharge_url: Optional[str] = None,
+        update_recharge_url: bool = False,
+    ):
         self._ensure_mutable()
         user_id = str(user_id)
         if not (new_name and new_base_url):
@@ -294,15 +373,16 @@ class AdminMixin:
             
             plat.name = new_name
             plat.base_url = new_base_url
+            if update_recharge_url:
+                plat.recharge_url = normalize_recharge_url(recharge_url)
             session.commit()
             return True
 
     def update_platform_config(
-        self, user_id: str, platform_id: int, api_key: str
+        self, user_id: str, platform_id: int, api_key: Optional[str]
     ):
-        """更新平台的 API Key"""
+        """更新平台的 API Key；系统平台传空值时清除用户个人覆盖。"""
         user_id = str(user_id)
-        self._ensure_sys_platform_keys_unique_constraint()
         with self.Session() as session:
             plat = session.query(LLMPlatform).filter_by(id=platform_id).first()
             if not plat:
@@ -333,7 +413,6 @@ class AdminMixin:
     def _collect_platform_views(self, session, user_id: str) -> List[Dict[str, Any]]:
         """收集用户可见的所有平台视图"""
         user_id = str(user_id)
-        self._ensure_sys_platform_keys_unique_constraint()
         self._get_sys_config(session)
         
         # 将缓存的系统平台对象合并到当前会话
@@ -390,6 +469,7 @@ class AdminMixin:
                     "platform_id": plat.id,
                     "name": plat.name,
                     "base_url": plat.base_url,
+                    "recharge_url": plat.recharge_url,
                     "api_key_set": bool(api_key),
                     "api_key_status": effective_key_view["status"],
                     "api_key_message": effective_key_view["message"],
@@ -424,6 +504,7 @@ class AdminMixin:
                     "platform_id": plat.id,
                     "name": plat.name,
                     "base_url": plat.base_url,
+                    "recharge_url": plat.recharge_url,
                     "api_key_set": bool(api_key),
                     "api_key_status": "ok" if bool(api_key) else key_info["status"],
                     "api_key_message": "当前平台 API Key 已配置并可用。" if bool(api_key) else key_info["message"],
@@ -449,6 +530,7 @@ class AdminMixin:
                     "platform_id": view["platform_id"],
                     "name": view["name"],
                     "base_url": view["base_url"],
+                    "recharge_url": view.get("recharge_url"),
                     "api_key_set": view["api_key_set"],
                     "api_key_status": view.get("api_key_status", "missing"),
                     "api_key_message": view.get("api_key_message", ""),
@@ -483,6 +565,7 @@ class AdminMixin:
                     "platform_id": view["platform_id"],
                     "name": view["name"],
                     "base_url": view["base_url"],
+                    "recharge_url": view.get("recharge_url"),
                     "api_key_set": view["api_key_set"],
                     "api_key_status": view.get("api_key_status", "missing"),
                     "api_key_message": view.get("api_key_message", ""),
@@ -497,20 +580,8 @@ class AdminMixin:
                     "user_key_message": view.get("user_key_message", ""),
                     "disabled": view["disabled"],
                     "models": [
-                        {
-                            "model_id": m.id,
-                            "model_name": m.model_name,
-                            "display_name": m.display_name,
-                            "extra_body": _parse_extra_body_for_response(m.extra_body),
-                            "temperature": m.temperature,
-                            "max_context_tokens": int(m.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS),
-                            "max_output_tokens": int(m.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
-                            "sys_credit_input_price_per_million": m.sys_credit_input_price_per_million,
-                            "sys_credit_cached_input_price_per_million": m.sys_credit_cached_input_price_per_million,
-                            "sys_credit_output_price_per_million": m.sys_credit_output_price_per_million,
-                        }
+                        _model_payload_for_response(m)
                         for m in view["models"]
-                        if not m.is_embedding
                     ]
                 })
             return results
@@ -526,6 +597,7 @@ class AdminMixin:
                     "platform_is_sys": view["is_sys"],
                     "platform_disabled": view["disabled"],
                     "base_url": view["base_url"],
+                    "recharge_url": view.get("recharge_url"),
                     "api_key_set": view["api_key_set"],
                     "api_key_status": view.get("api_key_status", "missing"),
                     "api_key_message": view.get("api_key_message", ""),
@@ -540,6 +612,7 @@ class AdminMixin:
                     "model_id": model.id,
                     "model_name": model.model_name,
                     "display_name": model.display_name,
+                    **get_model_modalities(model),
                     "extra_body": _parse_extra_body_for_response(model.extra_body),
                     "temperature": model.temperature,
                     "max_context_tokens": int(model.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS),
@@ -551,7 +624,7 @@ class AdminMixin:
                 for view in views
                 if not view["disabled"]
                 for model in view["models"]
-                if not model.is_embedding
+                if is_chat_model(model)
             ]
 
     def get_platforms_with_embeddings(self, user_id: str, only_custom: bool = False) -> List[Dict[str, Any]]:
@@ -569,6 +642,7 @@ class AdminMixin:
                     "platform_id": view["platform_id"],
                     "name": view["name"],
                     "base_url": view["base_url"],
+                    "recharge_url": view.get("recharge_url"),
                     "api_key_set": view["api_key_set"],
                     "api_key_status": view.get("api_key_status", "missing"),
                     "api_key_message": view.get("api_key_message", ""),
@@ -582,17 +656,9 @@ class AdminMixin:
                     "sys_key_message": view.get("sys_key_message", ""),
                     "disabled": view["disabled"],
                     "embeddings": [
-                        {
-                            "model_id": m.id,
-                            "model_name": m.model_name,
-                            "display_name": m.display_name,
-                            "extra_body": _parse_extra_body_for_response(m.extra_body),
-                            "temperature": m.temperature,
-                            "max_context_tokens": int(m.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS),
-                            "max_output_tokens": int(m.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
-                        }
+                        _model_payload_for_response(m)
                         for m in view["models"]
-                        if m.is_embedding
+                        if is_embedding_model(m)
                     ]
                 })
             return results
@@ -613,6 +679,9 @@ class AdminMixin:
         admin_mode: bool = False,
         max_context_tokens: Optional[int] = DEFAULT_MAX_CONTEXT_TOKENS,
         max_output_tokens: Optional[int] = DEFAULT_MAX_OUTPUT_TOKENS,
+        input_modalities: Optional[List[str]] = None,
+        output_modalities: Optional[List[str]] = None,
+        image_generation_adapter: Optional[str] = None,
     ):
         """
         添加模型（统一入口）
@@ -633,6 +702,21 @@ class AdminMixin:
             field_label="最大单次输出",
             default_value=DEFAULT_MAX_OUTPUT_TOKENS,
         )
+        normalized_input_modalities, normalized_output_modalities = normalize_model_modalities(
+            input_modalities,
+            output_modalities,
+        )
+        cleaned_extra_body = strip_internal_image_generation_fields(extra_body)
+        normalized_image_adapter = _normalize_model_image_generation_adapter(
+            output_modalities=normalized_output_modalities,
+            image_generation_adapter=image_generation_adapter,
+        )
+        is_text_capable = MODALITY_TEXT in normalized_output_modalities
+        if not is_text_capable:
+            temperature = None
+            sys_credit_input_price_per_million = None
+            sys_credit_cached_input_price_per_million = None
+            sys_credit_output_price_per_million = None
 
         with self.Session() as session:
             if admin_mode:
@@ -667,8 +751,13 @@ class AdminMixin:
                     existing_display.platform_id = plat.id
                     existing_display.model_name = model_name
                     existing_display.display_name = display_name
-                    existing_display.is_embedding = 0
-                    existing_display.extra_body = json.dumps(extra_body) if extra_body else None
+                    set_model_modalities(
+                        existing_display,
+                        normalized_input_modalities,
+                        normalized_output_modalities,
+                    )
+                    existing_display.extra_body = json.dumps(cleaned_extra_body) if cleaned_extra_body else None
+                    existing_display.image_generation_adapter = normalized_image_adapter
                     existing_display.temperature = temperature
                     existing_display.max_context_tokens = normalized_max_context_tokens
                     existing_display.max_output_tokens = normalized_max_output_tokens
@@ -691,13 +780,14 @@ class AdminMixin:
                 existing_plat = session.query(LLMPlatform).filter_by(id=existing_display.platform_id).first()
                 raise ValueError(f"模型显示名称 '{display_name}' 已存在于平台 '{existing_plat.name}'")
 
-            extra_body_json = json.dumps(extra_body) if extra_body else None
+            extra_body_json = json.dumps(cleaned_extra_body) if cleaned_extra_body else None
 
             m = LLModels(
                 platform_id=plat.id,
                 model_name=model_name,
                 display_name=display_name,
                 extra_body=extra_body_json,
+                image_generation_adapter=normalized_image_adapter,
                 temperature=temperature,
                 max_context_tokens=normalized_max_context_tokens,
                 max_output_tokens=normalized_max_output_tokens,
@@ -710,8 +800,8 @@ class AdminMixin:
                 sys_credit_output_price_per_million=(
                     None if sys_credit_output_price_per_million is None else max(float(sys_credit_output_price_per_million), 0)
                 ),
-                is_embedding=0,
             )
+            set_model_modalities(m, normalized_input_modalities, normalized_output_modalities)
             session.add(m)
             session.commit()
             
@@ -739,81 +829,19 @@ class AdminMixin:
         - admin_mode=False: 普通用户为自定义平台添加
         - admin_mode=True: 管理员为系统平台添加，不受 USE_SYS_LLM_CONFIG 锁定限制
         """
-        self._ensure_mutable(admin_mode=admin_mode)
-        if not (platform_id and model_name and display_name):
-            raise ValueError("platform_id / model_name / display_name 必填")
-
-        normalized_max_context_tokens = _normalize_non_negative_limit(
-            max_context_tokens,
-            field_label="最大上下文",
-            default_value=DEFAULT_MAX_CONTEXT_TOKENS,
+        return self.add_model(
+            platform_id=platform_id,
+            model_name=model_name,
+            display_name=display_name,
+            user_id=user_id,
+            extra_body=extra_body,
+            temperature=temperature,
+            admin_mode=admin_mode,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+            input_modalities=[MODALITY_TEXT],
+            output_modalities=[MODALITY_EMBEDDING],
         )
-        normalized_max_output_tokens = _normalize_non_negative_limit(
-            max_output_tokens,
-            field_label="最大单次输出",
-            default_value=DEFAULT_MAX_OUTPUT_TOKENS,
-        )
-
-        with self.Session() as session:
-            if admin_mode:
-                plat = session.query(LLMPlatform).filter_by(id=platform_id, is_sys=1).first()
-                if not plat:
-                    raise ValueError("系统平台不存在")
-            else:
-                if user_id is None or user_id == SYSTEM_USER_ID:
-                    raise ValueError("为 embedding 绑定真实 user_id")
-                user_id = str(user_id)
-                plat = session.query(LLMPlatform).filter_by(id=platform_id, user_id=user_id, is_sys=0).first()
-                if not plat:
-                    raise ValueError("平台不存在、无权限或为不可修改的系统平台")
-                if self._is_platform_disabled(session, user_id, plat):
-                    raise ValueError("平台已禁用")
-
-            # 检查显示名称在当前平台下唯一（跨平台允许重复）
-            existing_display = session.query(LLModels).filter(
-                LLModels.platform_id == platform_id,
-                LLModels.display_name == display_name
-            ).first()
-            if existing_display:
-                if self._is_model_disabled(existing_display):
-                    existing_display.platform_id = plat.id
-                    existing_display.model_name = model_name
-                    existing_display.display_name = display_name
-                    existing_display.is_embedding = 1
-                    existing_display.extra_body = json.dumps(extra_body) if extra_body else None
-                    existing_display.temperature = temperature
-                    existing_display.max_context_tokens = normalized_max_context_tokens
-                    existing_display.max_output_tokens = normalized_max_output_tokens
-                    self._set_model_disabled(existing_display, False)
-                    session.commit()
-                    if admin_mode:
-                        with self._cache_lock:
-                            self._sys_platforms_cache = None
-                    return existing_display
-                existing_plat = session.query(LLMPlatform).filter_by(id=existing_display.platform_id).first()
-                raise ValueError(f"模型显示名称 '{display_name}' 已存在于平台 '{existing_plat.name}'")
-
-            extra_body_json = json.dumps(extra_body) if extra_body else None
-
-            m = LLModels(
-                platform_id=plat.id,
-                model_name=model_name,
-                display_name=display_name,
-                extra_body=extra_body_json,
-                temperature=temperature,
-                max_context_tokens=normalized_max_context_tokens,
-                max_output_tokens=normalized_max_output_tokens,
-                is_embedding=1,
-            )
-            session.add(m)
-            session.commit()
-            
-            # 如果是系统平台 Embedding，刷新缓存
-            if admin_mode:
-                with self._cache_lock:
-                    self._sys_platforms_cache = None
-            
-            return m
 
     def update_model(
         self,
@@ -832,6 +860,11 @@ class AdminMixin:
         max_output_tokens: Optional[int] = None,
         update_max_context_tokens: bool = False,
         update_max_output_tokens: bool = False,
+        input_modalities: Optional[List[str]] = None,
+        output_modalities: Optional[List[str]] = None,
+        update_modalities: bool = False,
+        image_generation_adapter: Optional[str] = None,
+        update_image_generation_adapter: bool = False,
     ):
         """
         更新模型（统一入口）
@@ -856,9 +889,6 @@ class AdminMixin:
                 if self._is_platform_disabled(session, user_id, plat):
                     raise ValueError("平台已禁用")
 
-            if model.is_embedding:
-                raise ValueError("请使用 Embedding 管理接口修改该模型")
-
             if new_display_name is not None:
                 # 检查显示名称在当前平台下唯一（跨平台允许重复）
                 existing = session.query(LLModels).filter(
@@ -871,10 +901,35 @@ class AdminMixin:
                 model.display_name = new_display_name
 
             if new_extra_body is not None:
-                model.extra_body = json.dumps(new_extra_body) if new_extra_body else None
+                cleaned_extra_body = strip_internal_image_generation_fields(new_extra_body)
+                model.extra_body = json.dumps(cleaned_extra_body) if cleaned_extra_body else None
 
             if update_temperature:
                 model.temperature = new_temperature
+
+            if update_modalities:
+                current_modalities = get_model_modalities(model)
+                set_model_modalities(
+                    model,
+                    input_modalities if input_modalities is not None else current_modalities["input_modalities"],
+                    output_modalities if output_modalities is not None else current_modalities["output_modalities"],
+                )
+
+            if is_image_generation_model(model):
+                if update_image_generation_adapter or not getattr(model, "image_generation_adapter", None):
+                    model.image_generation_adapter = _normalize_model_image_generation_adapter(
+                        output_modalities=get_model_modalities(model)["output_modalities"],
+                        image_generation_adapter=image_generation_adapter,
+                        existing_value=getattr(model, "image_generation_adapter", None),
+                    )
+            else:
+                model.image_generation_adapter = None
+
+            if not is_chat_model(model):
+                model.temperature = None
+                model.sys_credit_input_price_per_million = None
+                model.sys_credit_cached_input_price_per_million = None
+                model.sys_credit_output_price_per_million = None
 
             if update_max_context_tokens:
                 model.max_context_tokens = _normalize_non_negative_limit(
@@ -890,7 +945,7 @@ class AdminMixin:
                     default_value=DEFAULT_MAX_OUTPUT_TOKENS,
                 )
 
-            if admin_mode and update_credit_price:
+            if admin_mode and update_credit_price and is_chat_model(model):
                 if not self.billing_enabled:
                     raise ValueError("请先开启计费系统，再设置模型火柴价格")
                 model.sys_credit_input_price_per_million = (
@@ -949,7 +1004,7 @@ class AdminMixin:
                 if self._is_platform_disabled(session, user_id, plat):
                     raise ValueError("平台已禁用")
 
-            if not model.is_embedding:
+            if not is_embedding_model(model):
                 raise ValueError("目标模型不是 Embedding")
 
             if new_display_name is not None:
@@ -1031,9 +1086,11 @@ class AdminMixin:
     #
     # ⚠️ 重要说明：系统平台的两种数据源
     #
-    # 1. YAML 文件 (matchbox_cfg.yaml)
+    # 1. YAML 文件
+    #    - matchbox_cfg.yaml：平台结构配置（base_url、models），可进入版本控制
+    #    - matchbox_key.yaml：平台 API Key，应被 git 忽略；与结构文件同目录
     #    - 作用：初始化模板、配置分享、备份迁移
-    #    - 特点：修改后需重启服务才生效；便于版本控制和分享（不含密钥）
+    #    - 特点：修改后需重启服务才生效（或通过 admin_import_from_yaml 即时导入）
     #    - 适用场景：无前端环境、快速部署、配置模板分发
     #
     # 2. 数据库 (llm_config.db)
@@ -1042,9 +1099,10 @@ class AdminMixin:
     #    - 适用场景：生产环境、需要动态修改配置
     #
     # 同步策略：
-    #    - 首次启动时，YAML 配置初始化到数据库
+    #    - 首次启动时，YAML 配置（含 matchbox_key.yaml 中的密钥）初始化到数据库
     #    - 后续启动时，仅添加 YAML 中新增的平台，不覆盖已有配置
-    #    - 提供 admin_reload_from_yaml() 方法手动重置为 YAML 配置
+    #    - 提供 admin_reload_from_yaml() 方法手动重置为本地 YAML 配置
+    #    - 提供 admin_import_from_yaml() 方法从上传文件增量同步系统配置
     #
 
     def admin_get_sys_platforms(
@@ -1083,13 +1141,14 @@ class AdminMixin:
                         api_key_raw = decrypted.value
 
                 # 统计模型数量（仅启用的）
-                model_count = len([m for m in plat.models if not m.is_embedding and not self._is_model_disabled(m)])
-                embedding_count = len([m for m in plat.models if m.is_embedding and not self._is_model_disabled(m)])
+                model_count = len([m for m in plat.models if is_chat_model(m) and not self._is_model_disabled(m)])
+                embedding_count = len([m for m in plat.models if is_embedding_model(m) and not self._is_model_disabled(m)])
 
                 entry: Dict[str, Any] = {
                     "platform_id": plat.id,
                     "name": plat.name,
                     "base_url": plat.base_url,
+                    "recharge_url": plat.recharge_url,
                     "api_key_set": api_key_set,
                     "api_key_status": key_info["status"],
                     "api_key_message": key_info["message"],
@@ -1105,17 +1164,23 @@ class AdminMixin:
                     entry["api_key"] = api_key_raw
                     models_list = []
                     for m in sorted(plat.models, key=lambda x: x.sort_order):
-                        extra_body = None
+                        raw_extra_body = None
                         if m.extra_body:
                             try:
-                                extra_body = _json.loads(m.extra_body)
+                                parsed_extra_body = _json.loads(m.extra_body)
+                                raw_extra_body = parsed_extra_body if isinstance(parsed_extra_body, dict) else None
                             except Exception:
                                 pass
+                        extra_body = strip_internal_image_generation_fields(raw_extra_body)
                         models_list.append({
                             "_db_id": m.id,
                             "display_name": m.display_name,
                             "model_name": m.model_name,
-                            "is_embedding": bool(m.is_embedding),
+                            **get_model_modalities(m),
+                            "image_generation_adapter": _normalize_model_image_generation_adapter(
+                                output_modalities=get_model_modalities(m)["output_modalities"],
+                                image_generation_adapter=getattr(m, "image_generation_adapter", None),
+                            ),
                             "disabled": bool(m.disable),
                             "temperature": m.temperature,
                             "max_context_tokens": int(m.max_context_tokens or DEFAULT_MAX_CONTEXT_TOKENS),
@@ -1138,6 +1203,7 @@ class AdminMixin:
         base_url: str,
         api_key: Optional[str] = None,
         sys_credit_balance: Optional[float] = None,
+        recharge_url: Optional[str] = None,
     ) -> LLMPlatform:
         """
         添加系统平台（管理员专用）
@@ -1147,6 +1213,7 @@ class AdminMixin:
             raise ValueError("name / base_url 必填")
         
         base_url = normalize_base_url(base_url)
+        recharge_url = normalize_recharge_url(recharge_url)
         
         with self.Session() as session:
             # 同 base_url 的系统平台若已存在且被禁用，则复活
@@ -1154,6 +1221,7 @@ class AdminMixin:
             if existing_url and existing_url.disable:
                 existing_url.name = name
                 existing_url.disable = 0
+                existing_url.recharge_url = recharge_url
                 existing_url.sys_credit_balance = _normalize_nullable_credit_balance(sys_credit_balance)
                 if api_key:
                     existing_url.api_key = SecurityManager.get_instance().encrypt(api_key)
@@ -1182,6 +1250,7 @@ class AdminMixin:
             plat = LLMPlatform(
                 name=name,
                 base_url=base_url,
+                recharge_url=recharge_url,
                 api_key=encrypted_key,
                 user_id=SYSTEM_USER_ID,
                 is_sys=1,
@@ -1203,6 +1272,8 @@ class AdminMixin:
         new_base_url: Optional[str] = None,
         sys_credit_balance: Optional[float] = None,
         update_sys_credit_balance: bool = False,
+        recharge_url: Optional[str] = None,
+        update_recharge_url: bool = False,
     ) -> bool:
         """
         更新系统平台信息（管理员专用）
@@ -1237,6 +1308,9 @@ class AdminMixin:
 
             if update_sys_credit_balance:
                 plat.sys_credit_balance = _normalize_nullable_credit_balance(sys_credit_balance)
+
+            if update_recharge_url:
+                plat.recharge_url = normalize_recharge_url(recharge_url)
 
             session.commit()
             
@@ -1305,11 +1379,16 @@ class AdminMixin:
 
             # 更新运行时默认 ID
             self._default_platform_id = platform_id
-            first_model = session.query(LLModels).filter(
-                LLModels.platform_id == platform_id,
-                LLModels.is_embedding == 0,
-                LLModels.disable == 0,
-            ).order_by(LLModels.sort_order).first()
+            first_model = next(
+                (
+                    model for model in session.query(LLModels)
+                    .filter(LLModels.platform_id == platform_id, LLModels.disable == 0)
+                    .order_by(LLModels.sort_order)
+                    .all()
+                    if is_chat_model(model)
+                ),
+                None,
+            )
             if first_model:
                 self._default_model_id = first_model.id
 
@@ -1369,20 +1448,22 @@ class AdminMixin:
                 "model_name": "gpt-4o",
                 "display_name": "GPT-4o",
                 "extra_body": {...} or None,
+                "image_generation_adapter": "openai_images" or None,
                 "temperature": 0.7 or None,
-                "max_context_tokens": 200000,
+                "max_context_tokens": 256000,
                 "max_output_tokens": 64000,
                 "sys_credit_input_price_per_million": 100000 or None,
                 "sys_credit_cached_input_price_per_million": 25000 or None,
                 "sys_credit_output_price_per_million": 400000 or None,
-                "is_embedding": 0,
+                "input_modalities": ["text"],
+                "output_modalities": ["text"],
                 "sort_order": 0,
             },
             ...
         ]
 
         同步策略：
-        - 按 model_name + is_embedding 匹配已有模型
+        - 按 model_name + 输入/输出模态匹配已有模型
         - 匹配到 → 更新属性（保留 model.id，外键不断裂）
         - 未匹配到 → 新增
         - 旧列表中有但新列表中没有 → 设 disable=1
@@ -1394,10 +1475,15 @@ class AdminMixin:
 
             existing_models = session.query(LLModels).filter_by(platform_id=platform_id).all()
 
-            # 索引：(model_name, is_embedding) → LLModels
+            # 索引：(model_name, input_modalities, output_modalities) → LLModels
             existing_map = {}
             for m in existing_models:
-                key = (m.model_name, m.is_embedding)
+                modalities = get_model_modalities(m)
+                key = (
+                    m.model_name,
+                    tuple(modalities["input_modalities"]),
+                    tuple(modalities["output_modalities"]),
+                )
                 existing_map[key] = m
 
             seen_keys = set()
@@ -1407,7 +1493,10 @@ class AdminMixin:
                 display_name = cfg.get("display_name", model_name)
                 extra_body = cfg.get("extra_body")
                 temperature = cfg.get("temperature")
-                is_embedding = int(cfg.get("is_embedding", 0))
+                input_modalities, output_modalities = normalize_model_modalities(
+                    cfg.get("input_modalities"),
+                    cfg.get("output_modalities"),
+                )
                 sort_order = cfg.get("sort_order", idx)
                 # 兼容旧字段名 sys_credit_price_per_million_tokens（自动拆分为输入/输出同值）
                 has_input_price = "sys_credit_input_price_per_million" in cfg
@@ -1426,15 +1515,23 @@ class AdminMixin:
                 model_max_context = cfg.get("max_context_tokens") if has_max_context_field else None
                 model_max_output = cfg.get("max_output_tokens") if has_max_output_field else None
 
-                extra_body_json = json.dumps(extra_body) if extra_body else None
-                key = (model_name, is_embedding)
+                cleaned_extra_body = strip_internal_image_generation_fields(extra_body)
+                key = (model_name, tuple(input_modalities), tuple(output_modalities))
+                image_generation_adapter = _normalize_model_image_generation_adapter(
+                    output_modalities=output_modalities,
+                    image_generation_adapter=cfg.get("image_generation_adapter"),
+                    existing_value=getattr(existing_map.get(key), "image_generation_adapter", None),
+                )
+                extra_body_json = json.dumps(cleaned_extra_body) if cleaned_extra_body else None
                 seen_keys.add(key)
 
                 existing = existing_map.get(key)
                 if existing:
                     # 更新已有模型（保留 ID）
                     existing.display_name = display_name
+                    set_model_modalities(existing, input_modalities, output_modalities)
                     existing.extra_body = extra_body_json
+                    existing.image_generation_adapter = image_generation_adapter
                     existing.temperature = temperature
                     if has_input_price or has_cached_input_price or has_output_price or has_legacy_price:
                         existing.sys_credit_input_price_per_million = (
@@ -1467,6 +1564,7 @@ class AdminMixin:
                         model_name=model_name,
                         display_name=display_name,
                         extra_body=extra_body_json,
+                        image_generation_adapter=image_generation_adapter,
                         temperature=temperature,
                         sys_credit_input_price_per_million=(
                             None if model_input_price is None else max(float(model_input_price), 0)
@@ -1487,9 +1585,9 @@ class AdminMixin:
                             field_label="最大单次输出",
                             default_value=DEFAULT_MAX_OUTPUT_TOKENS,
                         ),
-                        is_embedding=is_embedding,
                         sort_order=sort_order,
                     )
+                    set_model_modalities(new_model, input_modalities, output_modalities)
                     session.add(new_model)
 
             # 旧列表中有但新列表中没有 → 禁用
@@ -1516,7 +1614,11 @@ class AdminMixin:
         sys_credit_cached_input_price_per_million: Optional[float] = None,
         sys_credit_output_price_per_million: Optional[float] = None,
         update_credit_price: bool = False,
-        is_embedding: bool = False,
+        input_modalities: Optional[List[str]] = None,
+        output_modalities: Optional[List[str]] = None,
+        update_modalities: bool = False,
+        image_generation_adapter: Optional[str] = None,
+        update_image_generation_adapter: bool = False,
         max_context_tokens: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
         update_max_context_tokens: bool = False,
@@ -1530,40 +1632,32 @@ class AdminMixin:
             display_name: 新的显示名称（可选）
             extra_body: 新的 extra_body 字典（可选，None 表示清除）
             temperature: 新的 temperature（可选，None 表示清除）
-            is_embedding: 是否为 Embedding 模型（用于路由到正确的更新方法）
+            input_modalities: 模型输入模态。
+            output_modalities: 模型输出模态。
         """
         update_temperature = temperature is not None
 
-        if is_embedding:
-            return self.update_embedding(
-                model_id=model_id,
-                new_display_name=display_name,
-                new_extra_body=extra_body,
-                new_temperature=temperature,
-                max_context_tokens=max_context_tokens,
-                max_output_tokens=max_output_tokens,
-                update_temperature=update_temperature,
-                update_max_context_tokens=update_max_context_tokens,
-                update_max_output_tokens=update_max_output_tokens,
-                admin_mode=True,
-            )
-        else:
-            return self.update_model(
-                model_id=model_id,
-                new_display_name=display_name,
-                new_extra_body=extra_body,
-                new_temperature=temperature,
-                max_context_tokens=max_context_tokens,
-                max_output_tokens=max_output_tokens,
-                sys_credit_input_price_per_million=sys_credit_input_price_per_million,
-                sys_credit_cached_input_price_per_million=sys_credit_cached_input_price_per_million,
-                sys_credit_output_price_per_million=sys_credit_output_price_per_million,
-                update_credit_price=update_credit_price,
-                update_temperature=update_temperature,
-                update_max_context_tokens=update_max_context_tokens,
-                update_max_output_tokens=update_max_output_tokens,
-                admin_mode=True,
-            )
+        return self.update_model(
+            model_id=model_id,
+            new_display_name=display_name,
+            new_extra_body=extra_body,
+            new_temperature=temperature,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+            sys_credit_input_price_per_million=sys_credit_input_price_per_million,
+            sys_credit_cached_input_price_per_million=sys_credit_cached_input_price_per_million,
+            sys_credit_output_price_per_million=sys_credit_output_price_per_million,
+            update_credit_price=update_credit_price,
+            update_temperature=update_temperature,
+            update_max_context_tokens=update_max_context_tokens,
+            update_max_output_tokens=update_max_output_tokens,
+            input_modalities=input_modalities,
+            output_modalities=output_modalities,
+            update_modalities=update_modalities,
+            image_generation_adapter=image_generation_adapter,
+            update_image_generation_adapter=update_image_generation_adapter,
+            admin_mode=True,
+        )
 
     def admin_get_user_quota_policy(self, user_id: str) -> Dict[str, Any]:
         """管理员读取指定用户配额策略。"""

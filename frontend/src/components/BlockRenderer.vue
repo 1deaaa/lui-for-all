@@ -11,6 +11,7 @@ import ConfirmPanel from './blocks/ConfirmPanel.vue'
 import FilterForm from './blocks/FilterForm.vue'
 import TimelineCard from './blocks/TimelineCard.vue'
 import DiffCard from './blocks/DiffCard.vue'
+import A2UIBlock from './blocks/A2UIBlock.vue'
 
 const props = defineProps<{
   block: UIBlock
@@ -35,16 +36,24 @@ const blockComponent = computed(() => {
       return TimelineCard
     case 'diff_card':
       return DiffCard
+    case 'a2ui':
+      return A2UIBlock
     default:
-      return TextBlock
+      return null
   }
 })
 </script>
 
 <template>
   <div class="block-renderer">
-    <!-- @vue-ignore -->
-    <component :is="blockComponent" :block="block" />
+    <!-- @vue-ignore 动态组件已由 block_type 白名单完成运行时映射 -->
+    <component v-if="blockComponent" :is="blockComponent" :block="block" />
+    <el-alert
+      v-else
+      type="warning"
+      :closable="false"
+      title="暂不支持此 UI Block"
+    />
   </div>
 </template>
 

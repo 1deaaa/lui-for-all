@@ -9,6 +9,9 @@ get_user_llm() 和 get_spec_sys_llm() 均返回 LLMClient 对象：
     - usage：轻量句柄，提供 get_usage_last_24h() 等用量查询方法
     - max_context_tokens / max_output_tokens：当前模型的上下文上限与单次输出上限
 
+get_user_llm()：生产环境首选，自动解析用户绑定/默认模型。
+get_spec_sys_llm()：轻量入口，按显示名称直接指定系统模型，适用于本地测试、调试脚本、无需用户系统的一次性调用。
+
 关于 streaming 参数
 -------------------
 ⚠️ 不要传入 streaming 参数。
@@ -19,6 +22,7 @@ get_user_llm() 和 get_spec_sys_llm() 均返回 LLMClient 对象：
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
+import json
 
 from .models import (
     LLMPlatform,
@@ -28,8 +32,20 @@ from .models import (
     UserEmbeddingSelection,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    get_model_modalities,
+    is_chat_model,
+    is_embedding_model,
+    is_image_generation_model,
 )
 from .config import SYSTEM_USER_ID, DEFAULT_USAGE_KEY
+from .image_adapters import (
+    DEFAULT_IMAGE_GENERATION_ADAPTER,
+    normalize_image_generation_adapter,
+    strip_internal_image_generation_fields,
+)
+
+
+DIRECTOR_DEFAULT_USAGE_KEY = "reason"
 
 
 def _load_chat_runtime():
@@ -42,6 +58,11 @@ def _load_chat_runtime():
 
 class LLMBuilderMixin:
     """LLM 客户端构建功能"""
+
+    @staticmethod
+    def _agent_default_usage_key(agent_name: Optional[str]) -> str:
+        """返回没有显式绑定时的 Agent 默认用途。"""
+        return DIRECTOR_DEFAULT_USAGE_KEY if agent_name == "agent_director" else DEFAULT_USAGE_KEY
 
     def _apply_sdk_request_compat(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """为 LangChain/OpenAI SDK 调用补充兼容参数。"""
@@ -87,7 +108,7 @@ class LLMBuilderMixin:
             # 按 sort_order 排序获取第一个可用模型
             sorted_models = sorted(plat.models, key=lambda m: m.sort_order)
             for m in sorted_models:
-                if not m.is_embedding and not self._is_model_disabled(m):
+                if is_chat_model(m) and not self._is_model_disabled(m):
                     return plat, m
         
         raise RuntimeError("无法找到可用的默认平台和模型")
@@ -137,7 +158,7 @@ class LLMBuilderMixin:
             if auto_fix:
                 # 尝试使用平台的第一个模型
                 if plat.models:
-                    model = next((m for m in plat.models if not m.is_embedding and not self._is_model_disabled(m)), None)
+                    model = next((m for m in plat.models if is_chat_model(m) and not self._is_model_disabled(m)), None)
                     if not model:
                         raise ValueError(f"平台 '{plat.name}' 没有可用的 LLM 模型")
                     if usage_slot:
@@ -147,21 +168,21 @@ class LLMBuilderMixin:
             else:
                 raise ValueError(f"模型 '{model.display_name}' 不属于平台 '{plat.name}'")
 
-        # 防止 embedding 模型进入 LLM 解析
-        if model.is_embedding:
+        # 防止非文本生成模型进入 LLM 解析
+        if not is_chat_model(model):
             if auto_fix:
-                fallback = next((m for m in plat.models if not m.is_embedding and not self._is_model_disabled(m)), None)
+                fallback = next((m for m in plat.models if is_chat_model(m) and not self._is_model_disabled(m)), None)
                 if not fallback:
                     raise ValueError(f"平台 '{plat.name}' 没有可用的 LLM 模型")
                 model = fallback
                 if usage_slot:
                     usage_slot.selected_model_id = model.id
             else:
-                raise ValueError("Embedding 模型不可用于 LLM")
+                raise ValueError("该模型不可用于文本生成")
 
         if self._is_model_disabled(model):
             if auto_fix:
-                fallback = next((m for m in plat.models if not m.is_embedding and not self._is_model_disabled(m)), None)
+                fallback = next((m for m in plat.models if is_chat_model(m) and not self._is_model_disabled(m)), None)
                 if not fallback:
                     raise ValueError(f"平台 '{plat.name}' 没有可用的 LLM 模型")
                 model = fallback
@@ -216,7 +237,7 @@ class LLMBuilderMixin:
         1. agent_name: 业务首选。从数据库查询该 Agent 的绑定配置。
         2. platform_id & model_id: 直接指定特定的平台和模型 ID。
         3. usage_key: 明确指定用途槽位（如 'main', 'fast'）。
-        4. 默认值: 如果以上均未提供，使用 'main' 用途。
+        4. 默认值: Director 使用 'reason'，其他调用使用 'main'。
 
         用法示例:
             # 流式调用
@@ -230,7 +251,7 @@ class LLMBuilderMixin:
 
             # 查询用量
             usage = client.usage.get_usage_last_24h()
-            print(f"过去24小时: {usage['total_tokens']} tokens, {usage['requests']} 次请求")
+            print(f"Last 24h: {usage['total_tokens']} tokens, {usage['requests']} requests")
         """
         ChatUniversal, UsageTrackingCallback, LLMUsage, LLMClient = _load_chat_runtime()
         effective_user_id = user_id if user_id is not None else SYSTEM_USER_ID
@@ -253,7 +274,9 @@ class LLMBuilderMixin:
                             'model_id': binding.model_id
                         }
                     else:
-                        normalized_usage = self._normalize_usage_key(binding.usage_key)
+                        normalized_usage = self._normalize_usage_key(
+                            binding.usage_key or self._agent_default_usage_key(agent_name)
+                        )
 
             # 2. 处理直接指定的 ID
             if not direct_config and not normalized_usage:
@@ -265,7 +288,9 @@ class LLMBuilderMixin:
 
             # 3. 处理 usage_key (如果以上均未提供)
             if not direct_config and not normalized_usage:
-                normalized_usage = self._normalize_usage_key(usage_key)
+                normalized_usage = self._normalize_usage_key(
+                    usage_key or self._agent_default_usage_key(agent_name)
+                )
 
             # 4. 解析最终的 platform_id 和 model_id
             usage_slot = None
@@ -273,17 +298,17 @@ class LLMBuilderMixin:
                 platform_id = direct_config.get('platform_id')
                 model_id = direct_config.get('model_id')
                 
-                # 如果 direct 配置不完整，强制回退到 main 槽位以保证可用性
+                # 如果 direct 配置不完整，回退到该 Agent 的默认用途以保证可用性
                 if not platform_id or not model_id:
-                    normalized_usage = DEFAULT_USAGE_KEY
+                    normalized_usage = self._agent_default_usage_key(agent_name)
                     usage_slot = self._get_usage_slot(session, effective_user_id, normalized_usage)
                     platform_id = usage_slot.selected_platform_id
                     model_id = usage_slot.selected_model_id
             else:
                 usage_slot = self._get_usage_slot(session, effective_user_id, normalized_usage)
                 if not usage_slot:
-                    # 兜底：如果指定的用途不存在，回退到 main
-                    normalized_usage = DEFAULT_USAGE_KEY
+                    # 兜底：如果指定的用途不存在，回退到该 Agent 的默认用途
+                    normalized_usage = self._agent_default_usage_key(agent_name)
                     usage_slot = self._get_usage_slot(session, effective_user_id, normalized_usage)
                 
                 platform_id = usage_slot.selected_platform_id
@@ -312,6 +337,9 @@ class LLMBuilderMixin:
             api_key = resolved["api_key"]
             base_url = resolved.get("base_url", platform_obj.base_url)
             quota_scope = resolved.get("quota_scope")
+            tracking_usage_key = self._normalize_usage_key(
+                usage_key or normalized_usage or self._agent_default_usage_key(agent_name)
+            )
  
             if not api_key:
                 raise ValueError(f"平台 '{platform_obj.name}' 的 API Key 未设置。请在 AI 设置中填写或配置服务器环境变量。")
@@ -333,6 +361,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                usage_key=tracking_usage_key,
                 billing_enabled=self.billing_enabled,
             )
  
@@ -355,6 +384,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                usage_key=tracking_usage_key,
             )
 
             model_limits = self._resolve_model_limits(model_obj)
@@ -389,14 +419,14 @@ class LLMBuilderMixin:
             plat = session.query(LLMPlatform).filter_by(id=platform_id).first() if platform_id else None
             model = session.query(LLModels).filter_by(id=model_id).first() if model_id else None
 
-            if not plat or not model or not model.is_embedding:
+            if not plat or not model or not is_embedding_model(model):
                 # 回退：找第一个可用的 embedding
                 plat = None
                 model = None
                 platforms = session.query(LLMPlatform).all()
                 for p in platforms:
                     for m in p.models:
-                        if m.is_embedding and not self._is_model_disabled(m):
+                        if is_embedding_model(m) and not self._is_model_disabled(m):
                             api_key = self._get_effective_api_key(session, effective_user_id, p)
                             if api_key:
                                 plat = p
@@ -412,7 +442,10 @@ class LLMBuilderMixin:
             if not api_key:
                 raise ValueError(f"平台 '{plat.name}' 的 API Key 未设置。")
 
+            kwargs = self._apply_model_params(model, kwargs)
             kwargs = self._apply_sdk_request_compat(kwargs)
+            # Embedding 接口不支持 stream_usage，避免 OpenAI SDK 报错
+            kwargs.pop("stream_usage", None)
 
             return OpenAIEmbeddings(
                 model=model.model_name,
@@ -422,21 +455,159 @@ class LLMBuilderMixin:
                 **kwargs,
             )
 
+    def list_user_image_generation_models(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """列出当前用户可见的生图模型。"""
+        effective_user_id = str(user_id if user_id is not None else SYSTEM_USER_ID)
+        rows: list[dict[str, Any]] = []
+
+        with self.Session() as session:
+            platforms = (
+                session.query(LLMPlatform)
+                .all()
+            )
+            for platform in sorted(platforms, key=lambda item: int(getattr(item, "sort_order", 0) or 0)):
+                if self._is_platform_disabled(session, effective_user_id, platform):
+                    continue
+                if not platform.is_sys and str(platform.user_id) != effective_user_id:
+                    continue
+
+                api_access = self._get_effective_api_access(session, effective_user_id, platform)
+                models = sorted(platform.models, key=lambda item: int(getattr(item, "sort_order", 0) or 0))
+                for model in models:
+                    if self._is_model_disabled(model) or not is_image_generation_model(model):
+                        continue
+                    rows.append({
+                        "platform_id": platform.id,
+                        "platform_name": platform.name,
+                        "platform_is_sys": bool(platform.is_sys),
+                        "base_url": platform.base_url,
+                        "api_key_set": bool(api_access.get("api_key")),
+                        "model_id": model.id,
+                        "model_name": model.model_name,
+                        "display_name": model.display_name or model.model_name,
+                        **get_model_modalities(model),
+                        "image_generation_adapter": (
+                            normalize_image_generation_adapter(getattr(model, "image_generation_adapter", None))
+                            or DEFAULT_IMAGE_GENERATION_ADAPTER
+                        ),
+                    })
+        return rows
+
+    def resolve_user_image_generation_model(
+        self,
+        user_id: Optional[str] = None,
+        platform_id: Optional[int] = None,
+        model_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """解析当前用户可用的生图模型与凭据，供图片适配层调用。"""
+        effective_user_id = str(user_id if user_id is not None else SYSTEM_USER_ID)
+
+        with self.Session() as session:
+            platform = session.query(LLMPlatform).filter_by(id=platform_id).first() if platform_id else None
+            model = session.query(LLModels).filter_by(id=model_id).first() if model_id else None
+
+            if platform is not None and self._is_platform_disabled(session, effective_user_id, platform):
+                raise ValueError("平台已禁用")
+            if platform is not None and not platform.is_sys and str(platform.user_id) != effective_user_id:
+                raise ValueError("无权访问该平台")
+            if model is not None and self._is_model_disabled(model):
+                raise ValueError("模型已禁用")
+            if platform is not None and model is not None and model.platform_id != platform.id:
+                raise ValueError("模型不属于该平台")
+            if model is not None and not is_image_generation_model(model):
+                raise ValueError("目标模型不具备生图能力")
+
+            if platform is None or model is None:
+                platform = None
+                model = None
+                platforms = (
+                    session.query(LLMPlatform)
+                    .all()
+                )
+                for candidate_platform in sorted(platforms, key=lambda item: int(getattr(item, "sort_order", 0) or 0)):
+                    if self._is_platform_disabled(session, effective_user_id, candidate_platform):
+                        continue
+                    if not candidate_platform.is_sys and str(candidate_platform.user_id) != effective_user_id:
+                        continue
+                    api_access = self._get_effective_api_access(session, effective_user_id, candidate_platform)
+                    if not api_access.get("api_key"):
+                        continue
+                    for candidate_model in sorted(candidate_platform.models, key=lambda item: int(getattr(item, "sort_order", 0) or 0)):
+                        if self._is_model_disabled(candidate_model):
+                            continue
+                        if is_image_generation_model(candidate_model):
+                            platform = candidate_platform
+                            model = candidate_model
+                            break
+                    if platform is not None and model is not None:
+                        break
+
+            if platform is None or model is None:
+                raise ValueError("未找到可用的生图模型，请先在模型设置中添加具备生图能力的模型")
+
+            api_access = self._get_effective_api_access(session, effective_user_id, platform)
+            api_key = api_access.get("api_key")
+            quota_scope = api_access.get("quota_scope")
+            if not api_key:
+                raise ValueError(f"平台 '{platform.name}' 的 API Key 未设置")
+
+            self.enforce_user_credit(
+                session,
+                effective_user_id,
+                platform.id,
+                model.id,
+                quota_scope,
+            )
+
+            extra_body: dict[str, Any] = {}
+            if model.extra_body:
+                try:
+                    parsed_extra = json.loads(model.extra_body)
+                    if isinstance(parsed_extra, dict):
+                        extra_body = strip_internal_image_generation_fields(parsed_extra) or {}
+                except json.JSONDecodeError:
+                    extra_body = {}
+            image_generation_adapter = (
+                normalize_image_generation_adapter(getattr(model, "image_generation_adapter", None))
+                or DEFAULT_IMAGE_GENERATION_ADAPTER
+            )
+
+            return {
+                "user_id": effective_user_id,
+                "platform_id": platform.id,
+                "platform_name": platform.name,
+                "base_url": platform.base_url,
+                "model_id": model.id,
+                "model_name": model.model_name,
+                "display_name": model.display_name or model.model_name,
+                "api_key": api_key,
+                "quota_scope": quota_scope,
+                **get_model_modalities(model),
+                "image_generation_adapter": image_generation_adapter,
+                "extra_body": extra_body,
+            }
+
     def get_spec_sys_llm(
         self,
         platform_name: str,
         model_display_name: str,
         user_id: Optional[str] = None,
         agent_name: Optional[str] = None,
+        usage_key: Optional[str] = None,
         **kwargs: Any
     ) -> LLMClient:
         """
-        获取特定的系统预设模型，返回 LLMClient 对象。
+        按显示名称直接获取指定系统模型的轻量入口，适用于：
+        - 本地快速测试、调试脚本
+        - 不需要用户系统的一次性调用
+        - 明确知道目标平台/模型显示名的场景
 
-        ⚠️ 警告：此方法依赖平台显示名称定位模型，禁止修改对应平台的显示名，否则会报错。
+        ⚠️ 此方法通过显示名称定位平台与模型，调用期间对应显示名不可修改。
+        生产环境或需要动态模型选择时，请优先使用 get_user_llm()。
+
         注意：支持传入 user_id 以便使用用户自定义的 API Key 覆盖。
 
-        ⚠️ 关于 streaming 参数：
+        关于 streaming 参数：
         不要传入 streaming 参数，流式/非流式由调用方式决定：
           - 非流式：llm.invoke() / llm.ainvoke()
           - 流式：  llm.stream() / llm.astream()
@@ -458,6 +629,7 @@ class LLMBuilderMixin:
             api_access = self._get_effective_api_access(session, effective_user_id, plat)
             api_key = api_access.get("api_key")
             quota_scope = api_access.get("quota_scope")
+            tracking_usage_key = self._normalize_usage_key(usage_key)
             if not api_key:
                 raise ValueError(f"平台 '{platform_name}' 的 API Key 未设置")
 
@@ -486,6 +658,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                usage_key=tracking_usage_key,
                 billing_enabled=self.billing_enabled,
             )
  
@@ -506,6 +679,7 @@ class LLMBuilderMixin:
                 session_maker=self.Session,
                 agent_name=agent_name,
                 quota_scope=quota_scope,
+                usage_key=tracking_usage_key,
             )
 
             model_limits = self._resolve_model_limits(model)

@@ -173,6 +173,7 @@ class CapabilityGraphBuilder:
             content, _, _ = await llm_client.chat_completion(
                 messages,
                 response_format={"type": "json_object"},
+                usage_key="reason",
             )
             
             # --- 核心测试逻辑：无条件保存原始返回到 workspace 目录（截断也会写入）---

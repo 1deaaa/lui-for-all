@@ -84,6 +84,7 @@ class StreamHTTPCollector:
                 async with client.stream(
                     "GET", url, headers=headers, params=params
                 ) as response:
+                    response.raise_for_status()
                     async for line in response.aiter_lines():
                         # 解析 SSE 行
                         if line.startswith("data:"):

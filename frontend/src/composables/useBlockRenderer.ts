@@ -19,6 +19,7 @@ const defaultBlockComponents: BlockComponentMap = {
   filter_form: () => import('@/components/blocks/FilterForm.vue'),
   timeline_card: () => import('@/components/blocks/TimelineCard.vue'),
   diff_card: () => import('@/components/blocks/DiffCard.vue'),
+  a2ui: () => import('@/components/blocks/A2UIBlock.vue'),
 }
 
 /**
@@ -45,7 +46,7 @@ export function useBlockRenderer(customComponents?: BlockComponentMap) {
    */
   function getComponent(block: UIBlock) {
     const blockType = block.block_type as string
-    return componentMap[blockType] || componentMap.text_block
+    return componentMap[blockType] || null
   }
 
   /**
@@ -123,6 +124,7 @@ export function useBlockRenderer(customComponents?: BlockComponentMap) {
       filter_form: 90,
       timeline_card: 40,
       diff_card: 50,
+      a2ui: 60,
     }
     return priorityMap[block.block_type] || 0
   }

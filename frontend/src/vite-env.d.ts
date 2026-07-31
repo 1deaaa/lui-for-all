@@ -10,6 +10,27 @@ export type BlockType =
   | 'filter_form'
   | 'timeline_card'
   | 'diff_card'
+  | 'a2ui'
+
+export type A2UIAction = {
+  action_type: 'submit' | 'copy'
+  label?: string | null
+  payload?: Record<string, unknown>
+}
+
+export type A2UIComponent = {
+  component_id: string
+  component_type: 'heading' | 'text' | 'metric' | 'table' | 'status' | 'button'
+  props: Record<string, any>
+  actions?: A2UIAction[]
+}
+
+export interface A2UIBlock {
+  block_type: 'a2ui'
+  version: '0.1'
+  surface_id: string
+  components: A2UIComponent[]
+}
 
 export interface UIBlock {
   block_type: BlockType
