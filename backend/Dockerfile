@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20-alpine AS frontend-builder
+FROM node:20.19-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 ENV PNPM_HOME=/pnpm
