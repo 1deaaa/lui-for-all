@@ -241,7 +241,7 @@ Quick integration steps:
 
 ### Requirements
 
-- Python 3.11+ (Conda recommended)
+- Python 3.13 (Conda recommended)
 - Node.js 18+ and pnpm 10
 - OpenAPI is recommended (`/openapi.json` or local file)
 - If OpenAPI is unavailable, provide a reachable source path (`source_path`) for AST-based discovery

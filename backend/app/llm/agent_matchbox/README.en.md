@@ -163,7 +163,7 @@ python matchbox_cfg_gui.py
 
 - Initialize Matchbox in app startup lifecycle
 - Call `reset_matchbo()` on shutdown when needed
-- Use `AGENT_MATCHBOX_HOME` to control runtime files (DB/.env/YAML/state) location
+- DB/.env/YAML/state default to the Matchbox component root. A host can call `set_default_mgr_home(path)` before initialization to choose its own default, while the higher-priority `AGENT_MATCHBOX_HOME` environment variable remains available for deployment overrides.
 - Rebuild containers after updates to avoid stale mounted runtime artifacts
 
 ---

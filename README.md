@@ -349,7 +349,7 @@ OpenClaw 的最大价值，是把自然语言直接变成可持续执行的自�
 
 ### 环境要求
 
-- Python 3.11+（推荐 Conda 管理）
+- Python 3.13（推荐 Conda 管理）
 - Node.js 18+ + pnpm 10
 - 推荐目标项目暴露 OpenAPI 文档（`/openapi.json` 或文件路径）
 - 若未暴露 OpenAPI，需提供可访问源码路径（`source_path`）以启用 AST 路由发现

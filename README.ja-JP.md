@@ -240,7 +240,7 @@ flowchart TD
 
 ### 必要環境
 
-- Python 3.11+（Conda 推奨）
+- Python 3.13（Conda 推奨）
 - Node.js 18+ / pnpm 10
 - OpenAPI 公開を推奨（`/openapi.json` など）
 - OpenAPI 未公開の場合は、AST 発見のため `source_path`（アクセス可能なソースコードパス）を指定

@@ -140,7 +140,7 @@
 3. **生命周期约束**：
   - 启动初始化，关闭阶段调用 `reset_matchbo()`，避免导入即初始化的副作用。
 4. **运行目录治理**：
-  - 通过 `AGENT_MATCHBOX_HOME` 统一指定 DB/.env/YAML/state 的运行位置。
+  - 默认从 Matchbox 组件根目录读取 DB/.env/YAML/state。宿主可在初始化前调用 `set_default_mgr_home(path)` 设置自己的默认目录；部署环境仍可通过优先级更高的 `AGENT_MATCHBOX_HOME` 显式覆盖。
 
 ### 推荐链路（开发者实践）
 
@@ -418,7 +418,7 @@ POST   /api/ai/admin/reload-from-yaml       # 从配置文件强制重置数据�
     - **最佳实践**：始终使用环境变量。GUI 工具可以帮你轻松实现这一点。
 
 3. **数据库文件**
-    - 默认会在同目录下生成 `llm_config.db`。这是一个SQLite文件，包含了所有用户数据和同步后的系统平台数据。请妥善保管。
+    - 默认会在 Matchbox 组件根目录生成 `llm_config.db`。宿主可在初始化前调用 `set_default_mgr_home(path)` 设置默认目录，或通过优先级更高的 `AGENT_MATCHBOX_HOME` 显式指定运行目录。该 SQLite 文件包含所有用户数据和同步后的系统平台数据，请妥善保管。
     - 如果需要更换数据库，可以修改 `AIManager` 类中的 `create_engine` 部分。
 
 4. **模型探测失败？**

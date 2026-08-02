@@ -86,13 +86,15 @@ class LLMConfigGUI(
         return str(n)
 
     def _bootstrap_startup(self):
-        """启动自检：强制主密钥、建表初始化、再加载数据库配置。"""
+        """启动自检：先建表，再处理主密钥、同步默认配置并加载数据库。"""
         try:
+            self.ai_manager.ensure_database_schema()
+
             if not self._ensure_master_key_ready_on_startup():
                 self.root.after(0, self.root.destroy)
                 return
 
-            self.ai_manager.ensure_database_ready()
+            self.ai_manager.initialize_defaults()
             self.load_config_from_db()
         except Exception as e:
             messagebox.showerror("初始化失败", f"GUI 启动失败: {e}")

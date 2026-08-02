@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.discovery.adapters.base import FrameAdapter, RouteSnippet, join_paths, normalize_path
+from app.discovery.adapters.base import (
+    FrameAdapter,
+    RouteSnippet,
+    compile_tree_sitter_query,
+    join_paths,
+    normalize_path,
+    query_tree_sitter_captures,
+)
 from app.discovery.adapters.paradigms import (
     AST_PARADIGM_DECORATOR_METADATA,
     AST_PARADIGM_ROUTE_TABLE,
@@ -311,11 +318,11 @@ class DjangoUrlconfAdapter(FrameAdapter):
         language, parser = ts_components
 
         try:
-            def_query = language.query("""
+            def_query = compile_tree_sitter_query(language, """
 (function_definition) @function
 (class_definition) @class
 """)
-            call_query = language.query("(call) @call")
+            call_query = compile_tree_sitter_query(language, "(call) @call")
         except Exception as exc:
             print(f"[FrameAdapter:{self.NAME}] ⚠️ Query 编译失败: {exc}")
             return self._fallback_extract_all_routes()
@@ -348,7 +355,7 @@ class DjangoUrlconfAdapter(FrameAdapter):
             module = file_to_module.get(file_path, "")
             lines = source_bytes.decode("utf-8", errors="replace").splitlines()
 
-            for node, cap_name in def_query.captures(tree.root_node):
+            for node, cap_name in query_tree_sitter_captures(def_query, tree.root_node):
                 if cap_name not in {"function", "class"}:
                     continue
 
@@ -481,7 +488,7 @@ class DjangoUrlconfAdapter(FrameAdapter):
             source_text = source_bytes.decode("utf-8", errors="replace")
             import_maps = _collect_import_maps(source_text, current_module)
 
-            for call_node, cap_name in call_query.captures(tree.root_node):
+            for call_node, cap_name in query_tree_sitter_captures(call_query, tree.root_node):
                 if cap_name != "call":
                     continue
 

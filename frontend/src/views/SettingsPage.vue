@@ -319,6 +319,20 @@ async function refreshManagerSnapshot(showError = true) {
   }
 }
 
+function getMainModelPayload() {
+  return {
+    llm_api_base: settings.value.llm_api_base,
+    llm_api_key: settings.value.llm_api_key,
+    llm_model_id: settings.value.llm_model_id,
+    llm_extra_body: settings.value.llm_extra_body,
+  }
+}
+
+async function persistMainModelConfig() {
+  await axios.put('/api/llm-status/main', getMainModelPayload())
+  await refreshManagerSnapshot(false)
+}
+
 async function loadSettings() {
   loading.value = true
   try {
@@ -355,18 +369,12 @@ async function saveSettings(silent = false) {
         safety_default_action: settings.value.safety_default_action,
         mcp_api_token: settings.value.mcp_api_token,
       }),
-      axios.put('/api/llm-status/main', {
-        llm_api_base: settings.value.llm_api_base,
-        llm_api_key: settings.value.llm_api_key,
-        llm_model_id: settings.value.llm_model_id,
-        llm_extra_body: settings.value.llm_extra_body,
-      }),
+      persistMainModelConfig(),
     ])
 
     if (!silent) {
       ElMessage.success(t('settings.messages.saved'))
     }
-    await refreshManagerSnapshot(false)
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, t('settings.messages.saveFailed')))
   } finally {
@@ -691,12 +699,12 @@ async function switchPlatformAsMain(platformId: number) {
 }
 
 async function testConnection() {
-  await loadMainModelConfig(false)
   formatApiBase()
   formatExtraBody()
   testing.value = true
   testStatus.value = null
   try {
+    await persistMainModelConfig()
     const response = await axios.post<{ reply?: string; speed?: number | null }>('/api/llm-status/test', {
       llm_api_base: settings.value.llm_api_base,
       llm_api_key: settings.value.llm_api_key,
@@ -715,7 +723,6 @@ async function testConnection() {
 }
 
 async function fetchModels() {
-  await loadMainModelConfig(false)
   if (!settings.value.llm_api_base) {
     ElMessage.warning(t('settings.messages.apiBaseRequired'))
     return
@@ -724,6 +731,7 @@ async function fetchModels() {
   formatApiBase()
   fetchingModels.value = true
   try {
+    await persistMainModelConfig()
     const response = await axios.post<{ models?: string[] }>('/api/llm-status/probe', {
       llm_api_base: settings.value.llm_api_base,
       llm_api_key: settings.value.llm_api_key,
@@ -995,9 +1003,6 @@ onMounted(async () => {
 
                   <el-form-item :label="t('settings.llm.apiBaseLabel')">
                     <el-input v-model="settings.llm_api_base" :placeholder="t('settings.llm.apiBasePlaceholder')" @blur="formatApiBase" />
-                  </el-form-item>
-                  <el-form-item :label="t('settings.llm.apiKeyLabel')">
-                    <el-input v-model="settings.llm_api_key" type="password" show-password :placeholder="t('settings.llm.apiKeyPlaceholder')" />
                   </el-form-item>
                   <el-form-item :label="t('settings.llm.modelIdLabel')">
                     <div class="model-select-wrap">

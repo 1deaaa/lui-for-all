@@ -17,63 +17,42 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import importlib
 from pathlib import Path
 from typing import Any, Iterator
 
 from app.discovery.adapters.paradigms import normalize_ast_paradigms
 
 try:
-    try:
-        _ts_module = importlib.import_module("tree_sitter_languages")
-    except ImportError:
-        _ts_module = importlib.import_module("tree_sitter_language_pack")
-    
-    _raw_get_language = getattr(_ts_module, "get_language")
-    get_parser = getattr(_ts_module, "get_parser")
-
-    class QueryWrapper:
-        def __init__(self, raw_query):
-            self._raw_query = raw_query
-            
-        def captures(self, node):
-            import tree_sitter
-            cursor = tree_sitter.QueryCursor(self._raw_query)
-            raw_captures = cursor.captures(node)
-            result = []
-            for name, nodes in raw_captures.items():
-                for n in nodes:
-                    result.append((n, name))
-            result.sort(key=lambda x: x[0].start_byte)
-            return result
-
-        def __getattr__(self, name):
-            return getattr(self._raw_query, name)
-
-    class LanguageWrapper:
-        def __init__(self, raw_lang):
-            self._raw_lang = raw_lang
-            
-        def query(self, query_text):
-            import tree_sitter
-            raw_query = tree_sitter.Query(self._raw_lang, query_text)
-            return QueryWrapper(raw_query)
-
-        def __getattr__(self, name):
-            return getattr(self._raw_lang, name)
-
-    def get_language(name):
-        lang = _raw_get_language(name)
-        if not hasattr(lang, "query"):
-            return LanguageWrapper(lang)
-        return lang
-
+    import tree_sitter
+    from tree_sitter_language_pack import get_language, get_parser
 except Exception as exc:  # pragma: no cover - 依赖缺失时走降级路径
+    tree_sitter = None
     get_language = None
     get_parser = None
     _TREE_SITTER_IMPORT_ERROR = str(exc)
 else:
     _TREE_SITTER_IMPORT_ERROR = None
+
+
+def compile_tree_sitter_query(language: Any, query_text: str) -> Any:
+    """使用新版 Tree-sitter API 编译查询。"""
+    if tree_sitter is None:
+        raise RuntimeError("Tree-sitter 依赖不可用")
+    return tree_sitter.Query(language, query_text)
+
+
+def query_tree_sitter_captures(query: Any, node: Any) -> list[tuple[Any, str]]:
+    """执行新版 QueryCursor，并归一化为适配器使用的捕获列表。"""
+    if tree_sitter is None:
+        raise RuntimeError("Tree-sitter 依赖不可用")
+
+    raw_captures = tree_sitter.QueryCursor(query).captures(node)
+    captures: list[tuple[Any, str]] = []
+    for capture_name, nodes in raw_captures.items():
+        for captured_node in nodes:
+            captures.append((captured_node, capture_name))
+    captures.sort(key=lambda item: item[0].start_byte)
+    return captures
 
 
 _LANGUAGE_CACHE: dict[str, Any] = {}
@@ -410,7 +389,7 @@ class FrameAdapter(ABC):
             return self._fallback_extract_all_routes()
 
         try:
-            query = language.query(query_text)
+            query = compile_tree_sitter_query(language, query_text)
         except Exception as exc:
             print(f"[FrameAdapter:{self.NAME}] ⚠️ Query 编译失败: {exc}")
             return self._fallback_extract_all_routes()
@@ -430,7 +409,7 @@ class FrameAdapter(ABC):
                 continue
 
             try:
-                captures = query.captures(tree.root_node)
+                captures = query_tree_sitter_captures(query, tree.root_node)
             except Exception as exc:
                 print(f"[FrameAdapter:{self.NAME}] ⚠️ Query 执行失败 {source_file}: {exc}")
                 captures = []
