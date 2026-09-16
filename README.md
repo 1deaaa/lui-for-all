@@ -443,29 +443,30 @@ services:
 
 ## 技术架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    前端 (Vue 3 + Vite)                       │
-│  ChatPage  ProjectsPage  SettingsPage                       │
-│  SSE 事件流 ──── AG-UI 协议 ──── UI Block 渲染器              │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ HTTP / SSE
-┌──────────────────────▼──────────────────────────────────────┐
-│                  后端 (FastAPI)                               │
-│  /api/chat  /api/sessions  /api/projects  /api/settings     │
-│       │                │                                     │
-│  LangGraph 编排器    Project Modeler                         │
-│  ┌────────────┐      ┌──────────────────────────┐           │
-│  │ 意图解析节点│      │ OpenAPI + AST 路由发现     │           │
-│  │ 能力路由节点│      │ 能力建模与语义聚类         │           │
-│  │ 规划节点   │      │ 能力地图持久化             │           │
-│  │ 安全裁定节点│      └──────────────────────────┘           │
-│  │ HTTP执行节点│                                              │
-│  │ 汇总渲染节点│  ←── Agent Matchbox (多模型网关)             │
-│  └────────────┘                                              │
-│       │                                                      │
-│  SQLite (lui.db + checkpoints.db)                           │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph FE["前端 (Vue 3 + Vite)"]
+        Pages["ChatPage / ProjectsPage / SettingsPage"]
+        Render["SSE 事件流 + AG-UI 协议 + UI Block 渲染器"]
+        Pages --> Render
+    end
+    subgraph BE["后端 (FastAPI)"]
+        API["/api/chat / /api/sessions / /api/projects / /api/settings"]
+        subgraph ORCH["LangGraph 编排器"]
+            Intent["意图解析节点"] --> Route["能力路由节点"] --> Plan["规划节点"] --> Guard["安全裁定节点"] --> Exec["HTTP 执行节点"] --> Summary["汇总渲染节点"]
+        end
+        subgraph PM["Project Modeler"]
+            Disc["OpenAPI + AST 路由发现"] --> Model["能力建模与语义聚类"] --> Persist["能力地图持久化"]
+        end
+        Matchbox["Agent Matchbox（多模型网关）"]
+        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        API --> ORCH
+        API --> PM
+        ORCH <--> Matchbox
+        ORCH --> DB
+        PM --> DB
+    end
+    Render <-->|HTTP / SSE| API
 ```
 
 ### 关键目录结构

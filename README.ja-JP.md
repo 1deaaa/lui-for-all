@@ -308,7 +308,35 @@ Invoke-RestMethod http://localhost:6689/health
 
 OpenAPI がない場合でも、`source_path` のみで登録可能です。発見処理は自動的に AST モードへ切り替わります。
 
-## アーキテクチャ（要約）
+## アーキテクチャ
+
+```mermaid
+flowchart TB
+    subgraph FE["フロントエンド (Vue 3 + Vite)"]
+        Pages["ChatPage / ProjectsPage / SettingsPage"]
+        Render["SSE イベントストリーム + AG-UI プロトコル + UI Block レンダラー"]
+        Pages --> Render
+    end
+    subgraph BE["バックエンド (FastAPI)"]
+        API["/api/chat / /api/sessions / /api/projects / /api/settings"]
+        subgraph ORCH["LangGraph オーケストレーター"]
+            Intent["意図解析"] --> Route["能力ルーティング"] --> Plan["プランニング"] --> Guard["安全判定"] --> Exec["HTTP 実行"] --> Summary["要約と描画"]
+        end
+        subgraph PM["Project Modeler"]
+            Disc["OpenAPI + AST ルート発見"] --> Model["能力モデリングと意味クラスタリング"] --> Persist["能力マップ永続化"]
+        end
+        Matchbox["Agent Matchbox（マルチモデルゲートウェイ）"]
+        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        API --> ORCH
+        API --> PM
+        ORCH <--> Matchbox
+        ORCH --> DB
+        PM --> DB
+    end
+    Render <-->|HTTP / SSE| API
+```
+
+### 技術スタック概要
 
 - Frontend: Vue 3 + Vite + Pinia + Vue Router + Element Plus
 - Protocol: AG-UI スタイル SSE + 宣言的 UI ブロック

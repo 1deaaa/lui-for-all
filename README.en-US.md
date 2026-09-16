@@ -309,7 +309,35 @@ Open `http://localhost:5173`, create a project, and provide your OpenAPI URL fir
 
 If your target system does not expose OpenAPI, you can still onboard by providing `source_path`; discovery will automatically switch to AST mode.
 
-## Architecture (Summary)
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph FE["Frontend (Vue 3 + Vite)"]
+        Pages["ChatPage / ProjectsPage / SettingsPage"]
+        Render["SSE event stream + AG-UI protocol + UI Block renderer"]
+        Pages --> Render
+    end
+    subgraph BE["Backend (FastAPI)"]
+        API["/api/chat / /api/sessions / /api/projects / /api/settings"]
+        subgraph ORCH["LangGraph Orchestrator"]
+            Intent["Intent parsing"] --> Route["Capability routing"] --> Plan["Planning"] --> Guard["Safety gate"] --> Exec["HTTP execution"] --> Summary["Summarize and render"]
+        end
+        subgraph PM["Project Modeler"]
+            Disc["OpenAPI + AST route discovery"] --> Model["Capability modeling and clustering"] --> Persist["Capability map persistence"]
+        end
+        Matchbox["Agent Matchbox (multi-model gateway)"]
+        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        API --> ORCH
+        API --> PM
+        ORCH <--> Matchbox
+        ORCH --> DB
+        PM --> DB
+    end
+    Render <-->|HTTP / SSE| API
+```
+
+### Stack Summary
 
 - Frontend: Vue 3 + Vite + Pinia + Vue Router + Element Plus
 - Protocol: AG-UI style SSE events + declarative UI blocks

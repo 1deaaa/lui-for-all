@@ -1,12 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20.19-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
 
-RUN corepack enable
+# 锁定 pnpm 大版本，避免 corepack 拉取最新 pnpm11 导致与 Node 不兼容
+# （pnpm11 要求 Node>=22.13 且依赖 node:sqlite，Node20 会报 ERR_UNKNOWN_BUILTIN_MODULE；
+# 本地已验证 pnpm@10.33.0 可用，故此处锁定同一版本）
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
 # 先复制锁文件，确保依赖缓存层可复用；依赖变化时自动失效并重装
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
@@ -15,7 +18,7 @@ RUN --mount=type=cache,id=lui-pnpm-store,target=/pnpm/store \
 
 # 再复制源码，源码变化仅触发 build，不触发依赖重装
 COPY frontend/ ./
-RUN npm run build
+RUN pnpm run build
 
 
 FROM python:3.13-slim AS backend-runtime
