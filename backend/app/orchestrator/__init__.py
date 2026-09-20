@@ -1,6 +1,5 @@
 """
-编排层模块
-对外暴露统一的工作流编排入口
+编排层模块（过渡兼容层：转发 app.graph 实现）。
 """
 
 from app.orchestrator.graph import create_talk_to_interface_graph, graph_app

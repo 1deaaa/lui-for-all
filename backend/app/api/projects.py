@@ -853,23 +853,22 @@ async def get_route_map(
     routes = route_map.routes
     schemas = route_map.schemas
 
-    # 终端用户可达路由过滤
+    # 终端用户可达路由过滤（Fail-Closed：画像无可达路由时返回空列表）
     user_context = getattr(request.state, "user_context", None) if request else None
     if user_context and user_context.get("role_profile_id"):
         from app.api.sessions import _load_accessible_routes
         accessible_ids = await _load_accessible_routes(project_id, user_context["role_profile_id"])
-        if accessible_ids:
-            accessible_set = set(accessible_ids)
-            routes = [r for r in routes if isinstance(r, dict) and r.get("route_id") in accessible_set]
-            # 同步过滤 schemas：仅保留可达路由引用的 schema
-            referenced_schemas = set()
-            for r in routes:
-                if isinstance(r, dict):
-                    ref = r.get("request_body_ref") or r.get("response_ref")
-                    if ref:
-                        referenced_schemas.add(ref)
-            if isinstance(schemas, dict) and referenced_schemas:
-                schemas = {k: v for k, v in schemas.items() if k in referenced_schemas}
+        accessible_set = set(accessible_ids or [])
+        routes = [r for r in routes if isinstance(r, dict) and r.get("route_id") in accessible_set]
+        # 同步过滤 schemas：仅保留可达路由引用的 schema
+        referenced_schemas = set()
+        for r in routes:
+            if isinstance(r, dict):
+                ref = r.get("request_body_ref") or r.get("response_ref")
+                if ref:
+                    referenced_schemas.add(ref)
+        if isinstance(schemas, dict) and referenced_schemas:
+            schemas = {k: v for k, v in schemas.items() if k in referenced_schemas}
 
     return {
         "project_id": project_id,
@@ -911,17 +910,17 @@ async def get_capabilities(
             "parameter_hints": c.parameter_hints,
             "ai_usage_guidelines": c.ai_usage_guidelines,
             "source_code_analysis": c.source_code_analysis,
+            "response_mode": c.response_mode,
         }
         for c in capabilities
     ]
 
-    # 终端用户可达路由过滤
+    # 终端用户可达路由过滤（Fail-Closed：画像无可达路由时返回空列表）
     user_context = getattr(request.state, "user_context", None) if request else None
     if user_context and user_context.get("role_profile_id"):
         from app.api.sessions import _load_accessible_routes, _filter_capabilities_for_user
         accessible_ids = await _load_accessible_routes(project_id, user_context["role_profile_id"])
-        if accessible_ids:
-            caps = _filter_capabilities_for_user(caps, accessible_ids)
+        caps = _filter_capabilities_for_user(caps, accessible_ids, strict_user_mode=True)
 
     return {
         "project_id": project_id,

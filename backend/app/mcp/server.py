@@ -15,7 +15,7 @@ MCP 连接桥 - FastMCP Server
 
 鉴权：
   通过环境变量 LUI_MCP_API_TOKEN 配置静态 Bearer Token。
-  未配置则完全开放（开发模式）。
+  未配置时由主应用 MCPBearerAuthMiddleware 直接 401 阻断（默认安全）。
 """
 
 import logging

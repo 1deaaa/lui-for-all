@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import axios from 'axios'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps<{
   block: {
@@ -32,15 +32,17 @@ props.block.fields.forEach(field => {
 })
 
 // 提交表单
+// 说明：filter_form 为协议保留类型，当前后端无 /params 收集端点。
+// 为避免 404 死链，提交仅做本地校验与提示，不发起网络请求。
 async function handleSubmit() {
   loading.value = true
   try {
-    await axios.post(`/api/sessions/${props.block.session_id}/params`, {
-      request_id: props.block.request_id,
-      params: formData,
-    })
-  } catch (error) {
-    console.error('提交参数失败:', error)
+    const missing = props.block.fields.filter((f) => f.required && (formData[f.key] === null || formData[f.key] === '' || formData[f.key] === undefined))
+    if (missing.length > 0) {
+      ElMessage.warning(`${t('filterForm.missingRequired')}：${missing.map((f) => f.label).join('、')}`)
+      return
+    }
+    ElMessage.info(t('filterForm.notSupported'))
   } finally {
     loading.value = false
   }

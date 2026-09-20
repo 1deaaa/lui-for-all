@@ -76,7 +76,7 @@ This means:
 3. Hybrid discovery: OpenAPI + Tree-sitter AST
 - OpenAPI-first ingestion for fast, structured route discovery
 - Unified AST extraction layer (`FrameAdapter + get_tree_sitter_query`) for full handler implementation capture
-- Built-in adapters for mainstream backends: Python (FastAPI/Flask/Sanic), Node.js (NestJS/Express/Fastify), Java (Spring Boot), C# (ASP.NET Core), and Go (Gin/Echo/Fiber/chi)
+- 6 built-in adapters: Python decorators (FastAPI, Flask, Sanic, Starlette, Litestar, aiohttp, Bottle, Quart), Django URLConf (incl. DRF), Node.js/TypeScript (NestJS, Express, Fastify, Koa Router, Hono, Elysia, Restify, Node native dispatch), Java (Spring Boot, Spring MVC), C# (ASP.NET Core Attribute Controller + Minimal API), Go (Gin, Echo, Fiber, Chi, basic net/http)
 - Automatic AST fallback when OpenAPI is unavailable, using `source_path`
 - Route parameter normalization across frameworks (for example, `:id -> {id}`) to improve matching quality
 
@@ -89,8 +89,8 @@ The repository now includes 7 representative backend samples with validated two-
 | `fastapi_sample` | Python decorator routes (`@router.get`, `@app.post`) | FastAPI, Flask, Sanic, Starlette, Litestar, aiohttp, Bottle, Quart | Ruby Sinatra/Grape, PHP Slim |
 | `node_sample` | Node call-chain routing (`app.get()`, `router.post()`) | Express, Fastify, Koa Router, Hono, Elysia, Restify | PHP Laravel/Lumen/Slim, Ruby Hanami |
 | `django_sample` | Central URLConf (`path/re_path/include`) | Django, Django REST Framework | Ruby on Rails (`routes.rb`), PHP Laravel (`routes/web.php`) |
-| `springboot_sample` | Controller annotations (class prefix + method mapping) | Java Spring Boot, Spring MVC | C# ASP.NET Core attribute controllers, PHP Symfony attribute routes |
-| `aspnetcore_sample` | Minimal API mapping (`MapGet/MapPost/MapMethods`) | ASP.NET Core Minimal API | Java Javalin/Spark, Go net/http + mux |
+| `springboot_sample` | Controller annotations (class prefix + method mapping) | Java Spring Boot, Spring MVC | PHP Symfony attribute routes |
+| `aspnetcore_sample` | Minimal API + Controller attributes (`MapGet/MapPost/MapMethods`, `[HttpGet]`) | ASP.NET Core Minimal API, ASP.NET Core Attribute Controller | Java Javalin/Spark, Go net/http + mux |
 | `go_gin_sample` | Grouped chain registration (`Group + METHOD(path, handler)`) | Gin, Echo, Fiber, Chi | Rust Actix/Axum, PHP Slim |
 | `node_native_sample` | No-framework imperative dispatch (`if (method && path)`) | Node.js built-in http | Python wsgiref/werkzeug imperative dispatch, Ruby Rack, PHP Swoole native dispatch |
 
@@ -181,14 +181,15 @@ At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄
 
 **Hard-limit safeguards**: Max collection duration 60s, max events 500, max single event 4KB, max total result 32KB. Exceeding these triggers uniform sampling preserving head and tail — the AI cannot override these limits.
 
-5. Strict declarative UI whitelist
+5. Strict declarative UI whitelist (9 types)
 - Model output is JSON blocks only, not raw HTML/JS/CSS
-- Supports 8 safe block types: `text_block`, `metric_card`, `data_table`, `echart_card`, `confirm_panel`, `filter_form`, `timeline_card`, `diff_card`
+- Supports 9 safe block types: `text_block`, `metric_card`, `data_table`, `echart_card`, `confirm_panel`, `filter_form` (protocol-reserved, local hint only), `timeline_card`, `diff_card`, `a2ui` (controlled GenUI subset)
+- Runtime mainly produces `a2ui` + `confirm_panel`; unknown types are never rendered
 
-6. LangGraph workflow with human approval gates
-- Multi-step task orchestration with checkpoints
-- `interrupt()` hard pause for write-risk operations
-- Resume-after-approval flow with full audit trail
+6. LangGraph workflow with human approval gates (4 nodes: `agent_entry` → `agentic_loop` → `summarize` → `emit_blocks`)
+- `interrupt()` hard pause for write-risk operations; resume via `POST /api/chat/resume`
+- Server-side safety recheck (capability table wins over LLM self-reported levels)
+- `readonly_sensitive` redacted by default; full audit trail
 
 7. AG-UI + SSE real-time event stream
 - Node-level progress events
@@ -196,8 +197,8 @@ At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄
 - Approval-triggered UI interruption without polling
 
 8. End-to-end observability
-- Unified Trace ID across API layer, graph execution, and HTTP executor
-- Full-step auditable event trail
+- Business Trace ID (`TaskRun.trace_id`) across API layer, graph execution, and HTTP executor
+- In-memory checkpoint for `interrupt` resume; `TaskRun` rows are the durable source of truth
 
 9. Multi-model gateway support
 - Built-in Agent Matchbox routing
@@ -210,7 +211,7 @@ At runtime, when the AI sees interfaces marked with `📡SSE Streaming` or `📄
 
 11. Pluggable chat protocol for custom GUIs
 - Developers can directly integrate with `chat` endpoints and replace the built-in frontend without changing backend execution logic
-- Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 8 UI block types
+- Fully covers current frontend elements: AI progress, HTTP call logs, approval requests/records, reasoning stream, and 9 UI block types
 - Transport boundary is explicit: streaming data over SSE, replay/audit snapshots over standard JSON APIs
 - `/api/chat/*` is the **only recommended interface** for custom GUIs; the built-in frontend's `/api/sessions/*` is an internal legacy interface
 
@@ -228,7 +229,7 @@ The combined value with LUI-for-All is more practical:
 
 - OpenClaw handles unattended natural-language automation, while LUI-for-All pushes actions into a specific private project
 - Users can send tasks inside OpenClaw and use LUI's MCP interface to reach deep into project pages, APIs, and workflows
-- We keep safety levels, human confirmation, SSE progress, and HTTP call logs, so the flow stays hands-off but still traceable
+- MCP is a fully automatic channel: an admin must explicitly switch the global default action to `allow`; writes are skipped by default (resumed as rejected) and require approval in the built-in chat UI; SSE progress and task results remain traceable
 
 Quick integration steps:
 
@@ -320,14 +321,16 @@ flowchart TB
     end
     subgraph BE["Backend (FastAPI)"]
         API["/api/chat / /api/sessions / /api/projects / /api/settings"]
-        subgraph ORCH["LangGraph Orchestrator"]
-            Intent["Intent parsing"] --> Route["Capability routing"] --> Plan["Planning"] --> Guard["Safety gate"] --> Exec["HTTP execution"] --> Summary["Summarize and render"]
+        subgraph ORCH["LangGraph graph (4 nodes)"]
+            AE["agent_entry"] --> AL["agentic_loop"]
+            AL --> SUM["summarize"]
+            SUM --> EB["emit_blocks"]
         end
         subgraph PM["Project Modeler"]
             Disc["OpenAPI + AST route discovery"] --> Model["Capability modeling and clustering"] --> Persist["Capability map persistence"]
         end
         Matchbox["Agent Matchbox (multi-model gateway)"]
-        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        DB[("SQLite<br/>lui.db + in-memory checkpoint")]
         API --> ORCH
         API --> PM
         ORCH <--> Matchbox
@@ -349,7 +352,7 @@ flowchart TB
 
 - [x] MVP workflow (FastAPI + LangGraph)
 - [x] OpenAPI-based capability discovery
-- [x] 8 UI block whitelist
+- [x] 9 UI block whitelist (incl. controlled a2ui subset)
 - [x] Real-time SSE streaming and approval interrupt
 - [x] Multi-model gateway
 - [x] Tree-sitter AST semantic route discovery (OpenAPI-optional onboarding)

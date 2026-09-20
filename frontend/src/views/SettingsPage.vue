@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
 import axios from 'axios'
+import DOMPurify from 'dompurify'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { getLocale, setLocale, SUPPORTED_LOCALES, type AppLocale } from '@/i18n'
@@ -840,12 +841,16 @@ async function copyMcpJson() {
 }
 
 function highlightJson(code: string) {
+  let html = code
   // @ts-ignore
   if (window.hljs) {
     // @ts-ignore
-    return window.hljs.highlight(code, { language: 'json' }).value
+    html = window.hljs.highlight(code, { language: 'json' }).value
   }
-  return code
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['span'],
+    ALLOWED_ATTR: ['class', 'style'],
+  })
 }
 
 async function checkLlmKeyStatus() {

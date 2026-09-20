@@ -76,7 +76,7 @@ LUI は **デュアルチャネル JWT 認証**を実装し、プロジェクト
 3. OpenAPI + Tree-sitter AST のハイブリッド発見
 - まず `OpenAPI/Swagger` を優先取り込みし、構造化されたルートを高速取得
 - 統一 AST 抽出層（`FrameAdapter + get_tree_sitter_query`）で実装コード（Handler）まで取得
-- 主要バックエンドに標準対応: Python（FastAPI/Flask/Sanic）、Node.js（NestJS/Express/Fastify）、Java（Spring Boot）、C#（ASP.NET Core）、Go（Gin/Echo/Fiber/chi）
+- 6 アダプタに標準対応: Python デコレータ（FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart）、Django URLConf（DRF 含む）、Node.js/TypeScript（NestJS、Express、Fastify、Koa Router、Hono、Elysia、Restify、Node ネイティブ）、Java（Spring Boot、Spring MVC）、C#（ASP.NET Core 属性ルート + Minimal API）、Go（Gin、Echo、Fiber、Chi、基礎 net/http）
 - OpenAPI が未公開/到達不可でも `source_path` を使って AST 発見へ自動フォールバック
 - ルート引数表記（例: `:id -> {id}`）を正規化し、フレームワーク差異を吸収
 
@@ -89,8 +89,8 @@ LUI は **デュアルチャネル JWT 認証**を実装し、プロジェクト
 | `fastapi_sample` | Python デコレータルーティング（`@router.get`, `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim |
 | `node_sample` | Node 呼び出しチェーン型（`app.get()`, `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify | PHP Laravel/Lumen/Slim、Ruby Hanami |
 | `django_sample` | URLConf 集約型（`path/re_path/include`） | Django、Django REST Framework | Ruby on Rails（`routes.rb`）、PHP Laravel（`routes/web.php`） |
-| `springboot_sample` | コントローラ注解型（クラス前置 + メソッド注解） | Java Spring Boot、Spring MVC | C# ASP.NET Core 属性ルート、PHP Symfony 属性ルート |
-| `aspnetcore_sample` | Minimal API マッピング（`MapGet/MapPost/MapMethods`） | ASP.NET Core Minimal API | Java Javalin/Spark、Go net/http + mux |
+| `springboot_sample` | コントローラ注解型（クラス前置 + メソッド注解） | Java Spring Boot、Spring MVC | PHP Symfony 属性ルート |
+| `aspnetcore_sample` | Minimal API + Controller 属性（`MapGet/MapPost/MapMethods`、`[HttpGet]`） | ASP.NET Core Minimal API、ASP.NET Core 属性ルート | Java Javalin/Spark、Go net/http + mux |
 | `go_gin_sample` | グループ化チェーン登録（`Group + METHOD(path, handler)`） | Gin、Echo、Fiber、Chi | Rust Actix/Axum、PHP Slim |
 | `node_native_sample` | 非フレームワーク命令型ディスパッチ（`if (method && path)`） | Node.js built-in http | Python wsgiref/werkzeug 命令型ディスパッチ、Ruby Rack、PHP Swoole |
 
@@ -181,15 +181,16 @@ flowchart TD
 
 **ハードリミット保護**：最大収集時間 60秒、最大イベント数 500、単一イベント 4KB、総結果 32KB。超過時は先頭と末尾を保持しつつ均一サンプリング — AI はこれらの制限を上書きできない。
 
-5. 宣言的 UI ホワイトリスト
+5. 宣言的 UI ホワイトリスト（9 種）
 - モデル出力は JSON ブロックのみ
 - HTML/JS/CSS の直接出力は禁止
-- 対応 8 種: `text_block`, `metric_card`, `data_table`, `echart_card`, `confirm_panel`, `filter_form`, `timeline_card`, `diff_card`
+- 対応 9 種: `text_block`, `metric_card`, `data_table`, `echart_card`, `confirm_panel`, `filter_form`（予約型、現状はローカル提示のみ）, `timeline_card`, `diff_card`, `a2ui`（受控 GenUI サブセット）
+- 実行時は主に `a2ui` + `confirm_panel` を生成、未知型は描画しない
 
-6. LangGraph 実行核 + 人間承認ゲート
-- チェックポイント付きの多段オーケストレーション
+6. LangGraph 実行核 + 人間承認ゲート（4 ノード: `agent_entry` → `agentic_loop` → `summarize` → `emit_blocks`）
 - 書き込みリスク操作は `interrupt()` で強制停止
-- 承認後に断点再開、監査ログを保持
+- `POST /api/chat/resume` で断点再開、監査ログを保持
+- 安全等級はサーバ側能力表で再判定、LLM 自己申告のみに依存しない
 
 7. AG-UI + SSE リアルタイムイベント
 - ノード進捗をリアルタイム配信
@@ -197,8 +198,8 @@ flowchart TD
 - 承認要求時に UI 側を即時割り込み
 
 8. エンドツーエンド可観測性
-- API 層、Graph 層、HTTP 実行層で Trace ID を統一
-- すべての意思決定を追跡可能
+- 業務 Trace ID（`TaskRun.trace_id`）を API 層、Graph 層、HTTP 実行層で統一
+- checkpoint はメモリ型（`interrupt` 再開用）、永続の正本は `TaskRun` 落庫
 
 9. マルチモデルゲートウェイ
 - Agent Matchbox を内蔵
@@ -211,7 +212,7 @@ flowchart TD
 
 11. カスタム GUI 対応のプラガブル chat プロトコル
 - 開発者は `chat` エンドポイントへ直接接続し、既存フロントエンドを差し替えてもバックエンド実行ロジックはそのまま利用可能
-- AI 進捗、HTTP 呼び出し記録、承認要求/承認履歴、思考ストリーム、8 種 UI ブロックを完全カバー
+- AI 進捗、HTTP 呼び出し記録、承認要求/承認履歴、思考ストリーム、9 種 UI ブロックを完全カバー
 - 伝送境界を明確化: ストリーミングは SSE、履歴/監査リプレイは通常 JSON API
 - `/api/chat/*` はカスタム GUI の**唯一推奨インターフェース**。内蔵フロントエンドの `/api/sessions/*` は内部レガシーインターフェース
 
@@ -227,7 +228,7 @@ flowchart TD
 - LUI-for-All と組み合わせると、OpenClaw が入口と会話の受け渡しを担当し、LUI-for-All が業務実行、承認、監査を担当します。
 - LUI-for-All と組み合わせると、OpenClaw の無人運転に、個別プロジェクトへ深く入り込む手足が付きます。
 - OpenClaw 上で自然言語の依頼を受け、そのまま LUI-for-All の専属プロジェクト、API、ワークフローへ流せます。
-- 安全等級、人手確認、SSE 進捗、HTTP 呼び出しログはそのまま残るため、放任して動かしつつ追跡もできます。
+- MCP は全自動チャネルです。管理者が全体既定動作を `allow` に切替えた場合のみ実行され、書込は既定でスキップ（拒否として再開）され、内蔵チャット UI での承認が必要です。SSE 進捗とタスク結果は追跡可能です。
 
 接続手順:
 
@@ -319,14 +320,16 @@ flowchart TB
     end
     subgraph BE["バックエンド (FastAPI)"]
         API["/api/chat / /api/sessions / /api/projects / /api/settings"]
-        subgraph ORCH["LangGraph オーケストレーター"]
-            Intent["意図解析"] --> Route["能力ルーティング"] --> Plan["プランニング"] --> Guard["安全判定"] --> Exec["HTTP 実行"] --> Summary["要約と描画"]
+        subgraph ORCH["LangGraph 実行グラフ（4 ノード）"]
+            AE["agent_entry"] --> AL["agentic_loop"]
+            AL --> SUM["summarize"]
+            SUM --> EB["emit_blocks"]
         end
         subgraph PM["Project Modeler"]
             Disc["OpenAPI + AST ルート発見"] --> Model["能力モデリングと意味クラスタリング"] --> Persist["能力マップ永続化"]
         end
         Matchbox["Agent Matchbox（マルチモデルゲートウェイ）"]
-        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        DB[("SQLite<br/>lui.db + メモリ checkpoint")]
         API --> ORCH
         API --> PM
         ORCH <--> Matchbox
@@ -348,7 +351,7 @@ flowchart TB
 
 - [x] MVP 実行パイプライン
 - [x] OpenAPI 自動能力発見
-- [x] 8 種 UI ブロック白名单
+- [x] 9 種 UI ブロック白名单（受控 a2ui 含む）
 - [x] SSE ストリーミング + 承認割り込み
 - [x] マルチモデルゲートウェイ
 - [x] Tree-sitter AST ルートセマンティック解析（OpenAPI 非依存オンボーディング対応）

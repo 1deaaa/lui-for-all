@@ -87,16 +87,16 @@ LUI 实现了 **双通道 JWT 认证**，让系统真正对项目管理员和项
 关键能力包括：
 
 - 统一 `FrameAdapter + get_tree_sitter_query()` 协议，适配器可扩展、可插拔
-- 内置主流后端适配：Python（FastAPI/Flask/Sanic）、Node.js（NestJS/Express/Fastify）、Java（Spring Boot）、C#（ASP.NET Core）、Go（Gin/Echo/Fiber/chi）
+- 内置 6 个后端适配器：Python 装饰器（FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart）、Django URLConf（含 DRF）、Node.js/TypeScript（NestJS、Express、Fastify、Koa Router、Hono、Elysia、Restify、Node 原生分发）、Java（Spring Boot、Spring MVC）、C#（ASP.NET Core Attribute Controller + Minimal API）、Go（Gin、Echo、Fiber、Chi、基础 net/http）
 - 当 OpenAPI 不可达或未暴露时，自动降级为 AST 语义路由发现（通过 `source_path`）
 - 自动归一化路径参数风格（如 `:id -> {id}`），降低跨框架匹配误差
 
 最终将路由与源码逻辑共同交给 LLM，生成更可靠的能力地图：
 
-- 每条路由自动归属 `domain`（如：财务、用户管理、审批流）
-- 每个能力标记最适合的展现组件（`best_modalities`）
+- 每条路由自动归属 `domain`（如：财务、用户管理、审批流；无 AI 结果时记为 `unknown`）
+- 每个能力按安全等级映射默认展现偏好（`best_modalities`，如只读偏 `data_table`、写入偏 `confirm_panel`，非 AI 逐项指定）
 - 每个操作预标注安全等级与是否需要人工确认
-- 自动打上「是否被前端真实调用」标签，过滤僵尸接口
+- 响应模式（`response_mode`：`instant` / `streaming` / `paginated`）随能力下发，运行时自动选择 `call` / `stream_call`
 
 无需手动维护映射表，**上游接口或源码一旦变化，重新发现即可同步**。
 
@@ -109,8 +109,8 @@ LUI 实现了 **双通道 JWT 认证**，让系统真正对项目管理员和项
 | `fastapi_sample` | Python 装饰器路由（`@router.get` / `@app.post`） | FastAPI、Flask、Sanic、Starlette、Litestar、aiohttp、Bottle、Quart | Ruby Sinatra/Grape、PHP Slim |
 | `node_sample` | Node 路由调用链（`app.get()` / `router.post()`） | Express、Fastify、Koa Router、Hono、Elysia、Restify | PHP Laravel/Lumen/Slim、Ruby Hanami |
 | `django_sample` | URLConf 集中声明（`path/re_path/include`） | Django、Django REST Framework | Ruby on Rails (`routes.rb`)、PHP Laravel (`routes/web.php`) |
-| `springboot_sample` | 控制器注解路由（类前缀 + 方法注解） | Java Spring Boot、Spring MVC | C# ASP.NET Core Attribute Controller、PHP Symfony Attribute Route |
-| `aspnetcore_sample` | Minimal API 映射（`MapGet/MapPost/MapMethods`） | ASP.NET Core Minimal API | Java Javalin/Spark、Go net/http + mux |
+| `springboot_sample` | 控制器注解路由（类前缀 + 方法注解） | Java Spring Boot、Spring MVC | PHP Symfony Attribute Route |
+| `aspnetcore_sample` | Minimal API 映射 + Controller 属性路由（`MapGet/MapPost/MapMethods`、`[HttpGet]`） | ASP.NET Core Minimal API、ASP.NET Core Attribute Controller | Java Javalin/Spark、Go net/http + mux |
 | `go_gin_sample` | 分组链式注册（`Group + METHOD(path, handler)`） | Gin、Echo、Fiber、Chi | Rust Actix/Axum、PHP Slim |
 | `node_native_sample` | 无框架命令式分发（`if (method && path)`） | Node.js built-in http | Python wsgiref/werkzeug 命令式分发、Ruby Rack、PHP Swoole 原生分发 |
 
@@ -201,26 +201,27 @@ flowchart TD
 
 **硬限制保障**：最大采集时长 60s、最大事件数 500、单事件 4KB、总结果 32KB，超出自动均匀采样保留首尾，AI 无法覆盖。
 
-### 4. 8 种白名单 UI 组件，从根源杜绝渲染注入
+### 4. 9 种白名单 UI 组件，大幅收窄渲染注入面
 
-模型 **永远不允许** 输出原始 HTML / JS / CSS，从根源掐死前端注入攻击的可能性。所有界面元素均通过严格的声明式 JSON 协议下发，前端只渲染以下 8 种白名单组件：
+模型 **永远不允许** 输出原始 HTML / JS / CSS。所有界面元素均通过严格的声明式 JSON 协议下发，前端只渲染以下 9 种白名单组件（未知类型一律告警不渲染）：
 
 | 组件类型 | 用途 |
 |---|---|
-| `text_block` | 默认自然语言回答 |
+| `text_block` | 默认自然语言回答（纯文本经 DOMPurify 净化；markdown 走封闭渲染器） |
 | `metric_card` | 关键指标面板 |
 | `data_table` | 可分页数据表 |
 | `echart_card` | 配置驱动图表（ECharts） |
 | `confirm_panel` | 高危操作审批拦截器 |
-| `filter_form` | 参数补充收集 |
+| `filter_form` | 参数补充收集（协议保留类型，当前版本为本地提示，不回填后端） |
 | `timeline_card` | 事件序列与流转 |
 | `diff_card` | 对照与变化展示 |
+| `a2ui` | 受控声明式 GenUI 子集（组件/prop/动作三重白名单，灵感源自 Google A2UI 协议） |
 
-灵感源自 Google A2UI 协议，彻底关闭大模型越权渲染的攻击面。
+当前运行时主产 `a2ui` + `confirm_panel`，其余 7 种为协议兼容保留。`a2ui` 子集仅允许 `heading/text/metric/table/status/button` 6 种组件与 `submit/copy` 动作，服务端 Pydantic 递归拒绝 `script` / `javascript:` / 模板表达式，前端零 `v-html` 全插值渲染。
 
 ### 5. LangGraph 多层执行内核 + 人工介入审核
 
-核心任务流水线由 LangGraph 编排，具备完整的持久化检查点。
+核心任务流水线由 LangGraph 编排。当前运行时主图为 4 节点（`backend/app/graph/graph.py`），`orchestrator/` 仅为过渡兼容层。
 
 #### 图一：顶层节点路由
 
@@ -238,29 +239,34 @@ flowchart LR
 
     SUM --> EB["emit_blocks\nUI Block 装配"]
     EB  --> F_END(["END ✓ SSE 推送"])
+
+    AL -- "interrupt\n待审批" --> W(["waiting_approval\nSSE approval_pending"])
+    W -- "POST /api/chat/resume\nCommand resume" --> AL
 ```
 
 #### 图二：agentic_loop 内部（ReAct + 安全裁定）
 
 ```mermaid
 flowchart TD
-    IN(["进入本轮 Loop"]) --> CHK{"iterations ≥ 10？"}
+    IN(["进入本轮 Loop"]) --> CHK{"iterations > 10？"}
     CHK -- 是 --> FORCE["agentic_done=True\n强制终止"]
     CHK -- 否 --> LLM["LLM 推理\nSystem Prompt + 对话历史"]
 
     LLM --> ACT{"action"}
     ACT -- "finish"  --> DONE["agentic_done=True"]
+    ACT -- "stream_call" --> STR["SSE/分页采集\ncollect_sse/collect_paginated"]
     ACT -- "unknown" --> UNK["强制结束 + 告警"]
-    ACT -- "call_tools" --> SEC{"安全等级"}
+    ACT -- "call" --> SEC{"安全等级\n服务端能力表回查"}
 
-    SEC -- "🟢 readonly_safe\n🟡 readonly_sensitive" --> EXEC["直接 HTTP 执行"]
+    SEC -- "🟢 readonly_safe\n🟡 readonly_sensitive" --> EXEC["直接 HTTP 执行\nsensitive 默认脱敏"]
     SEC -- "🟠 soft_write\n🔴 hard_write\n🔐 critical" --> INT["interrupt()\n推送 ConfirmPanel"]
 
     INT --> APV{"用户审批"}
     APV -- "✅ 批准" --> EXEC
-    APV -- "❌ 拒绝" --> SKIP["跳过 + 审计日志"]
+    APV -- "❌ 拒绝" --> SKIP["跳过本项\n继续下一轮"]
 
-    EXEC --> OBS["收集 ExecutionArtifact\n追加 Observation"]
+    STR --> OBS["收集 ExecutionArtifact\n追加 Observation"]
+    EXEC --> OBS
     SKIP --> OBS
     OBS --> NEXT(["iterations+1\n返回上层路由"])
 ```
@@ -271,16 +277,12 @@ flowchart TD
 flowchart LR
     ART(["ExecutionArtifacts"]) --> SUM["summarize\nLLM 结构化总结\n→ summary_text"]
 
-    SUM --> VIZ{"需要可视化？"}
-    VIZ -- 是 --> PICK["选取白名单组件\ndata_table / echart_card\nmetric_card / timeline_card\ndiff_card / confirm_panel …"]
-    VIZ -- 否 --> TXT["text_block"]
-
-    PICK --> SER["序列化 ui_blocks JSON"]
-    TXT  --> SER
-    SER  --> SSE(["SSE 推送 → 前端渲染"])
+    SUM --> GEN["emit_blocks\n受控 a2ui 生成\nPydantic 校验 + 失败兜底"]
+    GEN --> SER["序列化 ui_blocks JSON"]
+    SER  --> SSE(["ui_block_emitted → 前端渲染"])
 ```
 
-**5 级安全**：`readonly_safe` → `readonly_sensitive` → `soft_write` → `hard_write` → `critical`，任何写操作均通过 LangGraph `interrupt()` 硬性暂停，前端唤出 `ConfirmPanel`，用户确认后 Graph 从断点恢复，拒绝则跳过并记录审计日志。
+**5 级安全**：`readonly_safe` → `readonly_sensitive` → `soft_write` → `hard_write` → `critical`。读写的裁定以服务端能力表为准（LLM 自报仅作候选，不一致时按服务端回查并告警）。写操作经 LangGraph `interrupt()` 硬性暂停，前端唤出 `ConfirmPanel`，用户确认后 Graph 从断点恢复；拒绝则跳过本项继续下一轮。`readonly_sensitive` 默认脱敏后执行。全局 `safety_default_action=allow` 时跳过审批（仅限受控的 MCP 全自动通道）。
 
 ### 6. AG-UI 协议 + SSE 实时事件流
 
@@ -289,14 +291,14 @@ flowchart LR
 - 思考内容（Reasoning）流式显示，可折叠
 - 审批节点触发时，前端自动唤出 `ConfirmPanel`，无需轮询
 
-### 7. 全链路 OpenTelemetry 可观测
+### 7. 全链路可观测（业务 Trace ID + OpenTelemetry）
 
-每一次对话，从用户输入到最终渲染，全链路注入统一 `Trace ID`：
+每一次对话，从用户输入到最终渲染，全链路透传业务 `Trace ID`（`TaskRun.trace_id`，落库可查）：
 - FastAPI 请求层
 - LangGraph 节点执行层
-- HTTP 执行器层
+- HTTP 执行器层（同时注入 `X-Trace-ID` / `X-Request-ID` / `traceparent`）
 
-不是黑盒，每一步决策均可溯源审计。
+HTTP 执行器另有 OTel span（`HTTP method path`）。未配置 `LUI_OTLP_ENDPOINT` 时 OTel 处于空转，仅业务 Trace ID 落库可溯源；`session_started` 事件复用任务级 `trace_id`，不断链。
 
 ### 8. Agent Matchbox 多模型网关
 
@@ -316,7 +318,7 @@ flowchart LR
 LUI-for-All 将"聊天能力内核"与"前端呈现层"解耦：
 
 - 开发者可直接对接 `chat` 端点，替换现有前端 UI，而无需改动后端执行链路
-- 协议完整覆盖当前前端元素：AI 工作进度、HTTP 调用记录、审批请求/审批记录、AI 思考流、8 类 UI Block
+- 协议完整覆盖当前前端元素：AI 工作进度、HTTP 调用记录、审批请求/审批记录、AI 思考流、9 类 UI Block
 - 数据类型边界清晰：流式事件走 SSE，历史/审计回放走普通 JSON 接口
 - `/api/chat/*` 是自定义 GUI 的**唯一推荐接入接口**；内部前端使用的 `/api/sessions/*` 为遗留内部接口
 
@@ -334,7 +336,7 @@ OpenClaw 的最大价值，是把自然语言直接变成可持续执行的自�
 
 - OpenClaw 负责无人值守的自然语言自动化，LUI-for-All 负责把动作落到具体专属项目里
 - 用户可以直接在 OpenClaw 里下自然语言任务，再通过 LUI 的 MCP 接口深入项目内部的页面、接口和工作流
-- 我们保留安全分级、人工确认、SSE 进度和 HTTP 调用记录，既能放手自动跑，也能追踪每一步
+- MCP 为全自动通道：需管理员显式将全局默认动作切为 `allow` 才会执行；写操作在 MCP 下默认跳过（以拒绝方式恢复），通过内置聊天界面审批后执行；SSE 进度与任务结果可回查（MCP 链路不写 HTTP 审计表）
 
 接入步骤很简单：
 
@@ -452,14 +454,16 @@ flowchart TB
     end
     subgraph BE["后端 (FastAPI)"]
         API["/api/chat / /api/sessions / /api/projects / /api/settings"]
-        subgraph ORCH["LangGraph 编排器"]
-            Intent["意图解析节点"] --> Route["能力路由节点"] --> Plan["规划节点"] --> Guard["安全裁定节点"] --> Exec["HTTP 执行节点"] --> Summary["汇总渲染节点"]
+        subgraph ORCH["LangGraph 执行图（4 节点）"]
+            AE["agent_entry"] --> AL["agentic_loop ↩"]
+            AL --> SUM["summarize"]
+            SUM --> EB["emit_blocks"]
         end
-        subgraph PM["Project Modeler"]
+        subgraph PM["Project Modeler（建图）"]
             Disc["OpenAPI + AST 路由发现"] --> Model["能力建模与语义聚类"] --> Persist["能力地图持久化"]
         end
         Matchbox["Agent Matchbox（多模型网关）"]
-        DB[("SQLite<br/>lui.db + checkpoints.db")]
+        DB[("SQLite<br/>lui.db（TaskRun / 审计）<br/>内存 checkpoint（interrupt 恢复）")]
         API --> ORCH
         API --> PM
         ORCH <--> Matchbox
@@ -469,6 +473,8 @@ flowchart TB
     Render <-->|HTTP / SSE| API
 ```
 
+> 说明：`orchestrator/` 仅为过渡兼容层，运行时主图在 `backend/app/graph/`；checkpoint 当前为进程内存 `MemorySaver`，`checkpoints.db` 为预留配置，重启/多进程不保证恢复，业务状态以 `TaskRun` 落库为准。
+
 ### 关键目录结构
 
 ```
@@ -476,8 +482,8 @@ lui-for-all/
 ├── backend/
 │   ├── app/
 │   │   ├── api/           # FastAPI 路由层 (chat, projects, sessions, settings)
-│   │   ├── graph/         # LangGraph 状态机定义
-│   │   ├── orchestrator/  # 任务编排状态与节点
+│   │   ├── graph/         # LangGraph 主图（agent_entry/agentic_loop/summarize/emit_blocks）
+│   │   ├── orchestrator/  # 过渡兼容层（转发 graph 实现，勿加业务逻辑）
 │   │   ├── discovery/     # OpenAPI 摄取与能力建模
 │   │   ├── runtime/       # SSE 事件发射器
 │   │   ├── llm/           # Agent Matchbox 网关 + 提示词
@@ -493,7 +499,7 @@ lui-for-all/
 │   └── package.json
 ├── workspace/             # 运行时隔离沙箱（自动生成）
 │   ├── lui.db
-│   └── checkpoints.db
+│   └── .env               # 持久化配置（含自动生成的 LUI_JWT_SECRET）
 └── LUI-for-all_Execution_Plan.md
 ```
 
@@ -515,7 +521,7 @@ lui-for-all/
 
 - [x] MVP：FastAPI + LangGraph 核心流水线
 - [x] OpenAPI 能力自动发现与建模
-- [x] 8 种 UI Block 白名单组件
+- [x] 9 种 UI Block 白名单组件（含受控 a2ui 子集）
 - [x] AG-UI SSE 协议 + 实时流
 - [x] 人工确认（Human-in-the-loop）拦截器
 - [x] Agent Matchbox 多模型网关

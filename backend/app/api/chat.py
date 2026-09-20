@@ -100,9 +100,44 @@ def _serialize_task_run(task_run: TaskRun) -> dict:
     }
 
 
-def _get_user_context(request: Request) -> dict | None:
+def _get_user_context(request: Request | None) -> dict | None:
     """从 request.state 获取用户上下文（由 JWT 中间件注入）"""
+    if request is None:
+        return None
     return getattr(request.state, "user_context", None)
+
+
+def _require_project_scope(request: Request | None, project_id: str) -> None:
+    """User JWT 仅允许访问自己项目的资源；管理员放行。"""
+    user_ctx = _get_user_context(request)
+    if user_ctx and user_ctx.get("project_id") != project_id:
+        raise HTTPException(status_code=403, detail="无权访问该项目")
+
+
+async def _require_session_scope(
+    db: AsyncSession,
+    session_id: str,
+    request: Request | None,
+) -> Session:
+    """按会话归属校验项目范围，返回会话；不存在则 404，越权则 403。"""
+    session = await SessionRepository(db).get_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    _require_project_scope(request, session.project_id)
+    return session
+
+
+async def _require_task_scope(
+    db: AsyncSession,
+    task_run_id: str,
+    request: Request | None,
+) -> TaskRun:
+    """按任务归属校验项目范围，返回任务；不存在则 404，越权则 403。"""
+    task_run = await TaskRepository(db).get_by_id(task_run_id)
+    if not task_run:
+        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    _require_project_scope(request, task_run.project_id)
+    return task_run
 
 
 @router.post("/stream")
@@ -202,13 +237,9 @@ async def chat_resume(
     session_repo = SessionRepository(db)
     task_repo = TaskRepository(db)
 
-    session = await session_repo.get_by_id(request.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = await _require_session_scope(db, request.session_id, http_request)
 
-    task_run = await task_repo.get_by_id(request.task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, request.task_run_id, http_request)
     if task_run.session_id != request.session_id:
         raise HTTPException(status_code=400, detail="task_run 与 session 不匹配")
 
@@ -259,9 +290,11 @@ async def chat_project_sessions(
     project_id: str,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取指定项目的历史会话列表。"""
+    _require_project_scope(http_request, project_id)
     project = await ProjectRepository(db).get_by_id(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -284,12 +317,11 @@ async def chat_project_sessions(
 @router.get("/sessions/{session_id}")
 async def chat_session_detail(
     session_id: str,
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取会话详情。"""
-    session = await SessionRepository(db).get_by_id(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = await _require_session_scope(db, session_id, http_request)
     return _serialize_session(session)
 
 
@@ -297,13 +329,12 @@ async def chat_session_detail(
 async def chat_messages(
     session_id: str,
     limit: int = Query(50, ge=1, le=200),
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取会话消息快照（含 metadata.http_calls / metadata.thought / metadata.approval_block）。"""
     session_repo = SessionRepository(db)
-    session = await session_repo.get_by_id(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = await _require_session_scope(db, session_id, http_request)
 
     messages = await session_repo.list_messages(session_id, limit)
     return {
@@ -317,12 +348,11 @@ async def chat_messages(
 async def chat_message_detail(
     session_id: str,
     message_id: str,
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取会话内单条消息详情。"""
-    session = await SessionRepository(db).get_by_id(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    session = await _require_session_scope(db, session_id, http_request)
 
     result = await db.execute(
         select(Message).where(
@@ -340,25 +370,23 @@ async def chat_message_detail(
 @router.get("/task-runs/{task_run_id}")
 async def chat_task_run_detail(
     task_run_id: str,
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取任务快照（含 ui_blocks 与 execution_artifacts）。"""
-    task_run = await TaskRepository(db).get_by_id(task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, task_run_id, http_request)
     return _serialize_task_run(task_run)
 
 
 @router.get("/task-runs/{task_run_id}/events")
 async def chat_task_events(
     task_run_id: str,
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取任务事件回放（Event Sourcing）。"""
     task_repo = TaskRepository(db)
-    task_run = await task_repo.get_by_id(task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, task_run_id, http_request)
 
     events = await task_repo.list_events(task_run_id)
     return {
@@ -386,12 +414,11 @@ async def chat_task_approvals(
     task_run_id: str,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取某次任务的审批请求/审批记录。"""
-    task_run = await TaskRepository(db).get_by_id(task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, task_run_id, http_request)
 
     total_result = await db.execute(
         select(func.count()).select_from(Approval).where(Approval.task_run_id == task_run_id)
@@ -436,12 +463,11 @@ async def chat_task_http_executions(
     task_run_id: str,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取某次任务的 HTTP 调用记录。"""
-    task_run = await TaskRepository(db).get_by_id(task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, task_run_id, http_request)
 
     total_result = await db.execute(
         select(func.count()).select_from(HttpExecution).where(HttpExecution.task_run_id == task_run_id)
@@ -487,13 +513,12 @@ async def chat_task_http_executions(
 async def chat_stop_task_run(
     task_run_id: str,
     request: ChatStopTaskRequest,
+    http_request: Request = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """停止运行中的任务（chat 协议入口）。"""
     task_repo = TaskRepository(db)
-    task_run = await task_repo.get_by_id(task_run_id)
-    if not task_run:
-        raise HTTPException(status_code=404, detail="任务运行记录不存在")
+    task_run = await _require_task_scope(db, task_run_id, http_request)
 
     if request.session_id and task_run.session_id != request.session_id:
         raise HTTPException(status_code=400, detail="任务与会话不匹配")

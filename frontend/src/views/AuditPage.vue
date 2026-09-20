@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
+import DOMPurify from 'dompurify'
 import { useI18n } from 'vue-i18n'
 
 // ==================== 状态 ====================
@@ -197,12 +198,17 @@ function highlightJson(val: any): string {
     try { parsed = JSON.parse(val) } catch {}
   }
   const str = typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)
+  let html = str
   // @ts-ignore
   if (window.hljs) {
     // @ts-ignore
-    return window.hljs.highlight(str, { language: 'json' }).value
+    html = window.hljs.highlight(str, { language: 'json' }).value
   }
-  return str
+  // 审计数据来自上游业务系统，不可信：hljs 输出同样经过净化后才可 v-html
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['span'],
+    ALLOWED_ATTR: ['class', 'style'],
+  })
 }
 
 function handleExpandChange(_row: any, expandedRows: any[]) {

@@ -44,7 +44,7 @@ class SafetyLevel(str, Enum):
 
 
 class ModalityType(str, Enum):
-    """UI 组件类型 (8 种白名单)"""
+    """建图阶段 UI 偏好类型（8 种，与运行时 9 种 UI Block 白名单中的 a2ui 受控子集区分）"""
 
     TEXT_BLOCK = "text_block"
     METRIC_CARD = "metric_card"

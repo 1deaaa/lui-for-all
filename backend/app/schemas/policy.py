@@ -60,7 +60,12 @@ class PolicyVerdict(BaseModel):
 
 
 class ExecutionMatrix(BaseModel):
-    """执行矩阵 - 安全等级与动作的映射"""
+    """执行矩阵 - 安全等级与动作的映射。
+
+    与 app.policy.execution_matrix.default_matrix 保持一致：
+    soft/hard/critical 写操作统一走人工审批（CONFIRM），
+    仅在审批通道不可用（如 MCP 全自动模式）时由调用方按策略拒绝。
+    """
 
     # 安全等级 → 动作映射
     matrix: dict[SafetyLevel, PolicyAction] = Field(
@@ -68,8 +73,8 @@ class ExecutionMatrix(BaseModel):
             SafetyLevel.READONLY_SAFE: PolicyAction.ALLOW,
             SafetyLevel.READONLY_SENSITIVE: PolicyAction.REDACT,
             SafetyLevel.SOFT_WRITE: PolicyAction.CONFIRM,
-            SafetyLevel.HARD_WRITE: PolicyAction.BLOCK,
-            SafetyLevel.CRITICAL: PolicyAction.BLOCK,
+            SafetyLevel.HARD_WRITE: PolicyAction.CONFIRM,
+            SafetyLevel.CRITICAL: PolicyAction.CONFIRM,
         },
         description="安全等级动作映射",
     )

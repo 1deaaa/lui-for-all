@@ -16,7 +16,10 @@ import jwt
 import datetime
 
 BASE_URL = "http://localhost:6689"
-JWT_SECRET = "lui-for-all-jwt-secret-2024"
+# 手工端到端脚本：优先读取 LUI_JWT_SECRET，缺省回退历史开发密钥
+import os as _os
+
+JWT_SECRET = _os.environ.get("LUI_JWT_SECRET", "lui-for-all-jwt-secret-2024")
 PROJECT_ID = "97db94ee-82ec-4de0-b52f-15598f6eb2ea"  # FastAPI 示例项目
 
 

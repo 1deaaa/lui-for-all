@@ -34,7 +34,7 @@ class ExecutionMatrix(BaseModel):
     # 确认超时时间 (秒)
     confirmation_timeout: int = 300
 
-    # 阻断原因模板
+    # 阻断原因模板（当前矩阵无 BLOCK 映射，保留供审批通道不可用时调用方使用）
     block_reasons: dict[str, str] = {
         SafetyLevel.CRITICAL.value: "此操作被安全策略阻断：关键操作需要系统权限",
         SafetyLevel.HARD_WRITE.value: "此操作需要人工确认才能执行",

@@ -48,6 +48,8 @@ class AuditService:
         trace_id: str,
         payload: dict[str, Any],
     ):
+        from app.policy.redaction import default_redactor
+
         self.db.add(
             HttpExecution(
                 id=str(uuid.uuid4()),
@@ -57,10 +59,10 @@ class AuditService:
                 capability_id=payload.get("capability_id"),
                 method=payload.get("method", "GET"),
                 url_redacted=payload.get("url", ""),
-                headers_redacted=payload.get("request_headers", {}),
-                request_body_redacted=payload.get("request_body"),
+                headers_redacted=default_redactor.redact_response(payload.get("request_headers", {})),
+                request_body_redacted=default_redactor.redact_response(payload.get("request_body")),
                 status_code=payload.get("status_code"),
-                response_body_redacted=payload.get("response_body"),
+                response_body_redacted=default_redactor.redact_response(payload.get("response_body")),
                 duration_ms=payload.get("duration_ms"),
                 trace_id=trace_id,
                 policy_snapshot=payload.get("policy_snapshot", {}),

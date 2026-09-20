@@ -76,15 +76,15 @@
 |---|---|---|---|---|
 | `POST` | `/api/chat/stream` | Admin / User JWT | SSE | Start a new conversation and execute in streaming mode |
 | `POST` | `/api/chat/resume` | Admin / User JWT | SSE | Resume execution after approval |
-| `POST` | `/api/chat/task-runs/{task_run_id}/stop` | Admin JWT | JSON | Stop a running task |
-| `GET` | `/api/chat/projects/{project_id}/sessions` | Admin / User JWT | JSON | Get historical session list for a project |
-| `GET` | `/api/chat/sessions/{session_id}` | Admin / User JWT | JSON | Get session details |
-| `GET` | `/api/chat/sessions/{session_id}/messages` | Admin / User JWT | JSON | Get session message snapshot |
-| `GET` | `/api/chat/sessions/{session_id}/messages/{message_id}` | Admin / User JWT | JSON | Get single message details |
-| `GET` | `/api/chat/task-runs/{task_run_id}` | Admin JWT | JSON | Get task snapshot |
-| `GET` | `/api/chat/task-runs/{task_run_id}/events` | Admin JWT | JSON | Get task event replay (Event Sourcing) |
-| `GET` | `/api/chat/task-runs/{task_run_id}/approvals` | Admin JWT | JSON | Get approval records |
-| `GET` | `/api/chat/task-runs/{task_run_id}/http-executions` | Admin JWT | JSON | Get HTTP execution records |
+| `POST` | `/api/chat/task-runs/{task_run_id}/stop` | Admin / User JWT (project-scoped) | JSON | Stop a running task |
+| `GET` | `/api/chat/projects/{project_id}/sessions` | Admin / User JWT (project-scoped) | JSON | Get historical session list for a project |
+| `GET` | `/api/chat/sessions/{session_id}` | Admin / User JWT (project-scoped) | JSON | Get session details |
+| `GET` | `/api/chat/sessions/{session_id}/messages` | Admin / User JWT (project-scoped) | JSON | Get session message snapshot |
+| `GET` | `/api/chat/sessions/{session_id}/messages/{message_id}` | Admin / User JWT (project-scoped) | JSON | Get single message details |
+| `GET` | `/api/chat/task-runs/{task_run_id}` | Admin / User JWT (project-scoped) | JSON | Get task snapshot |
+| `GET` | `/api/chat/task-runs/{task_run_id}/events` | Admin / User JWT (project-scoped) | JSON | Get task event replay (Event Sourcing) |
+| `GET` | `/api/chat/task-runs/{task_run_id}/approvals` | Admin / User JWT (project-scoped) | JSON | Get approval records |
+| `GET` | `/api/chat/task-runs/{task_run_id}/http-executions` | Admin / User JWT (project-scoped) | JSON | Get HTTP execution records |
 
 ---
 
@@ -173,7 +173,7 @@ Content-Type: application/json
 ### 3.3 Stop Running Task
 
 - **Method + Path**: `POST /api/chat/task-runs/{task_run_id}/stop`
-- **Auth**: Admin JWT
+- **Auth**: Admin JWT or User JWT (project-scoped)
 - **Transport**: JSON
 
 **Path Parameters**
@@ -365,7 +365,7 @@ Authorization: Bearer <jwt>
 ### 3.8 Get Task Snapshot
 
 - **Method + Path**: `GET /api/chat/task-runs/{task_run_id}`
-- **Auth**: Admin JWT
+- **Auth**: Admin JWT or User JWT (project-scoped)
 - **Transport**: JSON
 
 **Path Parameters**
@@ -408,7 +408,7 @@ Authorization: Bearer <jwt>
 ### 3.9 Get Task Event Replay
 
 - **Method + Path**: `GET /api/chat/task-runs/{task_run_id}/events`
-- **Auth**: Admin JWT
+- **Auth**: Admin JWT or User JWT (project-scoped)
 - **Transport**: JSON
 
 **Path Parameters**
@@ -451,7 +451,7 @@ Authorization: Bearer <jwt>
 ### 3.10 Get Approval Records
 
 - **Method + Path**: `GET /api/chat/task-runs/{task_run_id}/approvals`
-- **Auth**: Admin JWT
+- **Auth**: Admin JWT or User JWT (project-scoped)
 - **Transport**: JSON
 
 **Path Parameters**
@@ -506,7 +506,7 @@ Authorization: Bearer <jwt>
 ### 3.11 Get HTTP Execution Records
 
 - **Method + Path**: `GET /api/chat/task-runs/{task_run_id}/http-executions`
-- **Auth**: Admin JWT
+- **Auth**: Admin JWT or User JWT (project-scoped)
 - **Transport**: JSON
 
 **Path Parameters**
@@ -854,7 +854,9 @@ LUI-for-All supports two JWT identities, suitable for multi-project end-user iso
 | JWT Subject | Identity | Accessible scope | Issuing endpoint |
 |---|---|---|---|
 | `lui-admin` | Administrator | All `/api/*` endpoints | `POST /api/auth/setup` or `POST /api/auth/login` |
-| `lui-user` | End user | `/api/chat/*`, `/api/sessions/*`, `/api/projects/resolve-slug/*`, `/api/auth/me` | `POST /api/auth/user-login` |
+| `lui-user` | End user | `/api/chat/*`, `/api/sessions/*`, own project under `/api/projects/{project_id}/*`, `/api/projects/resolve-slug/*`, `/api/auth/me` | `POST /api/auth/user-login` |
+
+> JWT secret: configured via `LUI_JWT_SECRET` (auto-generated into `workspace/.env` on first boot when absent). Default expiry 72h. User JWTs are project-scoped; cross-project `session`/`task_run` reads return 403.
 
 ### 8.2 JWT Delivery Methods
 
@@ -911,7 +913,8 @@ Content-Type: application/json
 - User JWT can only access data for **its own project** (backend validates via `project_id`)
 - When calling `POST /api/chat/stream`, the `project_id` must match the one in the JWT
 - The backend automatically injects `user_context`; the Agentic Loop prioritizes the user's target system token for operations
-- Audit endpoints (GET endpoints under `task-runs/*`) are restricted to Admin JWT only
+- User JWT snapshot reads under `/api/chat/*` are project-scoped (session/task ownership checked; cross-project access returns 403)
+- Standalone audit endpoints under `/api/audit/*` remain Admin-only
 
 ### 8.6 Endpoints Requiring No Authentication
 
@@ -923,7 +926,8 @@ The following endpoints are in the JWT whitelist and do not require a token:
 - `POST /api/auth/setup`
 - `POST /api/auth/login`
 - `POST /api/auth/user-login`
-- `POST /api/auth/forgot-password-hint`
+- `GET /api/auth/forgot-password-hint`
+- `GET /api/projects/resolve-slug/{slug}` (public project login bootstrap)
 
 ---
 
@@ -932,7 +936,7 @@ The following endpoints are in the JWT whitelist and do not require a token:
 | Layer | Implementation Notes |
 |---|---|
 | **Event Layer** | Implement a unified SSE dispatcher that routes by `event` field to each rendering module. Support token delivery via query parameter (`?token=<jwt>`) for compatibility with all SSE client libraries. |
-| **Component Layer** | Implement renderers for the 8 `block_type` values (see Section 5). `text_block` and `data_table` are the two most commonly used; prioritize these. |
+| **Component Layer** | Implement renderers for the 9 `block_type` values (see Section 5). `a2ui` and `confirm_panel` are the two produced at runtime; keep the other 7 for protocol compatibility. Unknown types must not be rendered. `filter_form` is protocol-reserved (local hint only, no backend回填). |
 | **Approval Layer** | Listen for the `write_approval_required` + `approval_pending` event pair, render the approval UI; after user decision, call `POST /api/chat/resume`. Pass `decided_ids` to ensure complete audit records are persisted. |
 | **Replay Layer** | Integrate the 4 snapshot endpoints (`messages`, `task-runs`, `approvals`, `http-executions`) to implement session history replay and audit tracing. |
 | **Error Handling** | Listen for `error` events and determine recovery strategy by `error_code`: `TASK_CANCELLED` can be ignored; `TASK_FAILED` / `STREAM_ERROR` require prompting the user to retry. |
@@ -1321,9 +1325,9 @@ Source: `backend/app/api/projects.py`
   "accessible": true,
   "is_directory": true,
   "readable": true,
-  "framework_detected": "FastAPI",
-  "adapter_name": "FastAPI",
-  "available_adapters": ["FastAPI", "Express", "Flask"],
+  "framework_detected": "python_decorator",
+  "adapter_name": "python_decorator",
+  "available_adapters": ["django_urlconf", "python_decorator", "nodejs_typescript", "java_spring", "aspnet_core", "go_web"],
   "file_count": 42,
   "sample_files": ["main.py", "requirements.txt", ...],
   "running_in_container": true,
@@ -1373,6 +1377,8 @@ Source: `backend/app/api/projects.py`
   "warning": null
 }
 ```
+
+> AST fallback: when OpenAPI is unreachable and `source_path` is provided, `source` is `"ast"` with a `warning` describing the switch (same for `test-connection`).
 
 #### 2.3.9 Verify Login Endpoint
 
@@ -1524,19 +1530,22 @@ Source: `backend/app/api/projects.py`
       "domain": "auth",
       "backed_by_routes": [...],
       "user_intent_examples": [...],
-      "permission_level": "read",
+      "permission_level": "authenticated",
       "safety_level": "readonly_safe",
       "data_sensitivity": "low",
       "requires_confirmation": false,
-      "best_modalities": ["text"],
+      "best_modalities": ["data_table", "text_block"],
       "parameter_hints": {...},
       "ai_usage_guidelines": "...",
-      "source_code_analysis": "..."
+      "source_code_analysis": "...",
+      "response_mode": "instant"
     }
   ],
   "total": 8
 }
 ```
+
+> End-user scope: when called with a User JWT, only capabilities with at least one accessible route are returned (Fail-Closed: empty when the role has no accessible routes).
 
 #### 2.3.15 Update Capability Info
 
@@ -1817,12 +1826,12 @@ Source: `backend/app/api/audit.py`
 |---|---|---|---|
 | `GET` | `/api/audit/task-runs` | Admin | List task run records |
 | `GET` | `/api/audit/task-runs/{task_run_id}` | Admin | Get task run details |
-| `GET` | `/api/audit/task-runs/{task_run_id}/events` | Admin | Get task event list |
-| `GET` | `/api/audit/http-executions` | Admin | List HTTP execution records |
+| `GET` | `/api/audit/task-runs/{task_run_id}/events` | Admin | Get task event list (no writes yet; returns empty until Event Sourcing is enabled) |
+| `GET` | `/api/audit/http-executions` | Admin | List HTTP execution records (SSE/chat path only; MCP path not recorded) |
 | `GET` | `/api/audit/http-executions/{request_id}` | Admin | Get single HTTP execution record |
 | `GET` | `/api/audit/approvals` | Admin | List approval operation records |
-| `GET` | `/api/audit/policy-verdicts` | Admin | List policy verdict records |
-| `GET` | `/api/audit/model-calls` | Admin | List model call records |
+| `GET` | `/api/audit/policy-verdicts` | Admin | List policy verdict records (no writes yet; reserved schema) |
+| `GET` | `/api/audit/model-calls` | Admin | List model call records (no writes yet; reserved schema) |
 
 ### 4.2 Detailed Endpoint Description
 
@@ -2302,7 +2311,7 @@ Source: `backend/app/api/settings.py`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `mcp_api_token` | `string \| null` | No | MCP API Token (leave empty to skip update) |
-| `safety_default_action` | `string \| null` | No | Default approval action (`"confirm"` or `"allow"`) |
+| `safety_default_action` | `string \| null` | No | Default approval action (`"confirm"`, `"allow"`, or `"block"`) |
 
 - **Response**: Same as 6.3.1
 
@@ -2710,7 +2719,7 @@ data: [DONE]
 - **Response**:
 
 ```json
-{ "status": "ok" }
+{ "status": "healthy", "name": "LUI-for-All", "version": "0.1.0" }
 ```
 
 ---
@@ -2735,7 +2744,7 @@ Configured via the `LUI_MCP_API_TOKEN` environment variable as a static Bearer T
 - When no Token is configured, the MCP endpoint is completely blocked (returns 401)
 - Token can be configured in the admin dashboard's "System Settings" page, or by directly setting `LUI_MCP_API_TOKEN` in `workspace/.env`
 
-> ⚠️ **Security Prerequisite**: MCP mode bypasses the manual approval process. Before use, you must switch the "Default Action" to "Allow All" (`safety_default_action=allow`) in "System Settings".
+> ⚠️ **Security Prerequisite**: MCP is a fully automatic channel without interactive approval. Before use, you must switch the "Default Action" to "Allow All" (`safety_default_action=allow`) in "System Settings". Without `allow`, MCP `chat` is rejected; with `allow`, write operations are auto-approved (including `critical`). Writes skipped in non-`allow` mode are resumed as rejected and require the built-in chat UI for approval. MCP executions do not write `HttpExecution` audit rows.
 
 ### 9.3 Available Tools
 

@@ -19,7 +19,7 @@ import jwt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.config import WORKSPACE_DIR
+from app.config import WORKSPACE_DIR, settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,9 @@ PASSWORD_FILE = WORKSPACE_DIR / "password.txt"
 PASSWORD_HINT_RELATIVE_PATH = "workspace/password.txt"
 
 # ── JWT 配置 ──
-JWT_SECRET = "lui-for-all-jwt-secret-2024"
+# 密钥来源：LUI_JWT_SECRET（缺省首次启动自动生成并写入 workspace/.env）。
+# 此处保留模块级常量供测试 monkeypatch 覆盖，但默认与 settings.jwt_secret 保持一致。
+JWT_SECRET = settings.jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 72
 

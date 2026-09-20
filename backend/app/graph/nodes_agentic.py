@@ -189,6 +189,38 @@ def _resolve_param_hint(route_hints: dict[str, Any], key: str, method: str) -> d
     return candidates[0]
 
 
+def _capability_safety_lookup(available_capabilities: list[dict]) -> dict[str, str]:
+    """按 route_id 建立服务端安全等级表（执行层回查用，不信任 LLM 自报等级）。"""
+    lookup: dict[str, str] = {}
+    for cap in available_capabilities or []:
+        safety = str(cap.get("safety_level") or "readonly_safe")
+        for route in cap.get("backed_by_routes") or []:
+            if isinstance(route, dict) and route.get("route_id"):
+                lookup[str(route.get("route_id"))] = safety
+    return lookup
+
+
+def _resolve_effective_safety(
+    available_capabilities: list[dict],
+    route_id: str,
+    claimed: str | None,
+) -> str:
+    """解析有效安全等级：服务端能力表优先，缺失时回退 LLM 自报（并记录告警）。
+
+    防止坏提示把 hard_write 谎报为 readonly_safe 从而绕过审批门。
+    """
+    lookup = _capability_safety_lookup(available_capabilities)
+    server_safety = lookup.get(route_id)
+    if server_safety:
+        if claimed and claimed != server_safety:
+            logger.warning(
+                "[safety] route=%s 自报 %s 与服务端 %s 不一致，已按服务端裁定",
+                route_id, claimed, server_safety,
+            )
+        return server_safety
+    return claimed or "readonly_safe"
+
+
 def _build_capability_list(available_capabilities: list[dict]) -> str:
     """构建接口列表文本（含参数清单），注入 Agentic System Prompt。"""
     lines = []
@@ -344,12 +376,17 @@ async def _execute_http(
         f"cookie={list(cookie_params.keys()) if cookie_params else []}"
     )
 
+    # 只读敏感接口默认脱敏（服务端裁定，不信任 LLM 自报）
+    effective_safety = _resolve_effective_safety(
+        state.get("available_capabilities", []), route_id, None,
+    )
     status_code, response_body, duration_ms = await executor.execute(
         method=method,
         path=norm_path,
         headers=headers,
         params=query_params or None,
         body=body_params if method in ("POST", "PUT", "PATCH") else None,
+        redact_response=(effective_safety == "readonly_sensitive"),
     )
 
     # 先尝试从响应体捕获 token（Bearer 模式）
@@ -400,9 +437,10 @@ async def _execute_read_call(
     call_id = call.get("call_id", str(uuid.uuid4()))
     step_id = str(uuid.uuid4())
 
-    # 终端用户可达路由检查：不可达路由直接拒绝
+    # 终端用户可达路由检查（Fail-Closed：用户上下文无可达集时拒绝执行）
     accessible_ids = state.get("user_accessible_route_ids") or []
-    if accessible_ids and route_id not in accessible_ids:
+    is_user_mode = bool(state.get("user_role_profile_id"))
+    if is_user_mode and route_id not in accessible_ids:
         logger.warning(f"[access-control] 用户无权访问路由 {route_id}，已拒绝执行")
         _emit(
             "tool_started",
@@ -439,6 +477,8 @@ async def _execute_read_call(
         route_id=route_id,
     )
 
+    # 服务端可达复核：执行前再次确认路由仍在用户可达集内（防 state 被篡改）
+    # 注意：此处的 accessible_ids 来自服务端 _load_accessible_routes，不信任 LLM。
     # 从缓存取完整 auth 信息（token + mode + cookie_name）
     # 终端用户优先使用 user_target_token，避免使用管理员 token
     project_id = state.get("project_id", "")
@@ -884,9 +924,20 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 "execution_artifacts": new_artifacts,
             }
 
-        # 分流：只读立即执行，写入排队审批
-        read_calls = [c for c in calls if c.get("safety_level", "readonly_safe") in READ_ONLY_SAFETY]
-        write_calls = [c for c in calls if c.get("safety_level", "readonly_safe") in WRITE_SAFETY]
+        # 分流：只读立即执行，写入排队审批（以服务端能力表回查为准）
+        available_caps = state.get("available_capabilities", [])
+        read_calls = [
+            c for c in calls
+            if _resolve_effective_safety(
+                available_caps, c.get("route_id", ""), c.get("safety_level"),
+            ) in READ_ONLY_SAFETY
+        ]
+        write_calls = [
+            c for c in calls
+            if _resolve_effective_safety(
+                available_caps, c.get("route_id", ""), c.get("safety_level"),
+            ) in WRITE_SAFETY
+        ]
 
         # 执行所有只读调用（token 由 _ensure_project_token 自动管理）
         tool_results_summary: list[str] = []
@@ -959,7 +1010,10 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                     "path": p,
                     "parameters": params,
                     "reasoning": wc.get("reasoning", ""),
-                    "safety_level": wc.get("safety_level", "soft_write"),
+                    "safety_level": _resolve_effective_safety(
+                        state.get("available_capabilities", []),
+                        rid, wc.get("safety_level"),
+                    ),
                     "_wc": wc  # 暂存原始调用对象
                 })
 
@@ -1046,8 +1100,12 @@ async def agentic_loop_node(state: GraphState, config: RunnableConfig) -> dict[s
                 "execution_artifacts": new_artifacts,
             }
 
-        # 安全等级分流（与 call 分支一致）
-        safety_level = call.get("safety_level", "readonly_safe")
+        # 安全等级分流（与 call 分支一致，以服务端能力表回查为准）
+        safety_level = _resolve_effective_safety(
+            state.get("available_capabilities", []),
+            call.get("route_id", ""),
+            call.get("safety_level"),
+        )
         if safety_level in WRITE_SAFETY:
             # 写入类接口不支持 stream_call，降级提示
             stream_result_summary = f'stream_call 不支持写入操作（safety_level={safety_level}），请改用 action=call'

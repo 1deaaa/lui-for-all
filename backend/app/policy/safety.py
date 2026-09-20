@@ -9,13 +9,13 @@ from pydantic import BaseModel
 
 
 class SafetyLevel(str, Enum):
-    """安全等级"""
+    """安全等级（执行层统一走人工审批 CONFIRM，含 critical）"""
 
     READONLY_SAFE = "readonly_safe"  # 只读安全 - 直接执行
     READONLY_SENSITIVE = "readonly_sensitive"  # 只读敏感 - 脱敏后执行
     SOFT_WRITE = "soft_write"  # 软写入 - 需确认
     HARD_WRITE = "hard_write"  # 硬写入 - 需确认
-    CRITICAL = "critical"  # 关键操作 - 阻断
+    CRITICAL = "critical"  # 关键操作 - 需确认（审批通道不可用时由调用方拒绝）
 
 
 class SafetyContext(BaseModel):

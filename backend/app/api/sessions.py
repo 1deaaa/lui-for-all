@@ -43,10 +43,19 @@ async def _load_accessible_routes(project_id: str, role_profile_id: str | None) 
 
 def _filter_capabilities_for_user(
     capabilities: list[dict[str, Any]],
-    accessible_route_ids: list[str],
+    accessible_route_ids: list[str] | None,
+    *,
+    strict_user_mode: bool = False,
 ) -> list[dict[str, Any]]:
-    """按可达路由过滤能力列表：仅保留至少有一条可达路由的能力，并过滤掉不可达路由"""
+    """按可达路由过滤能力列表：仅保留至少有一条可达路由的能力，并过滤掉不可达路由。
+
+    Fail-Closed 语义：当 strict_user_mode=True（终端用户上下文）且可达集为空时，
+    返回空列表而非全部能力，避免未探测画像看到全部接口。
+    管理员路径保持 strict_user_mode=False，行为不变。
+    """
     if not accessible_route_ids:
+        if strict_user_mode:
+            return []
         # 无可达路由信息（管理员或未配置画像）→ 返回全部
         return capabilities
 
@@ -436,10 +445,12 @@ async def stream_events(
                             user_context.get("role_profile_id"),
                         ) if user_context and user_context.get("role_profile_id") else []
                     )
-                    if user_accessible_route_ids:
+                    if user_context and user_context.get("role_profile_id"):
                         _cap_count_before = len(available_capabilities)
                         available_capabilities = _filter_capabilities_for_user(
-                            available_capabilities, user_accessible_route_ids
+                            available_capabilities,
+                            user_accessible_route_ids,
+                            strict_user_mode=True,
                         )
                         logger.info(
                             f"[user-filter] capabilities: {_cap_count_before} → {len(available_capabilities)}, "
@@ -457,7 +468,7 @@ async def stream_events(
                 SessionStartedEvent(
                     session_id=session_id,
                     project_id=task_run_data["project_id"] if task_run_data else "",
-                    trace_id=str(uuid.uuid4()),
+                    trace_id=task_run_data["trace_id"] if task_run_data else str(uuid.uuid4()),
                 )
             )
 
@@ -1157,7 +1168,14 @@ async def _resume_graph_with_approval(
     action: str,
     db: AsyncSession,
 ):
-    """通用：通过向图发送 interrupt 恢复值来处理审批"""
+    """通用：通过向图发送 interrupt 恢复值来处理审批。
+
+    说明：遗留 sessions 审批入口。当前主链路为 POST /api/chat/resume
+    （stream_events + Command(resume)），本函数仅保留兼容语义；
+    恢复值统一为 {approved_ids, write_id}，与 agentic_loop 读取一致。
+    """
+    from langgraph.types import Command
+
     session_repository = SessionRepository(db)
     session = await session_repository.get_by_id(session_id)
     if not session:
@@ -1175,10 +1193,10 @@ async def _resume_graph_with_approval(
 
     approved = action == "approve"
 
-    # 通过 resume 值恢复 interrupt
-    await graph_app.aresume(
+    # 通过 Command(resume) 恢复 interrupt（与主链路载荷一致）
+    await graph_app.ainvoke(
+        Command(resume={"approved_ids": [write_id] if approved else [], "write_id": write_id}),
         config,
-        {"approved": approved, "write_id": write_id},
     )
 
     # 更新 Approval 记录状态（落库，供策略判定日志展示）

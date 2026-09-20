@@ -659,6 +659,8 @@ const enUS = {
   },
   filterForm: {
     submit: 'Submit',
+    missingRequired: 'Please fill in required fields',
+    notSupported: 'Form submit-back is not supported in this version. Please reply with parameters in chat',
   },
   projectStore: {
     fetchListFailed: 'Failed to fetch project list',

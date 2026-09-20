@@ -657,6 +657,8 @@ const zhCN = {
   },
   filterForm: {
     submit: '提交',
+    missingRequired: '请填写必填项',
+    notSupported: '当前版本暂不支持表单回填，请直接在对话框中补充参数后重试',
   },
   projectStore: {
     fetchListFailed: '获取项目列表失败',

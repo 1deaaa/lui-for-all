@@ -658,6 +658,8 @@ const jaJP = {
   },
   filterForm: {
     submit: '送信',
+    missingRequired: '必須項目を入力してください',
+    notSupported: 'このバージョンではフォーム送信に未対応です。チャットでパラメータを補足してください',
   },
   projectStore: {
     fetchListFailed: 'プロジェクト一覧の取得に失敗しました',
