@@ -515,21 +515,6 @@ lui-for-all/
 | ✅ 声明式 UI Block 增强回答 | ❌ 前端重写器 / 低代码生成器 |
 | ✅ 零侵入挂靠在已有系统旁 | ❌ 替换、侵入已有系统 |
 
----
-
-## 路线图
-
-- [x] MVP：FastAPI + LangGraph 核心流水线
-- [x] OpenAPI 能力自动发现与建模
-- [x] 9 种 UI Block 白名单组件（含受控 a2ui 子集）
-- [x] AG-UI SSE 协议 + 实时流
-- [x] 人工确认（Human-in-the-loop）拦截器
-- [x] Agent Matchbox 多模型网关
-- [x] Tree-sitter AST 语义路由解析（支持无 OpenAPI）
-- [x] 流式接口全类型覆盖（SSE / 游标分页 / 偏移分页 / 长轮询）
-- [ ] 能力地图可视化管理界面
-- [x] 多项目隔离 + 终端用户 JWT 双通道认证（管理员 + 项目用户）
-- [ ] 私有化部署文档
 
 ---
 

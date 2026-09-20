@@ -348,19 +348,6 @@ flowchart TB
 - Discovery: OpenAPI ingestion + Tree-sitter AST fallback + capability graph building
 - Runtime safety: policy matrix + human-in-the-loop approval
 
-## Roadmap
-
-- [x] MVP workflow (FastAPI + LangGraph)
-- [x] OpenAPI-based capability discovery
-- [x] 9 UI block whitelist (incl. controlled a2ui subset)
-- [x] Real-time SSE streaming and approval interrupt
-- [x] Multi-model gateway
-- [x] Tree-sitter AST semantic route discovery (OpenAPI-optional onboarding)
-- [x] Full streaming interface type coverage (SSE / cursor pagination / offset pagination / long polling)
-- [x] Dual-channel JWT auth (admin + project end-user) with role profiles
-- [ ] Capability graph visual management
-- [ ] Private deployment guide
-
 ## License
 
 Licensed under the Apache License 2.0. See `LICENSE`.
