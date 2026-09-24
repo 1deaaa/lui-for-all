@@ -19,6 +19,11 @@ const AUTH_STATUS_TIMEOUT_MS = 8000
 const AUTH_ACTION_TIMEOUT_MS = 15000
 const PASSWORD_HINT_RELATIVE_PATH = 'workspace/password.txt'
 
+interface AuthStatusResponse {
+  password_set: boolean
+  demo_mode: boolean
+}
+
 // ── 密码强度校验 ──
 const strengthChecks = computed(() => ({
   minLength: password.value.length >= 8,
@@ -64,12 +69,31 @@ function normalizeRelativeFilePath(filePath: unknown): string {
 // ── 检查认证状态 ──
 async function checkAuthStatus() {
   try {
-    const res = await axios.get('/api/auth/status', { timeout: AUTH_STATUS_TIMEOUT_MS })
+    const res = await axios.get<AuthStatusResponse>('/api/auth/status', { timeout: AUTH_STATUS_TIMEOUT_MS })
     isSetup.value = !res.data.password_set
+    if (res.data.password_set && res.data.demo_mode) {
+      await handleDemoLogin()
+    }
   } catch {
     isSetup.value = true
   } finally {
     checkingStatus.value = false
+  }
+}
+
+// ── 演示模式自动登录 ──
+async function handleDemoLogin() {
+  if (loading.value) return
+  loading.value = true
+  try {
+    const res = await axios.post('/api/auth/demo-login', undefined, { timeout: AUTH_ACTION_TIMEOUT_MS })
+    localStorage.setItem('lui_jwt', res.data.token)
+    router.replace('/')
+  } catch (err: unknown) {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    ElMessage.error(detail || t('login.errorDemoLoginFailed'))
+  } finally {
+    loading.value = false
   }
 }
 

@@ -93,6 +93,12 @@ class Settings(BaseSettings):
         description="全局默认审批动作：allow(始终放行)、confirm(人工审批)、block(直接拒绝)",
     )
 
+    # 演示模式：允许公开展示实例，并由登录页自动建立管理员演示会话
+    demo_mode: bool = Field(
+        default=False,
+        description="是否启用演示模式（默认关闭）",
+    )
+
     # OpenTelemetry 配置
     otlp_endpoint: str | None = Field(
         default=None,

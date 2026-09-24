@@ -19,6 +19,7 @@ class SettingsPayload(BaseModel):
     """系统设置载荷"""
     mcp_api_token: str | None = Field(default=None, description="MCP API Token")
     safety_default_action: str | None = Field(default="confirm", description="全局默认审批动作")
+    demo_mode: bool | None = Field(default=None, description="是否启用演示模式")
 
 
 class SettingsResponse(SettingsPayload):
@@ -41,6 +42,7 @@ async def get_runtime_settings():
     return SettingsResponse(
         mcp_api_token=settings.mcp_api_token,
         safety_default_action=settings.safety_default_action,
+        demo_mode=settings.demo_mode,
     )
 
 
@@ -50,9 +52,11 @@ async def save_runtime_settings(payload: SettingsPayload):
     env_path = _ensure_env_file()
     mcp_api_token = payload.mcp_api_token or ""
     safety_default_action = payload.safety_default_action or "confirm"
+    demo_mode = settings.demo_mode if payload.demo_mode is None else payload.demo_mode
 
     os.environ["LUI_MCP_API_TOKEN"] = mcp_api_token
     os.environ["LUI_SAFETY_DEFAULT_ACTION"] = safety_default_action
+    os.environ["LUI_DEMO_MODE"] = "true" if demo_mode else "false"
 
     set_key(
         str(env_path),
@@ -68,9 +72,17 @@ async def save_runtime_settings(payload: SettingsPayload):
         quote_mode="never",
     )
 
+    set_key(
+        str(env_path),
+        "LUI_DEMO_MODE",
+        "true" if demo_mode else "false",
+        quote_mode="never",
+    )
+
     reload_settings()
 
     return SettingsResponse(
         mcp_api_token=settings.mcp_api_token,
         safety_default_action=settings.safety_default_action,
+        demo_mode=settings.demo_mode,
     )

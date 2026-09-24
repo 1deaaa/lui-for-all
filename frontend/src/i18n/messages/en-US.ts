@@ -36,6 +36,7 @@ const enUS = {
     errorLoginFailed: 'Login failed',
     errorPasswordWrong: 'Incorrect password',
     errorNetworkError: 'Network error — please check the backend service',
+    errorDemoLoginFailed: 'Demo auto-login failed. Please use the administrator password.',
   },
   userLogin: {
     usernameLabel: 'Username',
@@ -412,6 +413,19 @@ const enUS = {
       cardDesc: 'Control UI language and force AI replies to use the same language',
       sectionLabel: 'Current Interaction Language',
       hint: 'This language is applied to both UI display and AI chat responses immediately.',
+    },
+    demo: {
+      cardTitle: 'Demo Mode',
+      cardDesc: 'Present this instance publicly and enter an administrator demo session automatically',
+      toggleLabel: 'Enable demo mode',
+      toggleHint: 'When enabled, visitors who open the login page enter the current instance automatically. Disabled by default.',
+      enabled: 'On',
+      disabled: 'Off',
+      warningTitle: 'Demo mode is enabled',
+      warningBody: 'The login page lets visitors obtain an administrator demo session automatically. Use this only in an isolated presentation environment, never with production or sensitive data.',
+      confirmTitle: 'Enable demo mode',
+      confirmMessage: 'Anyone who opens the login page will receive an administrator demo session and can access this instance\'s management capabilities. Confirm that this instance is suitable for public presentation.',
+      confirmButton: 'Enable demo mode',
     },
     llm: {
       cardTitle: 'Primary Model Settings',

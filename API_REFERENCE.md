@@ -853,10 +853,12 @@ LUI-for-All supports two JWT identities, suitable for multi-project end-user iso
 
 | JWT Subject | Identity | Accessible scope | Issuing endpoint |
 |---|---|---|---|
-| `lui-admin` | Administrator | All `/api/*` endpoints | `POST /api/auth/setup` or `POST /api/auth/login` |
+| `lui-admin` | Administrator | All `/api/*` endpoints | `POST /api/auth/setup`, `POST /api/auth/login`, or `POST /api/auth/demo-login` |
 | `lui-user` | End user | `/api/chat/*`, `/api/sessions/*`, own project under `/api/projects/{project_id}/*`, `/api/projects/resolve-slug/*`, `/api/auth/me` | `POST /api/auth/user-login` |
 
 > JWT secret: configured via `LUI_JWT_SECRET` (auto-generated into `workspace/.env` on first boot when absent). Default expiry 72h. User JWTs are project-scoped; cross-project `session`/`task_run` reads return 403.
+
+When demo mode is enabled, `POST /api/auth/demo-login` issues an administrator JWT without asking the visitor for the password. The token contains `demo_mode=true` and becomes invalid when demo mode is disabled.
 
 ### 8.2 JWT Delivery Methods
 
@@ -925,6 +927,7 @@ The following endpoints are in the JWT whitelist and do not require a token:
 - `GET /api/auth/status`
 - `POST /api/auth/setup`
 - `POST /api/auth/login`
+- `POST /api/auth/demo-login` (only succeeds when demo mode is enabled)
 - `POST /api/auth/user-login`
 - `GET /api/auth/forgot-password-hint`
 - `GET /api/projects/resolve-slug/{slug}` (public project login bootstrap)
@@ -981,6 +984,7 @@ Source: `backend/app/api/auth.py`
 | `GET` | `/api/auth/status` | None | Check if password has been set |
 | `POST` | `/api/auth/setup` | None | Set admin password for the first time, returns JWT |
 | `POST` | `/api/auth/login` | None | Admin login, returns JWT |
+| `POST` | `/api/auth/demo-login` | None | Issue an admin demo JWT when demo mode is enabled |
 | `GET` | `/api/auth/forgot-password-hint` | None | Forgot password hint |
 | `POST` | `/api/auth/user-login` | None | End-user login (verified via target system), returns User JWT |
 
@@ -999,6 +1003,7 @@ Source: `backend/app/api/auth.py`
 | Model | Field | Type | Description |
 |---|---|---|---|
 | `AuthStatusResponse` | `password_set` | `bool` | Whether password has been set |
+| | `demo_mode` | `bool` | Whether demo mode is enabled |
 | `PasswordSetupResponse` | `token` | `string` | Admin JWT Token |
 | `LoginResponse` | `token` | `string` | Admin JWT Token |
 | `ForgotPasswordHintResponse` | `hint` | `string` | Hint message |
@@ -1016,12 +1021,12 @@ Source: `backend/app/api/auth.py`
 `GET /api/auth/status`
 
 - **Auth**: None
-- **Description**: Check if admin password has been set. The frontend uses this to decide whether to show the "Set Password" or "Login" screen.
+- **Description**: Check if the admin password has been set and whether demo mode is enabled. The frontend uses this to decide whether to show the "Set Password" or "Login" screen, or to start demo auto-login.
 - **Request Body**: None
 - **Response**:
 
 ```json
-{ "password_set": true }
+{ "password_set": true, "demo_mode": false }
 ```
 
 #### 1.3.2 First-Time Password Setup
@@ -1068,7 +1073,24 @@ Source: `backend/app/api/auth.py`
   - `400` — Password has not been set yet
   - `401` — Incorrect password
 
-#### 1.3.4 Forgot Password Hint
+#### 1.3.4 Demo Mode Login
+
+`POST /api/auth/demo-login`
+
+- **Auth**: None
+- **Description**: Issue an administrator JWT for the public demo experience. This endpoint is available only when `demo_mode` is enabled in system settings and an administrator password has already been set. The request does not contain or return the configured password.
+- **Request Body**: None
+- **Response**:
+
+```json
+{ "token": "eyJhbGciOiJIUzI1NiIs..." }
+```
+
+- **Error Codes**:
+  - `400` — Password has not been set yet
+  - `403` — Demo mode is not enabled
+
+#### 1.3.5 Forgot Password Hint
 
 `GET /api/auth/forgot-password-hint`
 
@@ -1084,7 +1106,7 @@ Source: `backend/app/api/auth.py`
 }
 ```
 
-#### 1.3.5 End-User Login
+#### 1.3.6 End-User Login
 
 `POST /api/auth/user-login`
 
@@ -2280,6 +2302,7 @@ Source: `backend/app/api/settings.py`
 |---|---|---|---|---|
 | `SettingsPayload` | `mcp_api_token` | `string \| null` | Optional | MCP API Token |
 | | `safety_default_action` | `string \| null` | Default `"confirm"` | Global default approval action |
+| | `demo_mode` | `bool \| null` | Optional; defaults to current value when omitted | Enable public demo mode and automatic admin login |
 | `SettingsResponse` | Inherits all fields from `SettingsPayload` | | | |
 
 ### 6.3 Detailed Endpoint Description
@@ -2296,7 +2319,8 @@ Source: `backend/app/api/settings.py`
 ```json
 {
   "mcp_api_token": "your-token-here",
-  "safety_default_action": "confirm"
+  "safety_default_action": "confirm",
+  "demo_mode": false
 }
 ```
 
@@ -2312,6 +2336,7 @@ Source: `backend/app/api/settings.py`
 |---|---|---|---|
 | `mcp_api_token` | `string \| null` | No | MCP API Token (leave empty to skip update) |
 | `safety_default_action` | `string \| null` | No | Default approval action (`"confirm"`, `"allow"`, or `"block"`) |
+| `demo_mode` | `bool \| null` | No | Enable public demo mode; omit to keep the current value |
 
 - **Response**: Same as 6.3.1
 

@@ -205,6 +205,7 @@ _JWT_WHITELIST = {
     "/api/auth/status",
     "/api/auth/setup",
     "/api/auth/login",
+    "/api/auth/demo-login",
     "/api/auth/user-login",
     "/api/auth/forgot-password-hint",
     "/health",

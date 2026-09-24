@@ -36,6 +36,7 @@ const jaJP = {
     errorLoginFailed: 'ログインに失敗しました',
     errorPasswordWrong: 'パスワードが正しくありません',
     errorNetworkError: 'ネットワークエラー — バックエンドサービスを確認してください',
+    errorDemoLoginFailed: 'デモの自動ログインに失敗しました。管理者パスワードでログインしてください。',
   },
   userLogin: {
     usernameLabel: 'ユーザー名',
@@ -412,6 +413,19 @@ const jaJP = {
       cardDesc: 'UI 言語を統一し、AI 応答も同じ言語に強制します',
       sectionLabel: '現在の対話言語',
       hint: 'UI 表示と AI チャット応答の両方にこの言語が即時適用されます。',
+    },
+    demo: {
+      cardTitle: 'デモモード',
+      cardDesc: 'このインスタンスを公開表示し、ログインページから管理者デモセッションへ自動移行します',
+      toggleLabel: 'デモモードを有効化',
+      toggleHint: '有効にすると、未ログインの訪問者はログインページから自動的に現在のインスタンスへ入ります。既定では無効です。',
+      enabled: '有効',
+      disabled: '無効',
+      warningTitle: 'デモモードが有効です',
+      warningBody: 'ログインページから訪問者が管理者デモセッションを自動取得できます。隔離された展示環境でのみ使用し、本番や機密データ環境では使用しないでください。',
+      confirmTitle: 'デモモードを有効化',
+      confirmMessage: 'ログインページを開いた人は管理者デモセッションを取得し、このインスタンスの管理機能にアクセスできます。公開展示に適したインスタンスであることを確認してください。',
+      confirmButton: '有効化する',
     },
     llm: {
       cardTitle: '主モデル設定',

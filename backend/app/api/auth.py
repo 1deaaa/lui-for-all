@@ -42,6 +42,7 @@ JWT_EXPIRE_HOURS = 72
 class AuthStatusResponse(BaseModel):
     """认证状态响应"""
     password_set: bool
+    demo_mode: bool
 
 
 class PasswordSetupRequest(BaseModel):
@@ -136,13 +137,15 @@ def _verify_password(password: str) -> bool:
         return False
 
 
-def _create_jwt_token() -> str:
+def _create_jwt_token(*, demo_mode: bool = False) -> str:
     """签发管理员 JWT Token"""
     payload = {
         "sub": "lui-admin",
         "iat": datetime.now(UTC),
         "exp": datetime.now(UTC) + timedelta(hours=JWT_EXPIRE_HOURS),
     }
+    if demo_mode:
+        payload["demo_mode"] = True
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -168,7 +171,9 @@ def _create_user_jwt_token(
 def verify_jwt_token(token: str) -> bool:
     """验证 JWT Token 有效性"""
     try:
-        jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("sub") == "lui-admin" and payload.get("demo_mode") and not settings.demo_mode:
+            return False
         return True
     except jwt.ExpiredSignatureError:
         return False
@@ -199,7 +204,7 @@ value: {"token": str, "auth_mode": str, "cookie_name": str, "captured_at": datet
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status():
     """检查密码是否已设置"""
-    return AuthStatusResponse(password_set=_is_password_set())
+    return AuthStatusResponse(password_set=_is_password_set(), demo_mode=settings.demo_mode)
 
 
 @router.post("/setup", response_model=PasswordSetupResponse)
@@ -229,6 +234,19 @@ async def login(payload: LoginRequest):
 
     token = _create_jwt_token()
     logger.info("✅ 登录成功，JWT 已签发")
+    return LoginResponse(token=token)
+
+
+@router.post("/demo-login", response_model=LoginResponse)
+async def demo_login():
+    """演示模式自动登录，仅在演示模式开启且管理员密码已设置时可用"""
+    if not settings.demo_mode:
+        raise HTTPException(status_code=403, detail="演示模式未开启")
+    if not _is_password_set():
+        raise HTTPException(status_code=400, detail="密码尚未设置，请先设置密码")
+
+    token = _create_jwt_token(demo_mode=True)
+    logger.info("✅ 演示模式自动登录成功，JWT 已签发")
     return LoginResponse(token=token)
 
 

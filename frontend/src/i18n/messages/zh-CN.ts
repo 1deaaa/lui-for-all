@@ -36,6 +36,7 @@ const zhCN = {
     errorLoginFailed: '登录失败',
     errorPasswordWrong: '密码错误',
     errorNetworkError: '网络错误，请检查后端服务',
+    errorDemoLoginFailed: '演示模式自动登录失败，请使用管理员密码登录',
   },
   userLogin: {
     usernameLabel: '用户名',
@@ -412,6 +413,19 @@ const zhCN = {
       cardDesc: '统一控制界面语言，并强制 AI 使用该语言回答',
       sectionLabel: '当前交互语言',
       hint: '界面展示与聊天回复都会使用此语言，切换后立即生效。',
+    },
+    demo: {
+      cardTitle: '演示模式',
+      cardDesc: '面向公众展示此实例，登录页会自动进入管理员演示会话',
+      toggleLabel: '启用演示模式',
+      toggleHint: '开启后，未登录访客访问登录页时会自动进入当前实例。默认关闭。',
+      enabled: '已开启',
+      disabled: '已关闭',
+      warningTitle: '演示模式已开启',
+      warningBody: '登录页将允许访客自动获得管理员演示会话。请仅在隔离的展示环境中使用，不要用于生产实例或包含敏感数据的环境。',
+      confirmTitle: '开启演示模式',
+      confirmMessage: '开启后，任何访问登录页的人都将自动获得管理员演示会话，可访问当前实例的管理能力。请确认当前实例适合公开展示。',
+      confirmButton: '确认开启',
     },
     llm: {
       cardTitle: '主模型配置',

@@ -12,6 +12,7 @@ type LlmManagerDialogMode = 'create' | 'edit'
 interface SettingsForm {
   safety_default_action: SafetyDefaultAction
   mcp_api_token: string
+  demo_mode: boolean
   llm_api_base: string
   llm_api_key: string
   llm_model_id: string
@@ -21,6 +22,7 @@ interface SettingsForm {
 interface SettingsResponse {
   safety_default_action?: string
   mcp_api_token?: string
+  demo_mode?: boolean
 }
 
 interface MainModelConfigResponse {
@@ -90,6 +92,7 @@ interface PlatformDialogForm {
 const settings = ref<SettingsForm>({
   safety_default_action: 'confirm',
   mcp_api_token: '',
+  demo_mode: false,
   llm_api_base: '',
   llm_api_key: '',
   llm_model_id: '',
@@ -271,6 +274,27 @@ function handleLocaleChange(nextLocale: string | number | boolean) {
   ElMessage.success(t('settings.messages.languageUpdated', { label: t(localeLabelKeyMap[locale]) }))
 }
 
+async function handleDemoModeChange(nextValue: string | number | boolean) {
+  const enabled = Boolean(nextValue)
+  if (enabled) {
+    try {
+      await ElMessageBox.confirm(
+        t('settings.demo.confirmMessage'),
+        t('settings.demo.confirmTitle'),
+        {
+          type: 'warning',
+          confirmButtonText: t('settings.demo.confirmButton'),
+          cancelButtonText: t('common.cancel'),
+        },
+      )
+    } catch {
+      settings.value.demo_mode = false
+      return
+    }
+  }
+  await saveSettings(false)
+}
+
 async function loadMainModelConfig(showError = true) {
   try {
     const response = await axios.get<MainModelConfigResponse>('/api/llm-status/main')
@@ -347,6 +371,7 @@ async function loadSettings() {
 
     settings.value.safety_default_action = normalizeSafetyAction(settingsRes.data.safety_default_action)
     settings.value.mcp_api_token = settingsRes.data.mcp_api_token || ''
+    settings.value.demo_mode = settingsRes.data.demo_mode ?? false
     applyMainModelConfig(llmRes.data)
     applyReasonModelConfig(reasonRes.data)
     applyManagerSnapshot(managerRes.data)
@@ -369,6 +394,7 @@ async function saveSettings(silent = false) {
       axios.put('/api/settings', {
         safety_default_action: settings.value.safety_default_action,
         mcp_api_token: settings.value.mcp_api_token,
+        demo_mode: settings.value.demo_mode,
       }),
       persistMainModelConfig(),
     ])
@@ -460,6 +486,7 @@ async function saveMcpToken(silent = false) {
     await axios.put('/api/settings', {
       safety_default_action: settings.value.safety_default_action,
       mcp_api_token: settings.value.mcp_api_token,
+      demo_mode: settings.value.demo_mode,
     })
 
     if (!silent) {
@@ -936,6 +963,44 @@ onMounted(async () => {
                 {{ t('settings.language.hint') }}
               </div>
             </el-form-item>
+          </el-card>
+
+          <!-- 演示模式配置 -->
+          <el-card class="setting-card demo-mode-card fade-in-up" shadow="never" style="animation-delay: 0.03s;">
+            <template #header>
+              <div class="card-header">
+                <Icon icon="lucide:monitor-play" class="card-icon" />
+                <div>
+                  <div class="card-title">{{ t('settings.demo.cardTitle') }}</div>
+                  <div class="card-desc">{{ t('settings.demo.cardDesc') }}</div>
+                </div>
+              </div>
+            </template>
+
+            <div class="demo-mode-row">
+              <div class="demo-mode-copy">
+                <div class="demo-mode-label">{{ t('settings.demo.toggleLabel') }}</div>
+                <div class="demo-mode-hint">{{ t('settings.demo.toggleHint') }}</div>
+              </div>
+              <el-switch
+                v-model="settings.demo_mode"
+                :active-text="t('settings.demo.enabled')"
+                :inactive-text="t('settings.demo.disabled')"
+                :aria-label="t('settings.demo.toggleLabel')"
+                @change="handleDemoModeChange"
+              />
+            </div>
+
+            <el-alert
+              v-if="settings.demo_mode"
+              :title="t('settings.demo.warningTitle')"
+              type="warning"
+              show-icon
+              :closable="false"
+              class="demo-mode-alert"
+            >
+              <template #default>{{ t('settings.demo.warningBody') }}</template>
+            </el-alert>
           </el-card>
 
           <!-- LLM Key Warning Banner -->
@@ -1471,6 +1536,34 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
 }
 
+.demo-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.demo-mode-copy {
+  min-width: 0;
+}
+
+.demo-mode-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.demo-mode-hint {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.demo-mode-alert {
+  margin-top: 18px;
+}
+
 .card-header {
   display: flex;
   align-items: center;
@@ -1880,6 +1973,11 @@ onMounted(async () => {
   .card-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .demo-mode-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .llm-actions {
